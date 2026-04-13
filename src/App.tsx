@@ -60,13 +60,15 @@ function App() {
   return (
     <div className="flex h-full min-h-0 w-full cursor-default flex-col overflow-hidden bg-neutral-50">
       {view === "settings" ? (
-        <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-          <div className="w-full max-w-sm">
-            <SettingsView />
+        <div className="flex min-h-0 flex-1 flex-col border-t border-neutral-200/90 shadow-[0_1px_2px_-1px_rgba(0,0,0,0.06)]">
+          <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+            <div className="w-full max-w-sm">
+              <SettingsView />
+            </div>
           </div>
         </div>
       ) : (
-        <div className="flex min-h-0 min-w-0 flex-1">
+        <div className="flex min-h-0 min-w-0 flex-1 border-t border-neutral-200/90 shadow-[0_1px_2px_-1px_rgba(0,0,0,0.06)]">
           <LeftPanel />
           <RightPanel />
         </div>

@@ -69,7 +69,7 @@ export function TranslationLanguageBar() {
 
   return (
     <div
-      className="flex shrink-0 flex-col gap-1 border-b border-neutral-200 px-2 py-2"
+      className="flex shrink-0 flex-col gap-1 px-2 py-2"
       role="group"
       aria-label={"\u7ffb\u8a33\u306e\u8a00\u8a9e"}
       aria-busy={saving}

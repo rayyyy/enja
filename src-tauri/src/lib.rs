@@ -1,6 +1,8 @@
 mod gemini;
 mod keyboard;
 mod settings;
+#[cfg(target_os = "macos")]
+mod macos_show_on_activate;
 
 use gemini::{stream_translate, TranslateEvent};
 use settings::{AppSettings, load_settings, save_settings_to_disk};
@@ -80,6 +82,9 @@ pub fn run() {
                 eprintln!("[enja] launch at login: {e}");
             }
             keyboard::spawn_listener(trigger_tx, threshold);
+
+            #[cfg(target_os = "macos")]
+            macos_show_on_activate::init(app.handle().clone());
 
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
