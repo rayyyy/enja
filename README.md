@@ -8,11 +8,11 @@
 
 コピーしてから **もう一度 Command+C**（デフォルト **400ms 以内**の連打）。クリップボードの内容が **Google Gemini API** へ送られ、ストリーミング翻訳が表示されます。
 
+![Enja デモ（Cmd+C× 2 で翻訳）](docs/demo.gif)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge)](LICENSE)
 [![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=for-the-badge&logo=tauri)](https://tauri.app/)
 [![Platform](https://img.shields.io/badge/macOS-only-000000?style=for-the-badge&logo=apple)](https://github.com/rayyyy/enja)
-
-**[デモ動画を見る → `docs/video.mp4`](docs/video.mp4)**
 
 </div>
 
@@ -133,7 +133,7 @@ macOS でアプリを `/Applications` に置いて常用する場合、コード
 2. テキストを選択して **Cmd+C** でコピーし、すぐにもう一度 **Cmd+C** を押すとオーバーレイが開き、翻訳がストリーミング表示される。**これだけで OK — Command+C を 2 回押すだけで、すぐに翻訳が始まります。**
 3. **Esc** またはオーバーレイ外クリックでウィンドウを閉じる（プロセスは常駐し、ウィンドウは `hide` のみ）。
 
-操作のイメージは **[デモ動画 `docs/video.mp4`](docs/video.mp4)** もあわせてご覧ください。
+操作のイメージは README 冒頭の GIF をご覧ください。
 
 ---
 
