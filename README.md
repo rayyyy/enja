@@ -1,8 +1,26 @@
-# Enja
+<div align="center">
 
-**Enja** is a macOS desktop app (Tauri 2) that listens for **two quick Cmd+C presses** (default within 400 ms), reads the clipboard, and streams a **Japanese translation** from the Google **Gemini API** into an overlay. Settings (including your API key) stay on your machine; translation requests go to Google’s servers.
+# ✨ Enja
 
-日本語: macOS で **Cmd+C を 2 回連打**（デフォルト 400ms 以内）するとクリップボードのテキストを **Gemini API** で日本語に翻訳し、オーバーレイにストリーミング表示する Tauri 2 アプリです。
+**選んだテキストをコピーした直後にもう一度 Cmd+C — それだけで、日本語翻訳がオーバーレイに流れ込みます。**
+
+### ⌘ Cmd+C × 2 で、すぐに翻訳
+
+コピーしてから **もう一度 Command+C**（デフォルト **400ms 以内**の連打）。クリップボードの内容が **Google Gemini API** へ送られ、ストリーミング翻訳が表示されます。
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge)](LICENSE)
+[![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=for-the-badge&logo=tauri)](https://tauri.app/)
+[![Platform](https://img.shields.io/badge/macOS-only-000000?style=for-the-badge&logo=apple)](https://github.com/rayyyy/enja)
+
+**[デモ動画を見る → `docs/video.mp4`](docs/video.mp4)**
+
+</div>
+
+---
+
+**English:** **Enja** is a macOS desktop app (Tauri 2) that listens for **two quick Cmd+C presses** (default within 400 ms), reads the clipboard, and streams a **Japanese translation** from the Google **Gemini API** into an overlay. Settings (including your API key) stay on your machine; translation requests go to Google’s servers.
+
+---
 
 |                   |                                                                                                                                           |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
@@ -112,8 +130,10 @@ macOS でアプリを `/Applications` に置いて常用する場合、コード
 ## 使い方（アプリ）
 
 1. **設定** で Gemini API キーを保存する。
-2. テキストを選択して **Cmd+C** でコピーし、すぐにもう一度 **Cmd+C** を押すとオーバーレイが開き、翻訳がストリーミング表示される。
+2. テキストを選択して **Cmd+C** でコピーし、すぐにもう一度 **Cmd+C** を押すとオーバーレイが開き、翻訳がストリーミング表示される。**これだけで OK — Command+C を 2 回押すだけで、すぐに翻訳が始まります。**
 3. **Esc** またはオーバーレイ外クリックでウィンドウを閉じる（プロセスは常駐し、ウィンドウは `hide` のみ）。
+
+操作のイメージは **[デモ動画 `docs/video.mp4`](docs/video.mp4)** もあわせてご覧ください。
 
 ---
 
