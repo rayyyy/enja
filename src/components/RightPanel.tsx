@@ -73,7 +73,7 @@ export function RightPanel() {
 
   if (!showContent) {
     return (
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col bg-white">
         <EmptyState />
       </div>
     );
@@ -83,7 +83,7 @@ export function RightPanel() {
   const targetLabel = languageLabelForUi(targetLanguage);
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col">
+    <div className="flex min-w-0 flex-1 flex-col bg-white">
       <div className="shrink-0 border-b border-neutral-200 px-4 pt-3 pb-3">
         <div className="mb-1.5 flex items-center justify-between gap-2">
           <span className="text-[11px] font-medium tracking-wide text-neutral-400">
@@ -93,10 +93,7 @@ export function RightPanel() {
             <CopyButton text={inputText} />
           </div>
         </div>
-        <div
-          data-tauri-no-drag-region
-          className="max-h-[100px] overflow-y-auto"
-        >
+        <div className="max-h-[100px] overflow-y-auto">
           <p className="whitespace-pre-wrap wrap-break-word text-[13px] leading-relaxed text-neutral-700">
             {inputText || "（テキストなし）"}
           </p>
@@ -120,10 +117,7 @@ export function RightPanel() {
             {isTranslating ? "翻訳中…" : "再翻訳"}
           </button>
         </div>
-        <div
-          data-tauri-no-drag-region
-          className="min-h-0 flex-1 overflow-y-auto"
-        >
+        <div className="min-h-0 flex-1 overflow-y-auto">
           {error ? (
             <p className="text-sm text-red-500">{error}</p>
           ) : (

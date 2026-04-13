@@ -13,21 +13,8 @@ body,
 }
 
 body {
-  @apply bg-transparent antialiased text-neutral-800;
+  @apply bg-neutral-50 antialiased text-neutral-800;
   font-family: var(--font-sans);
-}
-
-[data-tauri-drag-region] {
-  -webkit-app-region: drag;
-}
-
-[data-tauri-no-drag-region],
-button,
-input,
-textarea,
-select,
-a {
-  -webkit-app-region: no-drag;
 }
 
 /* Scrollbar styling */
