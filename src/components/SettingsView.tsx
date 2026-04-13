@@ -1,5 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAppStore } from "../stores/useAppStore";
 import { getSettings, saveSettings } from "../lib/commands";
 
@@ -8,6 +8,11 @@ export function SettingsView() {
     useAppStore();
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [launchAtLogin, setLaunchAtLogin] = useState(false);
+
+  useEffect(() => {
+    void getSettings().then((s) => setLaunchAtLogin(s.launchAtLogin));
+  }, []);
 
   async function handleSave() {
     setSaving(true);
@@ -17,6 +22,7 @@ export function SettingsView() {
       await saveSettings({
         ...current,
         geminiApiKey: apiKeyDraft.trim(),
+        launchAtLogin,
       });
       const s = await getSettings();
       hydrateFromSettings(
@@ -67,6 +73,33 @@ export function SettingsView() {
           onChange={(e) => setApiKeyDraft(e.target.value)}
           placeholder="AIza..."
         />
+      </label>
+
+      <label className="flex cursor-pointer items-center gap-2 text-sm text-neutral-700">
+        <input
+          type="checkbox"
+          className="size-4 rounded border-neutral-300 text-blue-500 focus:ring-blue-500/30"
+          checked={launchAtLogin}
+          onChange={(e) => {
+            const checked = e.target.checked;
+            setLaunchAtLogin(checked);
+            void (async () => {
+              try {
+                const cur = await getSettings();
+                await saveSettings({ ...cur, launchAtLogin: checked });
+                setMsg(
+                  checked
+                    ? "ログイン時に自動で起動するようにしました。"
+                    : "ログイン時の自動起動をオフにしました。",
+                );
+              } catch (err) {
+                setLaunchAtLogin(!checked);
+                setMsg(String(err));
+              }
+            })();
+          }}
+        />
+        <span>Mac ログイン時に自動起動する</span>
       </label>
 
       {msg ? (

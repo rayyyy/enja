@@ -10,4 +10,5 @@ export type AppSettings = {
   doubleTapThresholdMs: number;
   sourceLanguage: UiLanguage;
   targetLanguage: UiLanguage;
+  launchAtLogin: boolean;
 };

@@ -30,6 +30,8 @@ pub struct AppSettings {
     pub source_language: UiLanguage,
     #[serde(default = "default_target_language")]
     pub target_language: UiLanguage,
+    #[serde(default)]
+    pub launch_at_login: bool,
 }
 
 fn default_threshold() -> u64 {
@@ -56,6 +58,7 @@ impl Default for AppSettings {
             double_tap_threshold_ms: default_threshold(),
             source_language: UiLanguage::En,
             target_language: default_target_language(),
+            launch_at_login: false,
         }
     }
 }

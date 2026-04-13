@@ -1,7 +1,7 @@
 import { useAppStore } from "../stores/useAppStore";
 import type { UiLanguage } from "../types";
 import { otherUiLanguage } from "./uiLanguage";
-import { saveSettings } from "./commands";
+import { getSettings, saveSettings } from "./commands";
 
 function normalizePair(source: UiLanguage, target: UiLanguage) {
   if (source === target) {
@@ -32,7 +32,9 @@ export async function persistTranslationLanguages(
   });
 
   try {
+    const current = await getSettings();
     await saveSettings({
+      ...current,
       geminiApiKey: snap.apiKeyDraft.trim(),
       doubleTapThresholdMs: Math.min(
         2000,

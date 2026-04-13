@@ -6,11 +6,20 @@ use gemini::{stream_translate, TranslateEvent};
 use settings::{AppSettings, load_settings, save_settings_to_disk};
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager, Runtime};
+use tauri_plugin_autostart::ManagerExt;
 
 fn show_main_window<R: Runtime>(app: &impl Manager<R>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.set_focus();
+    }
+}
+
+fn apply_launch_at_login(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    if enabled {
+        app.autolaunch().enable().map_err(|e| e.to_string())
+    } else {
+        app.autolaunch().disable().map_err(|e| e.to_string())
     }
 }
 
@@ -21,7 +30,9 @@ fn get_settings(app: tauri::AppHandle) -> Result<AppSettings, String> {
 
 #[tauri::command]
 fn save_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(), String> {
-    save_settings_to_disk(&app, &settings)
+    save_settings_to_disk(&app, &settings)?;
+    apply_launch_at_login(&app, settings.launch_at_login)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -60,10 +71,14 @@ pub fn run() {
     let (trigger_tx, trigger_rx) = std::sync::mpsc::channel::<()>();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
             let settings = load_settings(&app.handle()).unwrap_or_default();
             let threshold = settings.double_tap_threshold_ms;
+            if let Err(e) = apply_launch_at_login(&app.handle(), settings.launch_at_login) {
+                eprintln!("[enja] launch at login: {e}");
+            }
             keyboard::spawn_listener(trigger_tx, threshold);
 
             let app_handle = app.handle().clone();
