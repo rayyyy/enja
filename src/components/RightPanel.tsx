@@ -73,7 +73,7 @@ export function RightPanel() {
 
   if (!showContent) {
     return (
-      <div className="flex min-w-0 flex-1 flex-col bg-white">
+      <div className="flex min-w-0 flex-1 flex-col border-t border-neutral-200/90 bg-white shadow-[0_1px_2px_-1px_rgba(0,0,0,0.06)]">
         <EmptyState />
       </div>
     );
@@ -83,7 +83,7 @@ export function RightPanel() {
   const targetLabel = languageLabelForUi(targetLanguage);
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col bg-white">
+    <div className="flex min-w-0 flex-1 flex-col border-t border-neutral-200/90 bg-white shadow-[0_1px_2px_-1px_rgba(0,0,0,0.06)]">
       <div className="shrink-0 border-b border-neutral-200 px-4 pt-3 pb-3">
         <div className="mb-1.5 flex items-center justify-between gap-2">
           <span className="text-[11px] font-medium tracking-wide text-neutral-400">
