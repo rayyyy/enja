@@ -1,6 +1,7 @@
 import { useRef, useEffect, useMemo } from "react";
 import { useAppStore } from "../stores/useAppStore";
 import { startTranslation } from "../lib/startTranslation";
+import { TranslationLanguageBar } from "./TranslationLanguageBar";
 
 export function LeftPanel() {
   const inputText = useAppStore((s) => s.inputText);
@@ -8,9 +9,6 @@ export function LeftPanel() {
   const isTranslating = useAppStore((s) => s.isTranslating);
   const sourceLanguage = useAppStore((s) => s.sourceLanguage);
   const setView = useAppStore((s) => s.setView);
-  const syncLanguageDraftsFromSaved = useAppStore(
-    (s) => s.syncLanguageDraftsFromSaved,
-  );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const placeholder = useMemo(
@@ -35,15 +33,15 @@ export function LeftPanel() {
   }
 
   function openSettings() {
-    syncLanguageDraftsFromSaved();
     setView("settings");
   }
 
   return (
     <div className="flex h-full w-[260px] shrink-0 flex-col border-r border-neutral-200 bg-neutral-50/80">
+      <TranslationLanguageBar />
       <textarea
         ref={textareaRef}
-        className="flex-1 resize-none bg-transparent px-4 pt-4 pb-2 text-[14px] leading-relaxed text-neutral-800 placeholder:text-neutral-400 focus:outline-none"
+        className="flex-1 resize-none bg-transparent px-4 pt-3 pb-2 text-[14px] leading-relaxed text-neutral-800 placeholder:text-neutral-400 focus:outline-none"
         placeholder={placeholder}
         value={inputText}
         onChange={(e) => setInputText(e.target.value)}
