@@ -5,7 +5,14 @@ mod settings;
 use gemini::{stream_translate, TranslateEvent};
 use settings::{AppSettings, load_settings, save_settings_to_disk};
 use tauri::ipc::Channel;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, Runtime};
+
+fn show_main_window<R: Runtime>(app: &impl Manager<R>) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
 
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> Result<AppSettings, String> {
@@ -66,21 +73,14 @@ pub fn run() {
                     let work = app_handle.clone();
                     let _ = runner.run_on_main_thread(move || {
                         let text = read_clipboard_text();
-                        if let Some(w) = work.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
+                        show_main_window(&work);
                         let _ = work.emit("enja-trigger", text);
                     });
                 }
             });
 
-            if settings.gemini_api_key.trim().is_empty() {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
-            }
+            // アプリ起動時は常にメインウィンドウを表示（以前は API キーがあると非表示のままだった）
+            show_main_window(app.handle());
 
             Ok(())
         })
@@ -90,8 +90,15 @@ pub fn run() {
             translate,
             hide_window
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                // Dock アイコンや「ウィンドウを開く」相当の操作で前面に出す
+                show_main_window(app_handle);
+            }
+        });
 }
 
 fn read_clipboard_text() -> String {
