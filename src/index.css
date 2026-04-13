@@ -17,6 +17,19 @@ body {
   font-family: var(--font-sans);
 }
 
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
+
+[data-tauri-no-drag-region],
+button,
+input,
+textarea,
+select,
+a {
+  -webkit-app-region: no-drag;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 4px;

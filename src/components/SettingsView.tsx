@@ -40,7 +40,7 @@ export function SettingsView() {
   }
 
   return (
-    <div className="flex flex-col gap-5">
+    <div data-tauri-no-drag-region className="flex flex-col gap-5">
       <header className="flex flex-col items-center gap-2 text-center">
         <h1 className="font-play text-[2.25rem] leading-none font-bold tracking-[0.02em] sm:text-[2.5rem]">
           <span className="bg-linear-to-br from-neutral-800 via-neutral-700 to-blue-600 bg-clip-text text-transparent">

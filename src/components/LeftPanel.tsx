@@ -40,6 +40,7 @@ export function LeftPanel() {
     <div className="flex h-full w-[260px] shrink-0 flex-col border-r border-neutral-200 bg-neutral-50/80">
       <TranslationLanguageBar />
       <textarea
+        data-tauri-no-drag-region
         ref={textareaRef}
         className="flex-1 resize-none bg-transparent px-4 pt-3 pb-2 text-[14px] leading-relaxed text-neutral-800 placeholder:text-neutral-400 focus:outline-none"
         placeholder={placeholder}
@@ -48,7 +49,10 @@ export function LeftPanel() {
         onKeyDown={handleKeyDown}
         spellCheck={false}
       />
-      <div className="flex items-start justify-between gap-2 px-4 pb-3">
+      <div
+        data-tauri-no-drag-region
+        className="flex items-start justify-between gap-2 px-4 pb-3"
+      >
         <p className="min-w-0 flex-1 text-[11px] leading-relaxed text-neutral-400">
           Enter で翻訳 / Shift+Enter で改行
         </p>

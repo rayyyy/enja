@@ -93,9 +93,14 @@ export function RightPanel() {
             <CopyButton text={inputText} />
           </div>
         </div>
-        <p className="max-h-[100px] overflow-y-auto whitespace-pre-wrap wrap-break-word text-[13px] leading-relaxed text-neutral-700">
-          {inputText || "（テキストなし）"}
-        </p>
+        <div
+          data-tauri-no-drag-region
+          className="max-h-[100px] overflow-y-auto"
+        >
+          <p className="whitespace-pre-wrap wrap-break-word text-[13px] leading-relaxed text-neutral-700">
+            {inputText || "（テキストなし）"}
+          </p>
+        </div>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col px-4 pt-3 pb-3">
@@ -115,7 +120,10 @@ export function RightPanel() {
             {isTranslating ? "翻訳中…" : "再翻訳"}
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div
+          data-tauri-no-drag-region
+          className="min-h-0 flex-1 overflow-y-auto"
+        >
           {error ? (
             <p className="text-sm text-red-500">{error}</p>
           ) : (
