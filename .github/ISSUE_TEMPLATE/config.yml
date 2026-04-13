@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security (vulnerabilities)
+    url: https://github.com/rayyyy/enja/security
+    about: Do not paste API keys or secrets in issues; use Security advisories when possible.

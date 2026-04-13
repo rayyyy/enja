@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a problem (do not include API keys or clipboard contents)
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste secrets or personal clipboard text. See [SECURITY.md](../../SECURITY.md).
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One short sentence.
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: e.g. 15.x
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Extra context (build, logs)
+      description: Redact any sensitive data from logs.
