@@ -30,7 +30,14 @@ async fn translate(
         });
         return Ok(());
     }
-    stream_translate(&settings.gemini_api_key, &text, channel).await
+    stream_translate(
+        &settings.gemini_api_key,
+        &text,
+        channel,
+        settings.source_language,
+        settings.target_language,
+    )
+    .await
 }
 
 #[tauri::command]

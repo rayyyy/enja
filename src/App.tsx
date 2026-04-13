@@ -13,7 +13,12 @@ function App() {
 
   useEffect(() => {
     void getSettings().then((s) => {
-      hydrateFromSettings(s.geminiApiKey, s.doubleTapThresholdMs);
+      hydrateFromSettings(
+        s.geminiApiKey,
+        s.doubleTapThresholdMs,
+        s.sourceLanguage,
+        s.targetLanguage,
+      );
       if (!s.geminiApiKey?.trim()) {
         useAppStore.getState().setView("settings");
       }

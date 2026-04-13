@@ -1,4 +1,6 @@
 import { create } from "zustand";
+import type { UiLanguage } from "../types";
+import { otherUiLanguage } from "../lib/uiLanguage";
 
 type View = "translation" | "settings";
 
@@ -10,6 +12,10 @@ interface AppState {
   error: string | null;
   apiKeyDraft: string;
   doubleTapMsDraft: number;
+  sourceLanguage: UiLanguage;
+  targetLanguage: UiLanguage;
+  sourceLanguageDraft: UiLanguage;
+  targetLanguageDraft: UiLanguage;
   hasTranslated: boolean;
 
   setView: (v: View) => void;
@@ -20,7 +26,15 @@ interface AppState {
   setError: (e: string | null) => void;
   setApiKeyDraft: (k: string) => void;
   setDoubleTapMsDraft: (n: number) => void;
-  hydrateFromSettings: (apiKey: string, doubleTapMs: number) => void;
+  setSourceLanguageDraft: (l: UiLanguage) => void;
+  setTargetLanguageDraft: (l: UiLanguage) => void;
+  syncLanguageDraftsFromSaved: () => void;
+  hydrateFromSettings: (
+    apiKey: string,
+    doubleTapMs: number,
+    source: UiLanguage,
+    target: UiLanguage,
+  ) => void;
   setHasTranslated: (v: boolean) => void;
 }
 
@@ -32,6 +46,10 @@ export const useAppStore = create<AppState>((set) => ({
   error: null,
   apiKeyDraft: "",
   doubleTapMsDraft: 400,
+  sourceLanguage: "en",
+  targetLanguage: "ja",
+  sourceLanguageDraft: "en",
+  targetLanguageDraft: "ja",
   hasTranslated: false,
 
   setView: (v) => set({ view: v }),
@@ -43,7 +61,29 @@ export const useAppStore = create<AppState>((set) => ({
   setError: (e) => set({ error: e }),
   setApiKeyDraft: (k) => set({ apiKeyDraft: k }),
   setDoubleTapMsDraft: (n) => set({ doubleTapMsDraft: n }),
-  hydrateFromSettings: (apiKey, doubleTapMs) =>
-    set({ apiKeyDraft: apiKey, doubleTapMsDraft: doubleTapMs }),
+  setSourceLanguageDraft: (l) =>
+    set({
+      sourceLanguageDraft: l,
+      targetLanguageDraft: otherUiLanguage(l),
+    }),
+  setTargetLanguageDraft: (l) =>
+    set({
+      targetLanguageDraft: l,
+      sourceLanguageDraft: otherUiLanguage(l),
+    }),
+  syncLanguageDraftsFromSaved: () =>
+    set((s) => ({
+      sourceLanguageDraft: s.sourceLanguage,
+      targetLanguageDraft: s.targetLanguage,
+    })),
+  hydrateFromSettings: (apiKey, doubleTapMs, source, target) =>
+    set({
+      apiKeyDraft: apiKey,
+      doubleTapMsDraft: doubleTapMs,
+      sourceLanguage: source,
+      targetLanguage: target,
+      sourceLanguageDraft: source,
+      targetLanguageDraft: target,
+    }),
   setHasTranslated: (v) => set({ hasTranslated: v }),
 }));

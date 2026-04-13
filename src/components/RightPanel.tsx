@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useAppStore } from "../stores/useAppStore";
 import { startTranslation } from "../lib/startTranslation";
 import { StreamingMarkdown } from "./StreamingMarkdown";
+import { languageLabelForUi } from "../lib/uiLanguage";
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -65,6 +66,8 @@ export function RightPanel() {
   const isTranslating = useAppStore((s) => s.isTranslating);
   const error = useAppStore((s) => s.error);
   const hasTranslated = useAppStore((s) => s.hasTranslated);
+  const sourceLanguage = useAppStore((s) => s.sourceLanguage);
+  const targetLanguage = useAppStore((s) => s.targetLanguage);
 
   const showContent = hasTranslated || isTranslating || outputText || error;
 
@@ -76,13 +79,15 @@ export function RightPanel() {
     );
   }
 
+  const sourceLabel = languageLabelForUi(sourceLanguage);
+  const targetLabel = languageLabelForUi(targetLanguage);
+
   return (
     <div className="flex min-w-0 flex-1 flex-col">
-      {/* 右上: 原文表示 */}
       <div className="shrink-0 border-b border-neutral-200 px-4 pt-3 pb-3">
-        <div className="mb-1.5 flex items-center justify-between">
+        <div className="mb-1.5 flex items-center justify-between gap-2">
           <span className="text-[11px] font-medium tracking-wide text-neutral-400">
-            日本語へ翻訳
+            翻訳前（{sourceLabel}）
           </span>
           <div className="flex items-center gap-1">
             <CopyButton text={inputText} />
@@ -93,9 +98,11 @@ export function RightPanel() {
         </p>
       </div>
 
-      {/* 右下: 翻訳結果 + 補足 */}
       <div className="flex min-h-0 flex-1 flex-col px-4 pt-3 pb-3">
         <div className="mb-1.5 flex items-center justify-end gap-2">
+          <span className="mr-auto text-[11px] font-medium tracking-wide text-neutral-400">
+            翻訳後（{targetLabel}）
+          </span>
           {outputText && !isTranslating && (
             <CopyButton text={outputText} />
           )}

@@ -84,7 +84,17 @@ bun run tauri build
 mise run build
 ```
 
-成果物は `src-tauri/target/release/` 付近に生成されます（Tauri の表示に従ってください）。
+成果物は `src-tauri/target/release/` 付近に生成されます（Tauri の表示に従ってください。）
+
+### コード署名（任意）
+
+macOS でアプリを `/Applications` に置いて常用する場合、コード署名しておくとアップグレード時にアクセシビリティ・入力監視の再許可が不要になります。
+
+1. [`.env.example`](.env.example) を `.env` にコピーする
+2. `security find-identity -v -p codesigning` で自分の証明書を確認する
+3. `.env` の `APPLE_SIGNING_IDENTITY` に証明書名を設定する（`mise run build` では `.env` が自動で読み込まれます）
+
+署名には Apple Developer Program の登録が必要です。未登録でもビルド・開発は問題なくできますが、アプリを上書きインストールするたびに macOS の権限設定をやり直す必要がある場合があります。
 
 ---
 
@@ -92,6 +102,9 @@ mise run build
 
 - **アクセシビリティ**: グローバルな Cmd+C 検出に必要です。  
   **システム設定 → プライバシーとセキュリティ → アクセシビリティ** で、開発中は **ターミナル** や **Cursor**、配布版では **Enja** を許可してください。
+- **入力監視**: 環境によっては **システム設定 → プライバシーとセキュリティ → 入力監視** にも Enja が表示されることがあります。許可がオフの場合はオンにしてください。
+- **アップグレード時（署名なしビルド）**: `/Applications` にアプリを上書きすると、macOS が別アプリとみなし、アクセシビリティや入力監視の許可が無効になることがあります。**プライバシーとセキュリティ** の一覧から **Enja** を削除し、アプリを再度起動して許可し直してください。
+- **アップグレード時（署名ありビルド）**: 上記の `.env` で `APPLE_SIGNING_IDENTITY` を設定してビルドした場合、同じ Bundle ID と安定した署名のまま置き換えできるため、通常は権限の再設定は不要です。
 - 初回に説明文を出すには **Info.plist の `NSAccessibilityUsageDescription`** が必要な場合があります（配布ビルド時に検討）。
 
 ---
@@ -121,6 +134,7 @@ mise run build
 | `cargo` / `rustc` が見つからない                         | `mise install` 後にシェルを開き直す、`eval "$(mise activate)"` を入れる          |
 | `tauri` が見つからない                                   | プロジェクト直下で `bun install`（`@tauri-apps/cli` が devDependency）           |
 | Cmd+C 連打で反応しない                                   | アクセシビリティでホストアプリ（ターミナル等）を許可したか                       |
+| アップグレード後に Cmd+C が効かない                      | **アクセシビリティ** と **入力監視** から Enja を削除 → 再起動して再許可。署名ビルドなら再発しにくい |
 | ビルドエラー（リンカ）                                   | Xcode CLT のインストール、`rustup target list` で Apple ターゲット               |
 | `rustc x.x.x is not supported by the following packages` | [mise.toml](mise.toml) の Rust を上げ、`mise install` をやり直す（シェル再起動） |
 
