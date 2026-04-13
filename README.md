@@ -4,12 +4,12 @@
 
 日本語: macOS で **Cmd+C を 2 回連打**（デフォルト 400ms 以内）するとクリップボードのテキストを **Gemini API** で日本語に翻訳し、オーバーレイにストリーミング表示する Tauri 2 アプリです。
 
-| | |
-|--|--|
+|                   |                                                                                                                                           |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | **Default model** | `gemini-3.1-flash-lite-preview`（[`src-tauri/src/gemini.rs`](src-tauri/src/gemini.rs) 内の定数。Google の提供状況により変更の可能性あり） |
-| **License** | [MIT](LICENSE) |
-| **Contributing** | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| **Security** | [SECURITY.md](SECURITY.md) · [Code of Conduct](CODE_OF_CONDUCT.md) |
+| **License**       | [MIT](LICENSE)                                                                                                                            |
+| **Contributing**  | [CONTRIBUTING.md](CONTRIBUTING.md)                                                                                                        |
+| **Security**      | [SECURITY.md](SECURITY.md) · [Code of Conduct](CODE_OF_CONDUCT.md)                                                                        |
 
 ## プライバシーとデータの取り扱い
 
@@ -19,11 +19,11 @@
 
 ## 必要なもの
 
-| もの | 用途 |
-|------|------|
-| [mise](https://mise.jdx.dev/)（推奨） | Bun / Rust のバージョン管理 |
-| [Gemini API キー](https://aistudio.google.com/apikey) | 翻訳 API |
-| Xcode Command Line Tools（macOS） | リンカ・SDK（未導入なら `xcode-select --install`） |
+| もの                                                  | 用途                                               |
+| ----------------------------------------------------- | -------------------------------------------------- |
+| [mise](https://mise.jdx.dev/)（推奨）                 | Bun / Rust のバージョン管理                        |
+| [Gemini API キー](https://aistudio.google.com/apikey) | 翻訳 API                                           |
+| Xcode Command Line Tools（macOS）                     | リンカ・SDK（未導入なら `xcode-select --install`） |
 
 このリポジトリでは **[mise.toml](mise.toml)** で **Bun** と **Rust** のバージョンを固定しています。mise を使わない場合は、同等以上のバージョンを手動で入れてください。
 
@@ -116,18 +116,12 @@ mise run build
 
 ## トラブルシューティング
 
-| 症状 | 確認 |
-|------|------|
-| `cargo` / `rustc` が見つからない | `mise install` 後にシェルを開き直す、`eval "$(mise activate)"` を入れる |
-| `tauri` が見つからない | プロジェクト直下で `bun install`（`@tauri-apps/cli` が devDependency） |
-| Cmd+C 連打で反応しない | アクセシビリティでホストアプリ（ターミナル等）を許可したか |
-| ビルドエラー（リンカ） | Xcode CLT のインストール、`rustup target list` で Apple ターゲット |
+| 症状                                                     | 確認                                                                             |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `cargo` / `rustc` が見つからない                         | `mise install` 後にシェルを開き直す、`eval "$(mise activate)"` を入れる          |
+| `tauri` が見つからない                                   | プロジェクト直下で `bun install`（`@tauri-apps/cli` が devDependency）           |
+| Cmd+C 連打で反応しない                                   | アクセシビリティでホストアプリ（ターミナル等）を許可したか                       |
+| ビルドエラー（リンカ）                                   | Xcode CLT のインストール、`rustup target list` で Apple ターゲット               |
 | `rustc x.x.x is not supported by the following packages` | [mise.toml](mise.toml) の Rust を上げ、`mise install` をやり直す（シェル再起動） |
 
 バージョンを上げるときは **mise.toml** の `[tools]` を更新してください。
-
----
-
-## リポジトリ URL について
-
-`package.json` / `Cargo.toml` の `repository` は **`https://github.com/rayyyy/enja`** を想定しています。フォークや組織移動後は、そこを実際の URL に合わせて更新してください（手順は [CONTRIBUTING.md](CONTRIBUTING.md) に記載）。
