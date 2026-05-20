@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { getSettings, hideWindow } from "./lib/commands";
+import { getProviderStatus, getSettings, hideWindow } from "./lib/commands";
 import { startTranslation } from "./lib/startTranslation";
 import { useAppStore } from "./stores/useAppStore";
 import { LeftPanel } from "./components/LeftPanel";
@@ -16,30 +16,14 @@ function App() {
   const hydrateFromSettings = useAppStore((s) => s.hydrateFromSettings);
 
   useEffect(() => {
-    void getSettings().then((s) => {
-      hydrateFromSettings(
-        s.geminiApiKey,
-        s.doubleTapThresholdMs,
-        s.sourceLanguage,
-        s.targetLanguage,
-        {
-          selectedMicrophoneId: s.selectedMicrophoneId,
-          speechProfile: s.speechProfile,
-          finalizationModel: s.finalizationModel,
-          interactionSoundsEnabled: s.interactionSoundsEnabled,
-          muteSystemAudioDuringRecording: s.muteSystemAudioDuringRecording,
-          maxRecordingSeconds: s.maxRecordingSeconds,
-          googleCloudProjectId: s.googleCloudProjectId,
-          googleCloudRegion: s.googleCloudRegion,
-          googleCloudUseAdc: s.googleCloudUseAdc,
-          voiceDictationShortcut: s.voiceDictationShortcut,
-          voiceAskShortcut: s.voiceAskShortcut,
-        },
-      );
-      if (!s.geminiApiKey?.trim()) {
-        useAppStore.getState().setView("settings");
-      }
-    });
+    void Promise.all([getSettings(), getProviderStatus().catch(() => null)]).then(
+      ([settings, providerStatus]) => {
+        hydrateFromSettings(settings);
+        if (!providerStatus?.gemini) {
+          useAppStore.getState().setView("settings");
+        }
+      },
+    );
   }, [hydrateFromSettings]);
 
   useEffect(() => {
@@ -81,11 +65,15 @@ function App() {
   return (
     <div className="flex h-full min-h-0 w-full cursor-default flex-col overflow-hidden bg-neutral-50">
       {view === "settings" || view === "dictionary" ? (
-        <div className="flex min-h-0 flex-1 flex-col border-t border-neutral-200/90 shadow-[0_1px_2px_-1px_rgba(0,0,0,0.06)]">
-          <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-            <div className={view === "dictionary" ? "w-full max-w-3xl" : "w-full max-w-6xl"}>
-              {view === "dictionary" ? <DictionaryView /> : <SettingsView />}
-            </div>
+        <div className="flex min-h-0 flex-1 flex-col bg-white">
+          <div className="flex min-h-0 flex-1 p-4 md:p-5">
+            {view === "dictionary" ? (
+              <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col">
+                <DictionaryView />
+              </div>
+            ) : (
+              <SettingsView />
+            )}
           </div>
         </div>
       ) : (

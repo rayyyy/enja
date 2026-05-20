@@ -48,14 +48,20 @@ export type PromptOverrides = {
   askWithSelectionUser: string | null;
 };
 
-export type PromptTemplates = Record<keyof PromptOverrides, string>;
+export type PromptCatalogItem = {
+  key: keyof PromptOverrides;
+  label: string;
+  rows: number;
+  required: string[];
+  defaultText: string;
+};
 
-export type AppSettings = {
-  geminiApiKey: string;
-  doubleTapThresholdMs: number;
+export type TranslationSettings = {
   sourceLanguage: UiLanguage;
   targetLanguage: UiLanguage;
-  launchAtLogin: boolean;
+};
+
+export type VoiceSettings = {
   selectedMicrophoneId: string | null;
   speechProfile: SpeechProfile;
   finalizationModel: FinalizationModel;
@@ -65,9 +71,28 @@ export type AppSettings = {
   googleCloudProjectId: string;
   googleCloudRegion: string;
   googleCloudUseAdc: boolean;
-  voiceDictationShortcut: ShortcutBinding;
-  voiceAskShortcut: ShortcutBinding;
-  promptOverrides: PromptOverrides;
+};
+
+export type ShortcutSettings = {
+  voiceDictation: ShortcutBinding;
+  voiceAsk: ShortcutBinding;
+};
+
+export type PromptSettings = {
+  overrides: PromptOverrides;
+};
+
+export type AppBehaviorSettings = {
+  doubleTapThresholdMs: number;
+  launchAtLogin: boolean;
+};
+
+export type AppSettings = {
+  translation: TranslationSettings;
+  voice: VoiceSettings;
+  shortcuts: ShortcutSettings;
+  prompts: PromptSettings;
+  app: AppBehaviorSettings;
 };
 
 export type AudioInputDevice = {

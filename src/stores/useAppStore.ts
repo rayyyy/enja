@@ -1,13 +1,34 @@
 import { create } from "zustand";
-import type {
-  FinalizationModel,
-  ShortcutBinding,
-  SpeechProfile,
-  UiLanguage,
-} from "../types";
+import type { AppSettings, ShortcutBinding, UiLanguage } from "../types";
 import { otherUiLanguage } from "../lib/uiLanguage";
 
 type View = "translation" | "settings" | "dictionary";
+
+const defaultVoiceDictationShortcut: ShortcutBinding = {
+  keyCode: null,
+  key: "fn",
+  label: "Fn",
+  modifiers: {
+    command: false,
+    option: false,
+    control: false,
+    shift: false,
+    function: false,
+  },
+};
+
+const defaultVoiceAskShortcut: ShortcutBinding = {
+  keyCode: 49,
+  key: "space",
+  label: "Fn Space",
+  modifiers: {
+    command: false,
+    option: false,
+    control: false,
+    shift: false,
+    function: true,
+  },
+};
 
 interface AppState {
   view: View;
@@ -15,21 +36,10 @@ interface AppState {
   outputText: string;
   isTranslating: boolean;
   error: string | null;
-  apiKeyDraft: string;
-  doubleTapMsDraft: number;
   sourceLanguage: UiLanguage;
   targetLanguage: UiLanguage;
   sourceLanguageDraft: UiLanguage;
   targetLanguageDraft: UiLanguage;
-  selectedMicrophoneId: string | null;
-  speechProfile: SpeechProfile;
-  finalizationModel: FinalizationModel;
-  interactionSoundsEnabled: boolean;
-  muteSystemAudioDuringRecording: boolean;
-  maxRecordingSeconds: number;
-  googleCloudProjectId: string;
-  googleCloudRegion: string;
-  googleCloudUseAdc: boolean;
   voiceDictationShortcut: ShortcutBinding;
   voiceAskShortcut: ShortcutBinding;
   hasTranslated: boolean;
@@ -40,30 +50,10 @@ interface AppState {
   resetTranslation: () => void;
   setTranslating: (v: boolean) => void;
   setError: (e: string | null) => void;
-  setApiKeyDraft: (k: string) => void;
-  setDoubleTapMsDraft: (n: number) => void;
   setSourceLanguageDraft: (l: UiLanguage) => void;
   setTargetLanguageDraft: (l: UiLanguage) => void;
   syncLanguageDraftsFromSaved: () => void;
-  hydrateFromSettings: (
-    apiKey: string,
-    doubleTapMs: number,
-    source: UiLanguage,
-    target: UiLanguage,
-    voice?: {
-      selectedMicrophoneId: string | null;
-      speechProfile: SpeechProfile;
-      finalizationModel: FinalizationModel;
-      interactionSoundsEnabled: boolean;
-      muteSystemAudioDuringRecording: boolean;
-      maxRecordingSeconds: number;
-      googleCloudProjectId: string;
-      googleCloudRegion: string;
-      googleCloudUseAdc: boolean;
-      voiceDictationShortcut: ShortcutBinding;
-      voiceAskShortcut: ShortcutBinding;
-    },
-  ) => void;
+  hydrateFromSettings: (settings: AppSettings) => void;
   setHasTranslated: (v: boolean) => void;
 }
 
@@ -73,45 +63,12 @@ export const useAppStore = create<AppState>((set) => ({
   outputText: "",
   isTranslating: false,
   error: null,
-  apiKeyDraft: "",
-  doubleTapMsDraft: 400,
   sourceLanguage: "en",
   targetLanguage: "ja",
   sourceLanguageDraft: "en",
   targetLanguageDraft: "ja",
-  selectedMicrophoneId: null,
-  speechProfile: "googleChirp3",
-  finalizationModel: "gemini35Flash",
-  interactionSoundsEnabled: true,
-  muteSystemAudioDuringRecording: true,
-  maxRecordingSeconds: 300,
-  googleCloudProjectId: "",
-  googleCloudRegion: "asia-northeast1",
-  googleCloudUseAdc: true,
-  voiceDictationShortcut: {
-    keyCode: null,
-    key: "fn",
-    label: "Fn",
-    modifiers: {
-      command: false,
-      option: false,
-      control: false,
-      shift: false,
-      function: false,
-    },
-  },
-  voiceAskShortcut: {
-    keyCode: 49,
-    key: "space",
-    label: "Fn Space",
-    modifiers: {
-      command: false,
-      option: false,
-      control: false,
-      shift: false,
-      function: true,
-    },
-  },
+  voiceDictationShortcut: defaultVoiceDictationShortcut,
+  voiceAskShortcut: defaultVoiceAskShortcut,
   hasTranslated: false,
 
   setView: (v) => set({ view: v }),
@@ -121,8 +78,6 @@ export const useAppStore = create<AppState>((set) => ({
     set({ outputText: "", error: null, isTranslating: false }),
   setTranslating: (v) => set({ isTranslating: v }),
   setError: (e) => set({ error: e }),
-  setApiKeyDraft: (k) => set({ apiKeyDraft: k }),
-  setDoubleTapMsDraft: (n) => set({ doubleTapMsDraft: n }),
   setSourceLanguageDraft: (l) =>
     set({
       sourceLanguageDraft: l,
@@ -138,15 +93,14 @@ export const useAppStore = create<AppState>((set) => ({
       sourceLanguageDraft: s.sourceLanguage,
       targetLanguageDraft: s.targetLanguage,
     })),
-  hydrateFromSettings: (apiKey, doubleTapMs, source, target, voice) =>
+  hydrateFromSettings: (settings) =>
     set({
-      apiKeyDraft: apiKey,
-      doubleTapMsDraft: doubleTapMs,
-      sourceLanguage: source,
-      targetLanguage: target,
-      sourceLanguageDraft: source,
-      targetLanguageDraft: target,
-      ...(voice ?? {}),
+      sourceLanguage: settings.translation.sourceLanguage,
+      targetLanguage: settings.translation.targetLanguage,
+      sourceLanguageDraft: settings.translation.sourceLanguage,
+      targetLanguageDraft: settings.translation.targetLanguage,
+      voiceDictationShortcut: settings.shortcuts.voiceDictation,
+      voiceAskShortcut: settings.shortcuts.voiceAsk,
     }),
   setHasTranslated: (v) => set({ hasTranslated: v }),
 }));

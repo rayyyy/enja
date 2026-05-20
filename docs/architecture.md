@@ -38,10 +38,11 @@
 
 フロントから Gemini URL へ **直接 fetch しない**。API キーは Rust 側の設定読み込み結果のみで使う。
 
-## 設定の保存
+## 設定とシークレットの保存
 
 - `settings.json` を Tauri の **アプリ設定ディレクトリ**（`app.path().app_config_dir()`）に保存。
-- 内容は `AppSettings`（`gemini_api_key`、`double_tap_threshold_ms` など）。実装は `src-tauri/src/settings.rs`。
+- 内容は `AppSettings` のネスト構造（`translation`、`voice`、`shortcuts`、`prompts`、`app`）。実装は `src-tauri/src/settings.rs`。
+- Gemini / OpenAI / Deepgram / Google Service Account などのシークレットは `src-tauri/src/secrets.rs` 経由で macOS Keychain に保存し、`settings.json` には入れない。
 
 ## UI・ウィンドウ
 

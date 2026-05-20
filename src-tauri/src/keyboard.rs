@@ -39,9 +39,9 @@ pub struct KeyboardRuntimeSettings {
 impl From<&AppSettings> for KeyboardRuntimeSettings {
     fn from(settings: &AppSettings) -> Self {
         Self {
-            double_tap_threshold_ms: settings.double_tap_threshold_ms,
-            voice_dictation_shortcut: settings.voice_dictation_shortcut.clone(),
-            voice_ask_shortcut: settings.voice_ask_shortcut.clone(),
+            double_tap_threshold_ms: settings.app.double_tap_threshold_ms,
+            voice_dictation_shortcut: settings.shortcuts.voice_dictation.clone(),
+            voice_ask_shortcut: settings.shortcuts.voice_ask.clone(),
         }
     }
 }
@@ -210,17 +210,9 @@ mod macos {
                 let cmd_down = (flags & KCG_EVENT_FLAG_MASK_COMMAND) != 0;
                 let fn_down = (flags & KCG_EVENT_FLAG_MASK_SECONDARY_FN) != 0;
                 if cmd_down != state.meta_down {
-                    eprintln!(
-                        "[enja] meta_down: {} → {} (flags={flags:#X})",
-                        state.meta_down, cmd_down
-                    );
                     state.meta_down = cmd_down;
                 }
                 if fn_down != state.fn_down {
-                    eprintln!(
-                        "[enja] fn_down: {} → {} (flags={flags:#X})",
-                        state.fn_down, fn_down
-                    );
                     state.fn_down = fn_down;
                     if state.capture_action.is_some() {
                         handle_capture_fn_change(state, fn_down);
@@ -271,26 +263,17 @@ mod macos {
                     let _ = state.tx.send(trigger);
                     return std::ptr::null_mut();
                 }
-                if state.meta_down {
-                    eprintln!("[enja] KeyDown while Cmd held: keycode={keycode}");
-                }
                 if keycode == KEYCODE_C && state.meta_down {
                     let now = Instant::now();
                     if let Some(prev) = state.last_cmd_c {
                         let elapsed = now.duration_since(prev);
-                        eprintln!(
-                            "[enja] Cmd+C (2nd) interval={:?} threshold={:?}",
-                            elapsed, state.threshold
-                        );
                         if elapsed <= state.threshold {
-                            eprintln!("[enja] >>> TRIGGER!");
                             let _ = state.tx.send(KeyboardTrigger::CmdCopyDouble);
                             state.last_cmd_c = None;
                         } else {
                             state.last_cmd_c = Some(now);
                         }
                     } else {
-                        eprintln!("[enja] Cmd+C (1st)");
                         state.last_cmd_c = Some(now);
                     }
                 }
@@ -550,6 +533,86 @@ mod macos {
         }
     }
 
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn state_with_tx(tx: Sender<KeyboardTrigger>) -> ListenerState {
+            ListenerState {
+                tx,
+                threshold: Duration::from_millis(400),
+                runtime: KeyboardRuntimeSettings {
+                    double_tap_threshold_ms: 400,
+                    voice_dictation_shortcut: ShortcutBinding::fn_key(),
+                    voice_ask_shortcut: ShortcutBinding::fn_space(),
+                },
+                meta_down: false,
+                fn_down: false,
+                fn_space_combo: false,
+                fn_chord_used: false,
+                fn_space_down: false,
+                fn_recent_release: false,
+                fn_release_generation: 0,
+                capture_action: None,
+                capture_fn_down: false,
+                last_cmd_c: None,
+                tap: std::ptr::null(),
+            }
+        }
+
+        #[test]
+        fn default_voice_shortcuts_resolve_to_distinct_triggers() {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let state = state_with_tx(tx);
+
+            assert!(matches!(
+                voice_trigger_for_shortcut(&state, &ShortcutBinding::fn_key()),
+                Some(KeyboardTrigger::FunctionTap)
+            ));
+            assert!(matches!(
+                voice_trigger_for_shortcut(&state, &ShortcutBinding::fn_space()),
+                Some(KeyboardTrigger::FunctionSpace)
+            ));
+        }
+
+        #[test]
+        fn shortcut_capture_emits_normalized_binding() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut state = state_with_tx(tx);
+            state.capture_action = Some(ShortcutAction::VoiceAsk);
+
+            complete_capture(
+                &mut state,
+                shortcut_from_key_event(KEYCODE_SPACE, KCG_EVENT_FLAG_MASK_SECONDARY_FN),
+            );
+
+            match rx.recv_timeout(Duration::from_millis(20)).expect("trigger") {
+                KeyboardTrigger::ShortcutCaptured { action, shortcut } => {
+                    assert_eq!(action, ShortcutAction::VoiceAsk);
+                    assert!(shortcut.is_same_shortcut(&ShortcutBinding::fn_space()));
+                }
+                trigger => panic!("unexpected trigger: {trigger:?}"),
+            }
+        }
+
+        #[test]
+        fn shortcut_capture_cancel_emits_reason() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut state = state_with_tx(tx);
+            state.capture_action = Some(ShortcutAction::VoiceDictation);
+
+            cancel_capture(&mut state, "キャンセルしました。".to_string());
+
+            match rx.recv_timeout(Duration::from_millis(20)).expect("trigger") {
+                KeyboardTrigger::ShortcutCaptureCancelled { action, reason } => {
+                    assert_eq!(action, ShortcutAction::VoiceDictation);
+                    assert_eq!(reason, "キャンセルしました。");
+                }
+                trigger => panic!("unexpected trigger: {trigger:?}"),
+            }
+        }
+    }
+
     // --- Public entry point --------------------------------------------------
 
     pub fn spawn_listener(tx: Sender<KeyboardTrigger>, runtime: KeyboardRuntimeSettings) {
@@ -571,8 +634,6 @@ mod macos {
                 );
                 return;
             }
-            eprintln!("[enja] CGEventTap created successfully");
-
             if let Ok(mut guard) = LISTENER_STATE.lock() {
                 *guard = Some(Box::new(ListenerState {
                     tx,
@@ -601,12 +662,7 @@ mod macos {
             let current_loop = CFRunLoopGetCurrent();
             CFRunLoopAddSource(current_loop, source, kCFRunLoopCommonModes);
             CGEventTapEnable(tap, true);
-            eprintln!(
-                "[enja] keyboard listener running (threshold={}ms)",
-                threshold.as_millis()
-            );
             CFRunLoopRun();
-            eprintln!("[enja] keyboard listener CFRunLoop exited");
         });
     }
 

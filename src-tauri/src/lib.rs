@@ -13,7 +13,7 @@ use gemini::{stream_translate, TranslateEvent};
 use keyboard::KeyboardTrigger;
 use serde::Serialize;
 use settings::{
-    load_settings, save_settings_to_disk, AppSettings, PromptTemplates, SettingsStore,
+    load_settings, save_settings_to_disk, AppSettings, PromptCatalogItem, SettingsStore,
     ShortcutAction, ShortcutBinding, SpeechProfile,
 };
 use tauri::ipc::Channel;
@@ -39,15 +39,10 @@ fn apply_launch_at_login(app: &tauri::AppHandle, enabled: bool) -> Result<(), St
 
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> Result<AppSettings, String> {
-    let mut settings = app
+    let settings = app
         .try_state::<SettingsStore>()
         .map(|store| store.get())
         .unwrap_or_else(|| load_settings(&app).unwrap_or_default());
-    if let Ok(key) = secrets::get_secret("gemini") {
-        if !key.trim().is_empty() {
-            settings.gemini_api_key = key;
-        }
-    }
     Ok(settings)
 }
 
@@ -56,23 +51,20 @@ fn save_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(), Str
     let mut sanitized = settings.clone();
     sanitized.sanitize();
     sanitized.validate_shortcuts()?;
-    prompts::validate_overrides(&sanitized.prompt_overrides)?;
+    prompts::validate_overrides(&sanitized.prompts.overrides)?;
 
-    secrets::save_secret("gemini", sanitized.gemini_api_key.trim())?;
-    let mut disk_settings = sanitized.clone();
-    disk_settings.gemini_api_key.clear();
-    save_settings_to_disk(&app, &disk_settings)?;
+    save_settings_to_disk(&app, &sanitized)?;
     if let Some(store) = app.try_state::<SettingsStore>() {
-        store.replace(disk_settings);
+        store.replace(sanitized.clone());
     }
     keyboard::update_runtime_settings(keyboard::KeyboardRuntimeSettings::from(&sanitized));
-    apply_launch_at_login(&app, sanitized.launch_at_login)?;
+    apply_launch_at_login(&app, sanitized.app.launch_at_login)?;
     Ok(())
 }
 
 #[tauri::command]
-fn get_prompt_defaults() -> PromptTemplates {
-    prompts::defaults()
+fn get_prompt_catalog() -> Vec<PromptCatalogItem> {
+    prompts::catalog()
 }
 
 #[tauri::command]
@@ -92,7 +84,7 @@ async fn translate(
     channel: Channel<TranslateEvent>,
 ) -> Result<(), String> {
     let settings = load_settings(&app)?;
-    let api_key = secrets::get_secret("gemini").unwrap_or_else(|_| settings.gemini_api_key.clone());
+    let api_key = secrets::get_secret("gemini").unwrap_or_default();
     if api_key.trim().is_empty() {
         let _ = channel.send(TranslateEvent::Error {
             message: "先に設定で Gemini API キーを保存してください。".to_string(),
@@ -103,9 +95,9 @@ async fn translate(
         &api_key,
         &text,
         channel,
-        settings.source_language,
-        settings.target_language,
-        &settings.prompt_overrides,
+        settings.translation.source_language,
+        settings.translation.target_language,
+        &settings.prompts.overrides,
     )
     .await
 }
@@ -211,14 +203,14 @@ pub fn run() {
             }
         })
         .setup(move |app| {
-            let settings_store = SettingsStore::new(&app.handle()).unwrap_or_else(|err| {
+            let settings_store = SettingsStore::new(app.handle()).unwrap_or_else(|err| {
                 eprintln!("[enja] settings cache init failed: {err}");
                 SettingsStore::with_defaults()
             });
             app.manage(settings_store);
 
             let settings = app.state::<SettingsStore>().get();
-            if let Err(e) = apply_launch_at_login(&app.handle(), settings.launch_at_login) {
+            if let Err(e) = apply_launch_at_login(app.handle(), settings.app.launch_at_login) {
                 eprintln!("[enja] launch at login: {e}");
             }
             keyboard::spawn_listener(
@@ -229,7 +221,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             macos_show_on_activate::init(app.handle().clone());
 
-            std::thread::spawn(|| voice::prewarm_microphone());
+            std::thread::spawn(voice::prewarm_microphone);
 
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -263,7 +255,7 @@ pub fn run() {
             save_provider_secret,
             get_provider_status,
             check_speech_setup,
-            get_prompt_defaults,
+            get_prompt_catalog,
             start_shortcut_capture,
             cancel_shortcut_capture
         ])

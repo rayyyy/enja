@@ -5,7 +5,7 @@ import type {
   AudioInputDevice,
   DictionaryEntry,
   DictionaryEntryInput,
-  PromptTemplates,
+  PromptCatalogItem,
   ProviderStatus,
   ShortcutAction,
   SpeechProfile,
@@ -22,8 +22,8 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
   return invoke("save_settings", { settings });
 }
 
-export async function getPromptDefaults(): Promise<PromptTemplates> {
-  return invoke<PromptTemplates>("get_prompt_defaults");
+export async function getPromptCatalog(): Promise<PromptCatalogItem[]> {
+  return invoke<PromptCatalogItem[]>("get_prompt_catalog");
 }
 
 export async function startShortcutCapture(

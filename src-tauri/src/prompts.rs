@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::settings::{PromptOverrides, PromptTemplates, UiLanguage};
+use crate::settings::{PromptCatalogItem, PromptOverrides, UiLanguage};
 
 const TRANSLATE_EN_TO_JA: &str = r#"あなたはプロの翻訳家であり、ネイティブスピーカーです。入力された英語のテキストを自然な日本語に翻訳してください。
 
@@ -61,19 +61,101 @@ const ASK_WITH_SELECTION_USER: &str = r#"{{dictionary_section}}
 - 辞書の優先表記を必ず尊重する。
 - 出力は置換する本文のみ。"#;
 
-pub fn defaults() -> PromptTemplates {
-    PromptTemplates {
-        translate_en_to_ja: TRANSLATE_EN_TO_JA.to_string(),
-        translate_ja_to_en: TRANSLATE_JA_TO_EN.to_string(),
-        openai_transcription: OPENAI_TRANSCRIPTION.to_string(),
-        gemini_audio_system: GEMINI_AUDIO_SYSTEM.to_string(),
-        gemini_audio_user: GEMINI_AUDIO_USER.to_string(),
-        dictation_system: DICTATION_SYSTEM.to_string(),
-        dictation_user: DICTATION_USER.to_string(),
-        ask_without_selection_system: ASK_WITHOUT_SELECTION_SYSTEM.to_string(),
-        ask_without_selection_user: ASK_WITHOUT_SELECTION_USER.to_string(),
-        ask_with_selection_system: ASK_WITH_SELECTION_SYSTEM.to_string(),
-        ask_with_selection_user: ASK_WITH_SELECTION_USER.to_string(),
+pub fn catalog() -> Vec<PromptCatalogItem> {
+    vec![
+        catalog_item(
+            "translateEnToJa",
+            "翻訳: 英語 → 日本語",
+            5,
+            &[],
+            TRANSLATE_EN_TO_JA,
+        ),
+        catalog_item(
+            "translateJaToEn",
+            "翻訳: 日本語 → 英語",
+            5,
+            &[],
+            TRANSLATE_JA_TO_EN,
+        ),
+        catalog_item(
+            "openaiTranscription",
+            "OpenAI文字起こし",
+            3,
+            &[],
+            OPENAI_TRANSCRIPTION,
+        ),
+        catalog_item(
+            "geminiAudioSystem",
+            "Gemini音声: system",
+            2,
+            &[],
+            GEMINI_AUDIO_SYSTEM,
+        ),
+        catalog_item(
+            "geminiAudioUser",
+            "Gemini音声: user",
+            3,
+            &[],
+            GEMINI_AUDIO_USER,
+        ),
+        catalog_item(
+            "dictationSystem",
+            "音声入力整形: system",
+            3,
+            &[],
+            DICTATION_SYSTEM,
+        ),
+        catalog_item(
+            "dictationUser",
+            "音声入力整形: user",
+            8,
+            &["{{transcript}}"],
+            DICTATION_USER,
+        ),
+        catalog_item(
+            "askWithoutSelectionSystem",
+            "Ask（選択なし）: system",
+            3,
+            &[],
+            ASK_WITHOUT_SELECTION_SYSTEM,
+        ),
+        catalog_item(
+            "askWithoutSelectionUser",
+            "Ask（選択なし）: user",
+            8,
+            &["{{transcript}}"],
+            ASK_WITHOUT_SELECTION_USER,
+        ),
+        catalog_item(
+            "askWithSelectionSystem",
+            "Ask（選択あり）: system",
+            3,
+            &[],
+            ASK_WITH_SELECTION_SYSTEM,
+        ),
+        catalog_item(
+            "askWithSelectionUser",
+            "Ask（選択あり）: user",
+            8,
+            &["{{selected_text}}", "{{transcript}}"],
+            ASK_WITH_SELECTION_USER,
+        ),
+    ]
+}
+
+fn catalog_item(
+    key: &str,
+    label: &str,
+    rows: u8,
+    required: &[&str],
+    default_text: &str,
+) -> PromptCatalogItem {
+    PromptCatalogItem {
+        key: key.to_string(),
+        label: label.to_string(),
+        rows,
+        required: required.iter().map(|token| token.to_string()).collect(),
+        default_text: default_text.to_string(),
     }
 }
 

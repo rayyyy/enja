@@ -1,6 +1,7 @@
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tauri::ipc::Channel;
 
@@ -9,6 +10,7 @@ use crate::settings::{PromptOverrides, UiLanguage};
 
 const MODEL: &str = "gemini-3.1-flash-lite-preview";
 const GEMINI_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
+static GEMINI_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 #[derive(Clone, Serialize)]
 #[serde(tag = "type")]
@@ -81,8 +83,7 @@ pub async fn stream_translate(
         }
     });
 
-    let client = reqwest::Client::new();
-    let response = client
+    let response = http_client()?
         .post(&url)
         .header("Content-Type", "application/json")
         .json(&body)
@@ -203,10 +204,7 @@ async fn generate_content(
         }
     });
 
-    let response = reqwest::Client::builder()
-        .timeout(GEMINI_REQUEST_TIMEOUT)
-        .build()
-        .map_err(|e| e.to_string())?
+    let response = http_client()?
         .post(&url)
         .header("Content-Type", "application/json")
         .json(&body)
@@ -247,6 +245,18 @@ fn gemini_request_error(err: reqwest::Error) -> String {
     } else {
         err.to_string()
     }
+}
+
+fn http_client() -> Result<reqwest::Client, String> {
+    if let Some(client) = GEMINI_HTTP_CLIENT.get() {
+        return Ok(client.clone());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(GEMINI_REQUEST_TIMEOUT)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let _ = GEMINI_HTTP_CLIENT.set(client.clone());
+    Ok(client)
 }
 
 /// Returns `true` if the stream should stop (done or fatal error).

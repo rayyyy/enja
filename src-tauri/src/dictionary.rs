@@ -1,5 +1,17 @@
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 use tauri::{AppHandle, Manager};
+
+static DICTIONARY_CACHE: OnceLock<Mutex<Option<DictionaryCache>>> = OnceLock::new();
+
+#[derive(Clone)]
+struct DictionaryCache {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    entries: Vec<DictionaryEntry>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,13 +58,21 @@ pub fn load_dictionary(app: &AppHandle) -> Result<Vec<DictionaryEntry>, String> 
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let modified = std::fs::metadata(&path)
+        .and_then(|meta| meta.modified())
+        .ok();
+    if let Some(entries) = cached_dictionary(&path, modified) {
+        return Ok(entries);
+    }
+    let data = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let entries: Vec<DictionaryEntry> = serde_json::from_str(&data).map_err(|e| e.to_string())?;
-    Ok(entries
+    let entries = entries
         .into_iter()
         .map(normalize_entry)
         .filter(|e| !e.preferred.is_empty())
-        .collect())
+        .collect::<Vec<_>>();
+    update_dictionary_cache(path, modified, entries.clone());
+    Ok(entries)
 }
 
 pub fn save_dictionary(app: &AppHandle, entries: &[DictionaryEntry]) -> Result<(), String> {
@@ -61,10 +81,15 @@ pub fn save_dictionary(app: &AppHandle, entries: &[DictionaryEntry]) -> Result<(
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     std::fs::write(
-        path,
+        &path,
         serde_json::to_string_pretty(entries).map_err(|e| e.to_string())?,
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    let modified = std::fs::metadata(&path)
+        .and_then(|meta| meta.modified())
+        .ok();
+    update_dictionary_cache(path, modified, entries.to_vec());
+    Ok(())
 }
 
 pub fn create_entry(
@@ -189,6 +214,35 @@ fn push_unique(out: &mut Vec<String>, value: &str) {
     }
     if !out.iter().any(|existing| existing == value) {
         out.push(value.to_string());
+    }
+}
+
+fn cached_dictionary(path: &Path, modified: Option<SystemTime>) -> Option<Vec<DictionaryEntry>> {
+    DICTIONARY_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|cache| {
+            let cache = cache.as_ref()?;
+            if cache.path == path && cache.modified == modified {
+                Some(cache.entries.clone())
+            } else {
+                None
+            }
+        })
+}
+
+fn update_dictionary_cache(
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    entries: Vec<DictionaryEntry>,
+) {
+    if let Ok(mut cache) = DICTIONARY_CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        *cache = Some(DictionaryCache {
+            path,
+            modified,
+            entries,
+        });
     }
 }
 

@@ -30,7 +30,7 @@ mod imp {
                 Some(NSApplicationDidBecomeActiveNotification),
                 None,
                 Some(&queue),
-                &*block,
+                &block,
             );
             std::mem::forget(observer);
         }

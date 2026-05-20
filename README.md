@@ -32,7 +32,7 @@
 ## プライバシーとデータの取り扱い
 
 - **クリップボード**: 連打トリガー時に読み取ったテキストが、翻訳のために **Google Gemini API**（`generativelanguage.googleapis.com`）へ送信されます。Google の利用規約・プライバシーポリシーが適用されます。
-- **API キー**: アプリの設定で保存したキーは、Tauri のアプリ設定ディレクトリ内の **`settings.json`** に書き込まれます（実装は [`src-tauri/src/settings.rs`](src-tauri/src/settings.rs)）。リポジトリや Issue にキーを載せないでください。
+- **API キー**: アプリの設定で保存したキーは macOS Keychain（実装は [`src-tauri/src/secrets.rs`](src-tauri/src/secrets.rs)）に保存され、`settings.json` にはモデル・ショートカット・プロンプトなどの非秘密情報だけを書き込みます。リポジトリや Issue にキーを載せないでください。
 - **常駐と権限**: グローバルな Cmd+C 検出には **アクセシビリティ**の許可が必要です（下記「macOS の権限」）。
 
 ## 必要なもの

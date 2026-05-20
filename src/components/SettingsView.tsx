@@ -1,12 +1,12 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import type {
   AppSettings,
   AudioInputDevice,
   FinalizationModel,
   PromptOverrides,
-  PromptTemplates,
+  PromptCatalogItem,
   ProviderStatus,
   ShortcutAction,
   ShortcutBinding,
@@ -17,9 +17,24 @@ import type {
 } from "../types";
 import { useAppStore } from "../stores/useAppStore";
 import {
+  SettingsSectionPanel,
+  Toggle,
+  settingsButtonPrimaryClass,
+  settingsButtonSecondaryClass,
+  settingsInputClass,
+  settingsSelectClass,
+} from "./settings/SettingsControls";
+import {
+  AppSettingsSection,
+  AuthSettingsSection,
+  PromptSettingsSection,
+  ShortcutSettingsSection,
+  type ProviderSecretsDraft,
+} from "./settings/SettingsSections";
+import {
   checkSpeechSetup,
   cancelShortcutCapture,
-  getPromptDefaults,
+  getPromptCatalog,
   getProviderStatus,
   getSettings,
   listAudioInputDevices,
@@ -258,83 +273,15 @@ const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "app", label: "アプリ" },
 ];
 
-const DEFAULT_SHORTCUTS: Record<ShortcutAction, ShortcutBinding> = {
-  voiceDictation: {
-    keyCode: null,
-    key: "fn",
-    label: "Fn",
-    modifiers: {
-      command: false,
-      option: false,
-      control: false,
-      shift: false,
-      function: false,
-    },
-  },
-  voiceAsk: {
-    keyCode: 49,
-    key: "space",
-    label: "Fn Space",
-    modifiers: {
-      command: false,
-      option: false,
-      control: false,
-      shift: false,
-      function: true,
-    },
-  },
-};
-
 type PromptField = keyof PromptOverrides;
 
-const PROMPT_FIELDS: {
-  key: PromptField;
-  label: string;
-  rows: number;
-  required?: string[];
-}[] = [
-  { key: "translateEnToJa", label: "翻訳: 英語 → 日本語", rows: 5 },
-  { key: "translateJaToEn", label: "翻訳: 日本語 → 英語", rows: 5 },
-  {
-    key: "openaiTranscription",
-    label: "OpenAI文字起こし",
-    rows: 3,
-  },
-  { key: "geminiAudioSystem", label: "Gemini音声: system", rows: 2 },
-  {
-    key: "geminiAudioUser",
-    label: "Gemini音声: user",
-    rows: 3,
-  },
-  { key: "dictationSystem", label: "音声入力整形: system", rows: 3 },
-  {
-    key: "dictationUser",
-    label: "音声入力整形: user",
-    rows: 8,
-    required: ["{{transcript}}"],
-  },
-  { key: "askWithoutSelectionSystem", label: "Ask（選択なし）: system", rows: 3 },
-  {
-    key: "askWithoutSelectionUser",
-    label: "Ask（選択なし）: user",
-    rows: 8,
-    required: ["{{transcript}}"],
-  },
-  { key: "askWithSelectionSystem", label: "Ask（選択あり）: system", rows: 3 },
-  {
-    key: "askWithSelectionUser",
-    label: "Ask（選択あり）: user",
-    rows: 8,
-    required: ["{{selected_text}}", "{{transcript}}"],
-  },
-];
-
 export function SettingsView() {
-  const { apiKeyDraft, setApiKeyDraft, setView, hydrateFromSettings } =
-    useAppStore();
+  const { setView, hydrateFromSettings } = useAppStore();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);
-  const [promptDefaults, setPromptDefaults] = useState<PromptTemplates | null>(null);
+  const [promptCatalog, setPromptCatalog] = useState<PromptCatalogItem[] | null>(
+    null,
+  );
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -343,7 +290,7 @@ export function SettingsView() {
   const [setupProfile, setSetupProfile] = useState<SpeechProfile | null>(null);
   const [checkingSetup, setCheckingSetup] = useState(false);
   const [setupCheck, setSetupCheck] = useState<SpeechSetupCheck | null>(null);
-  const [secrets, setSecrets] = useState({
+  const [secrets, setSecrets] = useState<ProviderSecretsDraft>({
     gemini: "",
     openai: "",
     deepgram: "",
@@ -352,19 +299,18 @@ export function SettingsView() {
 
   useEffect(() => {
     void (async () => {
-      const [s, d, status, defaults] = await Promise.all([
+      const [s, d, status, catalog] = await Promise.all([
         getSettings(),
         listAudioInputDevices().catch(() => []),
         getProviderStatus().catch(() => null),
-        getPromptDefaults(),
+        getPromptCatalog(),
       ]);
       setSettings(s);
-      setApiKeyDraft(s.geminiApiKey);
       setDevices(d);
       setProviderStatus(status);
-      setPromptDefaults(defaults);
+      setPromptCatalog(catalog);
     })();
-  }, [setApiKeyDraft]);
+  }, []);
 
   useEffect(() => {
     const captured = listen<ShortcutCapturedEvent>("shortcut-captured", (event) => {
@@ -373,8 +319,14 @@ export function SettingsView() {
       setSettings((prev) => {
         if (!prev) return prev;
         return action === "voiceDictation"
-          ? { ...prev, voiceDictationShortcut: shortcut }
-          : { ...prev, voiceAskShortcut: shortcut };
+          ? {
+              ...prev,
+              shortcuts: { ...prev.shortcuts, voiceDictation: shortcut },
+            }
+          : {
+              ...prev,
+              shortcuts: { ...prev.shortcuts, voiceAsk: shortcut },
+            };
       });
     });
     const cancelled = listen<ShortcutCaptureCancelledEvent>(
@@ -392,8 +344,16 @@ export function SettingsView() {
     };
   }, []);
 
-  function patchSettings(patch: Partial<AppSettings>) {
-    setSettings((prev) => (prev ? { ...prev, ...patch } : prev));
+  function patchVoice(patch: Partial<AppSettings["voice"]>) {
+    setSettings((prev) =>
+      prev ? { ...prev, voice: { ...prev.voice, ...patch } } : prev,
+    );
+  }
+
+  function patchApp(patch: Partial<AppSettings["app"]>) {
+    setSettings((prev) =>
+      prev ? { ...prev, app: { ...prev.app, ...patch } } : prev,
+    );
   }
 
   function patchPrompt(key: PromptField, value: string | null) {
@@ -401,9 +361,11 @@ export function SettingsView() {
       prev
         ? {
             ...prev,
-            promptOverrides: {
-              ...prev.promptOverrides,
-              [key]: value,
+            prompts: {
+              overrides: {
+                ...prev.prompts.overrides,
+                [key]: value,
+              },
             },
           }
         : prev,
@@ -411,10 +373,16 @@ export function SettingsView() {
   }
 
   function setShortcut(action: ShortcutAction, shortcut: ShortcutBinding) {
-    patchSettings(
-      action === "voiceDictation"
-        ? { voiceDictationShortcut: shortcut }
-        : { voiceAskShortcut: shortcut },
+    setSettings((prev) =>
+      prev
+        ? {
+            ...prev,
+            shortcuts:
+              action === "voiceDictation"
+                ? { ...prev.shortcuts, voiceDictation: shortcut }
+                : { ...prev.shortcuts, voiceAsk: shortcut },
+          }
+        : prev,
     );
   }
 
@@ -461,11 +429,7 @@ export function SettingsView() {
     setSaving(true);
     setMsg(null);
     try {
-      const next = {
-        ...settings,
-        geminiApiKey: apiKeyDraft.trim(),
-      };
-      await saveSettings(next);
+      await saveSettings(settings);
       await Promise.all(
         ([
           ["gemini", secrets.gemini],
@@ -479,25 +443,7 @@ export function SettingsView() {
       const [fresh, status] = await Promise.all([getSettings(), getProviderStatus()]);
       setSettings(fresh);
       setProviderStatus(status);
-      hydrateFromSettings(
-        fresh.geminiApiKey,
-        fresh.doubleTapThresholdMs,
-        fresh.sourceLanguage,
-        fresh.targetLanguage,
-        {
-          selectedMicrophoneId: fresh.selectedMicrophoneId,
-          speechProfile: fresh.speechProfile,
-          finalizationModel: fresh.finalizationModel,
-          interactionSoundsEnabled: fresh.interactionSoundsEnabled,
-          muteSystemAudioDuringRecording: fresh.muteSystemAudioDuringRecording,
-          maxRecordingSeconds: fresh.maxRecordingSeconds,
-          googleCloudProjectId: fresh.googleCloudProjectId,
-          googleCloudRegion: fresh.googleCloudRegion,
-          googleCloudUseAdc: fresh.googleCloudUseAdc,
-          voiceDictationShortcut: fresh.voiceDictationShortcut,
-          voiceAskShortcut: fresh.voiceAskShortcut,
-        },
-      );
+      hydrateFromSettings(fresh);
       setSecrets({
         gemini: "",
         openai: "",
@@ -512,7 +458,7 @@ export function SettingsView() {
     }
   }
 
-  if (!settings || !promptDefaults) {
+  if (!settings || !promptCatalog) {
     return <p className="text-sm text-neutral-500">設定を読み込んでいます…</p>;
   }
 
@@ -521,42 +467,42 @@ export function SettingsView() {
     : null;
 
   return (
-    <div className="flex h-[560px] min-h-0 overflow-hidden rounded-lg border border-neutral-200 bg-white">
-      <aside className="flex w-52 shrink-0 flex-col border-r border-neutral-200 bg-neutral-50/80">
-        <div className="border-b border-neutral-200 px-4 py-4">
-          <h1 className="text-xl font-semibold text-neutral-900">設定</h1>
-          <p className="mt-1 text-xs leading-relaxed text-neutral-500">
+    <div className="flex h-full min-h-0 w-full overflow-hidden bg-white">
+      <aside className="flex w-54 shrink-0 flex-col bg-neutral-100/50 md:w-56">
+        <div className="px-4 pb-4 pt-5">
+          <h1 className="text-lg font-semibold tracking-tight text-neutral-900">設定</h1>
+          <p className="mt-1.5 text-xs leading-relaxed text-neutral-500">
             音声入力、ショートカット、プロンプトを管理します。
           </p>
         </div>
-        <nav className="flex flex-1 flex-col gap-1 p-2">
+        <nav className="flex flex-1 flex-col gap-0.5 px-2.5" aria-label="設定セクション">
           {SETTINGS_SECTIONS.map((section) => (
             <button
               key={section.id}
               type="button"
               onClick={() => setActiveSection(section.id)}
-              className={`rounded-md px-3 py-2 text-left text-sm font-medium ${
+              className={`rounded-lg px-3 py-2 text-left text-sm font-medium transition ${
                 activeSection === section.id
-                  ? "bg-white text-blue-700 shadow-sm ring-1 ring-neutral-200"
-                  : "text-neutral-600 hover:bg-white/70 hover:text-neutral-900"
+                  ? "bg-white text-blue-700"
+                  : "text-neutral-600 hover:bg-white/60 hover:text-neutral-900"
               }`}
             >
               {section.label}
             </button>
           ))}
         </nav>
-        <div className="border-t border-neutral-200 p-2">
+        <div className="mt-auto space-y-0.5 px-2.5 py-3">
           <button
             type="button"
             onClick={() => setView("dictionary")}
-            className="w-full rounded-md px-3 py-2 text-left text-sm text-neutral-600 hover:bg-white"
+            className="w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-600 transition hover:bg-white/80 hover:text-neutral-900"
           >
             辞書
           </button>
           <button
             type="button"
             onClick={() => setView("translation")}
-            className="mt-1 w-full rounded-md px-3 py-2 text-left text-sm text-neutral-600 hover:bg-white"
+            className="w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-600 transition hover:bg-white/80 hover:text-neutral-900"
           >
             戻る
           </button>
@@ -564,20 +510,21 @@ export function SettingsView() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <main className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+        <main className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-3xl px-6 py-6 md:px-8 md:py-7">
           {activeSection === "voice" ? (
             <SettingsSectionPanel
               title="音声入力"
               description="録音、文字起こし、整形モデルの設定です。"
             >
-              <label className="flex flex-col gap-1 text-sm md:col-span-2">
-                <span className="font-medium text-neutral-700">マイク</span>
+              <label className="flex flex-col gap-1.5 text-sm sm:col-span-2">
+                <span className="font-medium text-neutral-800">マイク</span>
                 <select
-                  value={settings.selectedMicrophoneId ?? ""}
+                  value={settings.voice.selectedMicrophoneId ?? ""}
                   onChange={(e) =>
-                    patchSettings({ selectedMicrophoneId: e.target.value || null })
+                    patchVoice({ selectedMicrophoneId: e.target.value || null })
                   }
-                  className="rounded-md border border-neutral-200 bg-white px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                  className={settingsSelectClass}
                 >
                   <option value="">システム既定</option>
                   {devices.map((device) => (
@@ -589,45 +536,44 @@ export function SettingsView() {
                 </select>
               </label>
 
-              <div className="flex flex-col gap-2 md:col-span-2">
+              <div className="flex flex-col gap-3 sm:col-span-2">
                 <div>
-                  <h3 className="text-sm font-medium text-neutral-700">
+                  <h3 className="text-sm font-medium text-neutral-800">
                     音声認識モデル
                   </h3>
-                  <p className="mt-1 text-xs leading-relaxed text-neutral-400">
+                  <p className="mt-1 text-xs leading-relaxed text-neutral-500">
                     料金は公式ページの目安です。実際の請求は利用量、リージョン、追加機能、契約プランで変わります。
                   </p>
                 </div>
-                <div className="overflow-hidden rounded-lg border border-neutral-200">
+                <div className="flex flex-col gap-2">
                   {SPEECH_PROFILES.map((profile) => (
                     <SpeechProfileRow
                       key={profile.value}
                       profile={profile}
-                      selected={settings.speechProfile === profile.value}
+                      selected={settings.voice.speechProfile === profile.value}
                       requirements={profileRequirements(
                         profile.value,
                         settings,
                         providerStatus,
-                        apiKeyDraft,
                         secrets,
                       )}
-                      onSelect={() => patchSettings({ speechProfile: profile.value })}
+                      onSelect={() => patchVoice({ speechProfile: profile.value })}
                       onSetup={() => openSetup(profile.value)}
                     />
                   ))}
                 </div>
               </div>
 
-              <label className="flex flex-col gap-1 text-sm">
-                <span className="font-medium text-neutral-700">整形モデル</span>
+              <label className="flex flex-col gap-1.5 text-sm">
+                <span className="font-medium text-neutral-800">整形モデル</span>
                 <select
-                  value={settings.finalizationModel}
+                  value={settings.voice.finalizationModel}
                   onChange={(e) =>
-                    patchSettings({
+                    patchVoice({
                       finalizationModel: e.target.value as FinalizationModel,
                     })
                   }
-                  className="rounded-md border border-neutral-200 bg-white px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                  className={settingsSelectClass}
                 >
                   {FINALIZATION_MODELS.map((model) => (
                     <option key={model.value} value={model.value}>
@@ -637,36 +583,36 @@ export function SettingsView() {
                 </select>
               </label>
 
-              <label className="flex flex-col gap-1 text-sm">
-                <span className="font-medium text-neutral-700">最大録音秒数</span>
+              <label className="flex flex-col gap-1.5 text-sm">
+                <span className="font-medium text-neutral-800">最大録音秒数</span>
                 <input
                   type="number"
                   min={5}
                   max={600}
-                  value={settings.maxRecordingSeconds}
+                  value={settings.voice.maxRecordingSeconds}
                   onChange={(e) =>
-                    patchSettings({ maxRecordingSeconds: Number(e.target.value) })
+                    patchVoice({ maxRecordingSeconds: Number(e.target.value) })
                   }
-                  className="rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                  className={settingsInputClass}
                 />
               </label>
 
               <Toggle
                 label="インタラクション音"
-                checked={settings.interactionSoundsEnabled}
+                checked={settings.voice.interactionSoundsEnabled}
                 onChange={(checked) =>
-                  patchSettings({ interactionSoundsEnabled: checked })
+                  patchVoice({ interactionSoundsEnabled: checked })
                 }
               />
               <Toggle
                 label="音声入力中にシステム音をミュート"
                 description="録音開始直前にMacの出力をミュートし、録音ストリームを閉じた後で元の音量とミュート状態へ戻します。"
-                checked={settings.muteSystemAudioDuringRecording}
+                checked={settings.voice.muteSystemAudioDuringRecording}
                 onChange={(checked) =>
-                  patchSettings({ muteSystemAudioDuringRecording: checked })
+                  patchVoice({ muteSystemAudioDuringRecording: checked })
                 }
               />
-              <div className="rounded-lg border border-blue-100 bg-blue-50/70 p-3 text-xs leading-relaxed text-blue-950 md:col-span-2">
+              <div className="rounded-xl bg-blue-50 p-4 text-xs leading-relaxed text-blue-950 sm:col-span-2">
                 このミュート設定は、YouTubeなどのPC内再生音がスピーカーから出てマイクへ回り込むのを抑えるための機能です。
                 Typelessのような完全な音声分離ではなく、macOSの出力を録音中だけ止める方式なので、
                 外部スピーカーの残響や別端末の音はマイク側で拾う可能性があります。
@@ -675,175 +621,60 @@ export function SettingsView() {
           ) : null}
 
           {activeSection === "shortcuts" ? (
-            <SettingsSectionPanel
-              title="ショートカット"
-              description="キー記録中は次に押したキー操作が登録されます。Escapeは録音キャンセル用に予約されています。"
-            >
-              <ShortcutRow
-                label="音声入力開始/停止"
-                shortcut={settings.voiceDictationShortcut}
-                capturing={capturingAction === "voiceDictation"}
-                onCapture={() => void beginShortcutCapture("voiceDictation")}
-                onCancel={() => void cancelCapture()}
-                onReset={() =>
-                  setShortcut("voiceDictation", DEFAULT_SHORTCUTS.voiceDictation)
-                }
-              />
-              <ShortcutRow
-                label="選択テキストへの音声指示"
-                shortcut={settings.voiceAskShortcut}
-                capturing={capturingAction === "voiceAsk"}
-                onCapture={() => void beginShortcutCapture("voiceAsk")}
-                onCancel={() => void cancelCapture()}
-                onReset={() => setShortcut("voiceAsk", DEFAULT_SHORTCUTS.voiceAsk)}
-              />
-              <label className="flex flex-col gap-1 text-sm md:col-span-2">
-                <span className="font-medium text-neutral-700">
-                  Cmd+C連打の判定時間
-                </span>
-                <input
-                  type="number"
-                  min={100}
-                  max={2000}
-                  value={settings.doubleTapThresholdMs}
-                  onChange={(e) =>
-                    patchSettings({ doubleTapThresholdMs: Number(e.target.value) })
-                  }
-                  className="max-w-48 rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                />
-              </label>
-            </SettingsSectionPanel>
+            <ShortcutSettingsSection
+              shortcuts={settings.shortcuts}
+              doubleTapThresholdMs={settings.app.doubleTapThresholdMs}
+              capturingAction={capturingAction}
+              onCapture={(action) => void beginShortcutCapture(action)}
+              onCancel={() => void cancelCapture()}
+              onReset={setShortcut}
+              onDoubleTapChange={(value) =>
+                patchApp({ doubleTapThresholdMs: value })
+              }
+            />
           ) : null}
 
           {activeSection === "prompts" ? (
-            <SettingsSectionPanel
-              title="プロンプト"
-              description="通常は既定テンプレートを使い、必要な項目だけカスタムを有効にしてください。"
-            >
-              <div className="grid gap-4 md:col-span-2">
-                {PROMPT_FIELDS.map((field) => (
-                  <PromptEditor
-                    key={field.key}
-                    field={field}
-                    defaultValue={promptDefaults[field.key]}
-                    customValue={settings.promptOverrides[field.key]}
-                    onChange={(value) => patchPrompt(field.key, value)}
-                  />
-                ))}
-              </div>
-            </SettingsSectionPanel>
+            <PromptSettingsSection
+              promptCatalog={promptCatalog}
+              overrides={settings.prompts.overrides}
+              onChange={patchPrompt}
+            />
           ) : null}
 
           {activeSection === "auth" ? (
-            <SettingsSectionPanel
-              title="API / 認証"
-              description="音声認識と整形に使う各プロバイダの認証情報です。"
-            >
-              <SecretField
-                label="Gemini APIキー"
-                placeholder={providerStatus?.gemini ? "保存済み" : "AIza..."}
-                value={apiKeyDraft || secrets.gemini}
-                onChange={(value) => {
-                  setApiKeyDraft(value);
-                  setSecrets((prev) => ({ ...prev, gemini: value }));
-                }}
-                helpAction={() => void openUrl("https://aistudio.google.com/apikey")}
-                helpLabel="取得"
-              />
-              <SecretField
-                label="OpenAI APIキー"
-                placeholder={providerStatus?.openai ? "保存済み" : "sk-..."}
-                value={secrets.openai}
-                onChange={(value) =>
-                  setSecrets((prev) => ({ ...prev, openai: value }))
-                }
-              />
-              <SecretField
-                label="Deepgram APIキー"
-                placeholder={providerStatus?.deepgram ? "保存済み" : "Deepgram key"}
-                value={secrets.deepgram}
-                onChange={(value) =>
-                  setSecrets((prev) => ({ ...prev, deepgram: value }))
-                }
-              />
-              <label className="flex flex-col gap-1 text-sm">
-                <span className="font-medium text-neutral-700">
-                  Google Cloud Project ID
-                </span>
-                <input
-                  value={settings.googleCloudProjectId}
-                  onChange={(e) =>
-                    patchSettings({ googleCloudProjectId: e.target.value })
-                  }
-                  placeholder="my-gcp-project"
-                  className="rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-sm">
-                <span className="font-medium text-neutral-700">
-                  Google Cloudリージョン
-                </span>
-                <input
-                  value={settings.googleCloudRegion}
-                  onChange={(e) =>
-                    patchSettings({ googleCloudRegion: e.target.value })
-                  }
-                  placeholder="asia-northeast1"
-                  className="rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                />
-              </label>
-              <Toggle
-                label="Google Cloud ADCを使用"
-                checked={settings.googleCloudUseAdc}
-                onChange={(checked) => patchSettings({ googleCloudUseAdc: checked })}
-              />
-              {!settings.googleCloudUseAdc ? (
-                <label className="flex flex-col gap-1 text-sm md:col-span-2">
-                  <span className="font-medium text-neutral-700">
-                    サービスアカウントJSON
-                    {providerStatus?.googleServiceAccount ? "（保存済み）" : ""}
-                  </span>
-                  <textarea
-                    value={secrets.googleServiceAccount}
-                    onChange={(e) =>
-                      setSecrets((prev) => ({
-                        ...prev,
-                        googleServiceAccount: e.target.value,
-                      }))
-                    }
-                    rows={4}
-                    placeholder="{...}"
-                    className="resize-none rounded-md border border-neutral-200 px-3 py-2 font-mono text-xs outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                  />
-                </label>
-              ) : null}
-            </SettingsSectionPanel>
+            <AuthSettingsSection
+              voice={settings.voice}
+              providerStatus={providerStatus}
+              secrets={secrets}
+              onSecretsChange={setSecrets}
+              onVoiceChange={patchVoice}
+              onOpenGeminiDocs={() => void openUrl("https://aistudio.google.com/apikey")}
+            />
           ) : null}
 
           {activeSection === "app" ? (
-            <SettingsSectionPanel title="アプリ" description="起動と権限まわりの設定です。">
-              <Toggle
-                label="Macログイン時に自動起動"
-                checked={settings.launchAtLogin}
-                onChange={(checked) => patchSettings({ launchAtLogin: checked })}
-              />
-              <p className="text-xs leading-relaxed text-neutral-400 md:col-span-2">
-                macOSではアクセシビリティ、入力監視、マイクの許可が必要です。ショートカットが取得できない場合は、プライバシーとセキュリティの許可を確認してください。
-              </p>
-            </SettingsSectionPanel>
+            <AppSettingsSection app={settings.app} onChange={patchApp} />
           ) : null}
+          </div>
         </main>
 
-        <div className="flex items-center gap-3 border-t border-neutral-200 bg-neutral-50/95 px-6 py-3 backdrop-blur">
+        <div className="flex shrink-0 items-center gap-3 bg-neutral-100/40 px-6 py-3.5 md:px-8">
           <button
             type="button"
-            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+            className={settingsButtonPrimaryClass}
             disabled={saving}
             onClick={() => void handleSave()}
           >
             {saving ? "保存中…" : "保存"}
           </button>
-          {msg ? <p className="text-sm text-neutral-500">{msg}</p> : null}
+          {msg ? (
+            <p
+              className={`text-sm ${msg.includes("保存しました") ? "text-emerald-600" : "text-neutral-500"}`}
+            >
+              {msg}
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -854,7 +685,6 @@ export function SettingsView() {
             activeSetupProfile.value,
             settings,
             providerStatus,
-            apiKeyDraft,
             secrets,
           )}
           onClose={() => setSetupProfile(null)}
@@ -867,150 +697,10 @@ export function SettingsView() {
   );
 }
 
-function SettingsSectionPanel({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description: string;
-  children: ReactNode;
-}) {
-  return (
-    <section className="grid gap-4 md:grid-cols-2">
-      <div className="md:col-span-2">
-        <h2 className="text-lg font-semibold text-neutral-900">{title}</h2>
-        <p className="mt-1 text-sm leading-relaxed text-neutral-500">{description}</p>
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function ShortcutRow({
-  label,
-  shortcut,
-  capturing,
-  onCapture,
-  onCancel,
-  onReset,
-}: {
-  label: string;
-  shortcut: ShortcutBinding;
-  capturing: boolean;
-  onCapture: () => void;
-  onCancel: () => void;
-  onReset: () => void;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-4 rounded-md border border-neutral-200 px-4 py-3 text-sm md:col-span-2">
-      <div className="min-w-0">
-        <p className="font-medium text-neutral-800">{label}</p>
-        <p className="mt-1 text-xs text-neutral-400">
-          {capturing ? "キーを押してください。" : "現在の割り当て"}
-        </p>
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <kbd className="min-w-24 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-center text-xs font-semibold text-neutral-700">
-          {capturing ? "記録中" : shortcut.label}
-        </kbd>
-        {capturing ? (
-          <button
-            type="button"
-            onClick={onCancel}
-            className="rounded-md border border-neutral-200 px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50"
-          >
-            中止
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={onCapture}
-            className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100"
-          >
-            記録
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={onReset}
-          disabled={capturing}
-          className="rounded-md border border-neutral-200 px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50 disabled:opacity-40"
-        >
-          デフォルト
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function PromptEditor({
-  field,
-  defaultValue,
-  customValue,
-  onChange,
-}: {
-  field: {
-    key: PromptField;
-    label: string;
-    rows: number;
-    required?: string[];
-  };
-  defaultValue: string;
-  customValue: string | null;
-  onChange: (value: string | null) => void;
-}) {
-  const customized = customValue !== null;
-  const value = customized ? customValue : defaultValue;
-
-  return (
-    <div className="rounded-md border border-neutral-200">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-100 px-4 py-3">
-        <div>
-          <h3 className="text-sm font-semibold text-neutral-800">{field.label}</h3>
-          {field.required?.length ? (
-            <p className="mt-1 text-xs text-neutral-400">
-              必須: {field.required.join(" / ")}
-            </p>
-          ) : null}
-        </div>
-        <div className="flex items-center gap-2">
-          <label className="flex items-center gap-2 text-xs text-neutral-600">
-            <input
-              type="checkbox"
-              checked={customized}
-              onChange={(e) => onChange(e.target.checked ? defaultValue : null)}
-              className="size-4 rounded border-neutral-300"
-            />
-            カスタム
-          </label>
-          <button
-            type="button"
-            onClick={() => onChange(null)}
-            className="rounded-md border border-neutral-200 px-2.5 py-1 text-xs text-neutral-600 hover:bg-neutral-50"
-          >
-            デフォルトに戻す
-          </button>
-        </div>
-      </div>
-      <textarea
-        value={value}
-        readOnly={!customized}
-        rows={field.rows}
-        onChange={(e) => onChange(e.target.value)}
-        className={`w-full resize-y border-0 px-4 py-3 font-mono text-xs leading-relaxed outline-none ${
-          customized ? "bg-white text-neutral-800" : "bg-neutral-50 text-neutral-500"
-        }`}
-      />
-    </div>
-  );
-}
-
 function profileRequirements(
   profile: SpeechProfile,
   settings: AppSettings,
   providerStatus: ProviderStatus | null,
-  apiKeyDraft: string,
   secrets: {
     gemini: string;
     openai: string;
@@ -1023,15 +713,15 @@ function profileRequirements(
       return [
         {
           label: "Project ID",
-          ok: Boolean(settings.googleCloudProjectId.trim()),
-          value: settings.googleCloudProjectId.trim() || "未入力",
+          ok: Boolean(settings.voice.googleCloudProjectId.trim()),
+          value: settings.voice.googleCloudProjectId.trim() || "未入力",
         },
         {
           label: "リージョン",
-          ok: Boolean(settings.googleCloudRegion.trim()),
-          value: settings.googleCloudRegion.trim() || "未入力",
+          ok: Boolean(settings.voice.googleCloudRegion.trim()),
+          value: settings.voice.googleCloudRegion.trim() || "未入力",
         },
-        settings.googleCloudUseAdc
+        settings.voice.googleCloudUseAdc
           ? {
               label: "認証",
               ok: true,
@@ -1072,11 +762,10 @@ function profileRequirements(
         {
           label: "Gemini APIキー",
           ok:
-            Boolean(apiKeyDraft.trim()) ||
             Boolean(secrets.gemini.trim()) ||
             Boolean(providerStatus?.gemini),
           value:
-            apiKeyDraft.trim() || secrets.gemini.trim() || providerStatus?.gemini
+            secrets.gemini.trim() || providerStatus?.gemini
               ? "保存予定/保存済み"
               : "未保存",
         },
@@ -1112,15 +801,15 @@ function SpeechProfileRow({
           onSelect();
         }
       }}
-      className={`grid w-full gap-3 border-b border-neutral-100 px-4 py-3 text-left last:border-b-0 hover:bg-neutral-50 md:grid-cols-[1fr_auto] ${
-        selected ? "bg-blue-50/80 ring-1 ring-inset ring-blue-200" : "bg-white"
+      className={`grid w-full gap-4 rounded-xl px-4 py-4 text-left transition lg:grid-cols-[minmax(0,1fr)_auto] ${
+        selected ? "bg-blue-50" : "bg-neutral-100/70 hover:bg-neutral-100"
       }`}
     >
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <span
-            className={`size-3 rounded-full border ${
-              selected ? "border-blue-600 bg-blue-600" : "border-neutral-300 bg-white"
+            className={`size-3 shrink-0 rounded-full ${
+              selected ? "bg-blue-600" : "bg-neutral-300"
             }`}
           />
           <span className="font-medium text-neutral-900">{profile.label}</span>
@@ -1164,7 +853,7 @@ function SpeechProfileRow({
             event.stopPropagation();
             onSetup();
           }}
-          className="w-fit rounded-md border border-neutral-200 bg-white px-2.5 py-1 text-xs font-medium text-blue-600 hover:border-blue-200 hover:bg-blue-50"
+          className="w-fit rounded-lg bg-white/80 px-2.5 py-1 text-xs font-medium text-blue-600 transition hover:bg-blue-100/80"
         >
           セットアップ方法
         </button>
@@ -1183,7 +872,7 @@ function ModelMetric({
   note?: string;
 }) {
   return (
-    <span className="min-w-[72px] rounded-md border border-neutral-100 bg-white px-2 py-1 text-center">
+    <span className="min-w-[72px] rounded-lg bg-neutral-100/80 px-2 py-1.5 text-center">
       <span className="block text-[10px] text-neutral-400">{label}</span>
       <span className="block text-xs font-semibold text-neutral-800">{value}</span>
       {note ? <span className="block truncate text-[10px] text-neutral-400">{note}</span> : null}
@@ -1207,9 +896,9 @@ function SetupDialog({
   onCheck: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/28 p-4">
-      <div className="flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b border-neutral-100 px-5 py-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-[2px]">
+      <div className="flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 bg-neutral-50 px-5 py-4">
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-lg font-semibold text-neutral-900">{profile.label}</h2>
@@ -1226,14 +915,14 @@ function SetupDialog({
               type="button"
               onClick={onCheck}
               disabled={checking}
-              className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+              className="rounded-lg bg-blue-100 px-2.5 py-1 text-xs font-medium text-blue-700 transition hover:bg-blue-200/70 disabled:opacity-50"
             >
               {checking ? "確認中…" : "疎通確認"}
             </button>
             <button
               type="button"
               onClick={onClose}
-              className="rounded-md border border-neutral-200 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50"
+              className={settingsButtonSecondaryClass}
             >
               閉じる
             </button>
@@ -1243,10 +932,10 @@ function SetupDialog({
         <div className="min-h-0 overflow-y-auto px-5 py-4">
           {checkResult ? (
             <div
-              className={`mb-4 rounded-lg border p-3 text-sm leading-relaxed ${
+              className={`mb-4 rounded-xl p-3 text-sm leading-relaxed ${
                 checkResult.ok
-                  ? "border-emerald-100 bg-emerald-50 text-emerald-900"
-                  : "border-red-100 bg-red-50 text-red-900"
+                  ? "bg-emerald-50 text-emerald-900"
+                  : "bg-red-50 text-red-900"
               }`}
             >
               <p className="font-medium">{checkResult.message}</p>
@@ -1310,7 +999,7 @@ function SetupDialog({
                   key={doc.url}
                   type="button"
                   onClick={() => void openUrl(doc.url)}
-                  className="rounded-md border border-neutral-200 px-3 py-1.5 text-xs font-medium text-blue-600 hover:border-blue-200 hover:bg-blue-50"
+                  className="rounded-lg bg-neutral-100 px-3 py-1.5 text-xs font-medium text-blue-600 transition hover:bg-blue-100/80"
                 >
                   {doc.label}
                 </button>
@@ -1320,77 +1009,5 @@ function SetupDialog({
         </div>
       </div>
     </div>
-  );
-}
-
-function Toggle({
-  label,
-  description,
-  checked,
-  onChange,
-}: {
-  label: string;
-  description?: string;
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-}) {
-  return (
-    <label className="flex items-center justify-between gap-3 rounded-md border border-neutral-100 px-3 py-2 text-sm text-neutral-700">
-      <span className="min-w-0">
-        <span className="block">{label}</span>
-        {description ? (
-          <span className="mt-0.5 block text-xs leading-relaxed text-neutral-400">
-            {description}
-          </span>
-        ) : null}
-      </span>
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="size-4 rounded border-neutral-300"
-      />
-    </label>
-  );
-}
-
-function SecretField({
-  label,
-  placeholder,
-  value,
-  onChange,
-  helpAction,
-  helpLabel,
-}: {
-  label: string;
-  placeholder: string;
-  value: string;
-  onChange: (value: string) => void;
-  helpAction?: () => void;
-  helpLabel?: string;
-}) {
-  return (
-    <label className="flex flex-col gap-1 text-sm">
-      <span className="flex items-center justify-between gap-2 font-medium text-neutral-700">
-        {label}
-        {helpAction ? (
-          <button
-            type="button"
-            onClick={helpAction}
-            className="text-xs font-normal text-blue-600 hover:underline"
-          >
-            {helpLabel}
-          </button>
-        ) : null}
-      </span>
-      <input
-        type="password"
-        autoComplete="off"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-      />
-    </label>
   );
 }

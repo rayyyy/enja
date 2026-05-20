@@ -1,3 +1,5 @@
+mod cache;
+
 use crate::dictionary::{self, DictionaryEntry};
 use crate::gemini;
 use crate::prompts;
@@ -7,7 +9,7 @@ use base64::Engine;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{Cursor, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -114,6 +116,8 @@ struct SystemAudioMuteGuard {
     join: Option<std::thread::JoinHandle<()>>,
 }
 
+type RecorderSetup = (Arc<Mutex<Vec<i16>>>, u32, u16, cpal::Stream);
+
 impl VoiceManager {
     pub fn new() -> Self {
         Self {
@@ -192,7 +196,7 @@ impl VoiceManager {
 
         if app
             .try_state::<SettingsStore>()
-            .map(|store| store.get().interaction_sounds_enabled)
+            .map(|store| store.get().voice.interaction_sounds_enabled)
             .unwrap_or(false)
         {
             play_interaction_sound("stop");
@@ -211,7 +215,6 @@ impl VoiceManager {
             Ok(text) => {
                 let inserted = paste_text(&text);
                 if inserted {
-                    emit_state(&app, "inserted", Some(mode), None);
                     emit_result(
                         &app,
                         VoiceResultEvent {
@@ -220,7 +223,7 @@ impl VoiceManager {
                             reason: None,
                         },
                     );
-                    hide_voice_window_after(app, Duration::from_millis(1300));
+                    hide_voice_window_after(app, Duration::from_millis(280));
                 } else {
                     show_voice_window(&app, true);
                     emit_state(
@@ -320,8 +323,8 @@ async fn finish_start_session(
     }
 
     let app_for_recorder = app.clone();
-    let microphone_id = settings.selected_microphone_id.clone();
-    let max_recording_seconds = settings.max_recording_seconds;
+    let microphone_id = settings.voice.selected_microphone_id.clone();
+    let max_recording_seconds = settings.voice.max_recording_seconds;
     let recorder = tokio::task::spawn_blocking(move || {
         Recorder::start(app_for_recorder, microphone_id, max_recording_seconds)
     })
@@ -411,13 +414,13 @@ fn fail_start_session(app: &tauri::AppHandle, mode: VoiceMode, err: String) {
 }
 
 fn prepare_system_audio(settings: &AppSettings) -> Option<SystemAudioMuteGuard> {
-    if settings.mute_system_audio_during_recording {
-        if settings.interaction_sounds_enabled {
+    if settings.voice.mute_system_audio_during_recording {
+        if settings.voice.interaction_sounds_enabled {
             play_interaction_sound("start");
         }
         Some(SystemAudioMuteGuard::start())
     } else {
-        if settings.interaction_sounds_enabled {
+        if settings.voice.interaction_sounds_enabled {
             play_interaction_sound("start");
         }
         None
@@ -523,7 +526,7 @@ fn run_recording_thread(
     init_tx: std::sync::mpsc::Sender<Result<(), String>>,
 ) -> Result<AudioClip, String> {
     let started_at = Instant::now();
-    let setup: Result<(Arc<Mutex<Vec<i16>>>, u32, u16, cpal::Stream), String> = (|| {
+    let setup: Result<RecorderSetup, String> = (|| {
         let host = cpal::default_host();
         let device = input_device_by_id(&host, selected_device_id.as_deref())?
             .or_else(|| host.default_input_device())
@@ -602,29 +605,27 @@ fn run_recording_thread(
         return Err("音声が録音されていません。".to_string());
     }
     let duration_secs = started_at.elapsed().as_secs_f32();
+    let wav = samples_to_wav(&samples, sample_rate, channels)?;
+    Ok(AudioClip { wav, duration_secs })
+}
+
+fn samples_to_wav(samples: &[i16], sample_rate: u32, channels: u16) -> Result<Vec<u8>, String> {
     let spec = hound::WavSpec {
         channels,
         sample_rate,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
-    let path = std::env::temp_dir().join(format!(
-        "enja-voice-{}.wav",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-    ));
+    let mut wav = Vec::new();
     {
-        let mut writer = hound::WavWriter::create(&path, spec).map_err(|e| e.to_string())?;
+        let cursor = Cursor::new(&mut wav);
+        let mut writer = hound::WavWriter::new(cursor, spec).map_err(|e| e.to_string())?;
         for sample in samples {
-            writer.write_sample(sample).map_err(|e| e.to_string())?;
+            writer.write_sample(*sample).map_err(|e| e.to_string())?;
         }
         writer.finalize().map_err(|e| e.to_string())?;
     }
-    let wav = std::fs::read(&path).map_err(|e| e.to_string())?;
-    let _ = std::fs::remove_file(path);
-    Ok(AudioClip { wav, duration_secs })
+    Ok(wav)
 }
 
 fn build_input_stream<T>(
@@ -687,7 +688,7 @@ pub fn list_audio_input_devices() -> Result<Vec<AudioInputDevice>, String> {
             .name()
             .unwrap_or_else(|_| "名称未取得のマイク".to_string());
         out.push(AudioInputDevice {
-            id: format!("{}#{idx}", name),
+            id: format!("{name}#{idx}"),
             is_default: name == default_name,
             name,
         });
@@ -704,7 +705,7 @@ fn input_device_by_id(
     };
     for (idx, device) in host.input_devices().map_err(|e| e.to_string())?.enumerate() {
         let name = device.name().unwrap_or_default();
-        if selected_id == format!("{}#{idx}", name) {
+        if selected_id == format!("{name}#{idx}") {
             return Ok(Some(device));
         }
     }
@@ -743,10 +744,10 @@ pub async fn check_speech_profile_setup(
 
 async fn check_google_chirp3_setup(settings: &AppSettings) -> Result<SpeechSetupCheck, String> {
     let mut missing = Vec::new();
-    if settings.google_cloud_project_id.trim().is_empty() {
+    if settings.voice.google_cloud_project_id.trim().is_empty() {
         missing.push("Google Cloud Project ID");
     }
-    if settings.google_cloud_region.trim().is_empty() {
+    if settings.voice.google_cloud_region.trim().is_empty() {
         missing.push("Google Cloudリージョン");
     }
     if !missing.is_empty() {
@@ -763,8 +764,8 @@ async fn check_google_chirp3_setup(settings: &AppSettings) -> Result<SpeechSetup
                 0,
                 format!(
                     "Project ID: {} / リージョン: {}",
-                    settings.google_cloud_project_id.trim(),
-                    settings.google_cloud_region.trim()
+                    settings.voice.google_cloud_project_id.trim(),
+                    settings.voice.google_cloud_region.trim()
                 ),
             );
             details.push(
@@ -823,7 +824,7 @@ async fn transcribe(
     entries: &[DictionaryEntry],
     clip: &AudioClip,
 ) -> Result<String, String> {
-    match settings.speech_profile {
+    match settings.voice.speech_profile {
         SpeechProfile::GoogleChirp3 => {
             if clip.duration_secs > 60.0 || clip.wav.len() > 10 * 1024 * 1024 {
                 transcribe_long_audio_fallback(app, settings, entries, clip).await
@@ -858,10 +859,7 @@ async fn transcribe_long_audio_fallback(
 }
 
 fn http_client(timeout: Duration) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| e.to_string())
+    cache::http_client(timeout, TOKEN_REQUEST_TIMEOUT)
 }
 
 fn speech_request_error(provider: &str, err: reqwest::Error) -> String {
@@ -883,7 +881,7 @@ async fn transcribe_google_chirp3(
                 .to_string(),
         );
     }
-    let project = settings.google_cloud_project_id.trim();
+    let project = settings.voice.google_cloud_project_id.trim();
     if project.is_empty() {
         return Err("Google Cloud Project IDを設定してください。".to_string());
     }
@@ -915,7 +913,7 @@ async fn transcribe_google_chirp3(
         "config": config,
         "content": base64::engine::general_purpose::STANDARD.encode(&clip.wav)
     });
-    let region = settings.google_cloud_region.trim();
+    let region = settings.voice.google_cloud_region.trim();
     let url = format!(
         "https://{region}-speech.googleapis.com/v2/projects/{project}/locations/{region}/recognizers/_:recognize"
     );
@@ -963,7 +961,11 @@ async fn google_access_token(settings: &AppSettings) -> Result<String, String> {
 async fn google_access_token_with_details(
     settings: &AppSettings,
 ) -> Result<(String, Vec<String>), String> {
-    if settings.google_cloud_use_adc {
+    if settings.voice.google_cloud_use_adc {
+        let cache_key = "adc".to_string();
+        if let Some(cached) = cache::cached_google_token(&cache_key) {
+            return Ok(cached);
+        }
         let gcloud = resolve_gcloud_path()?;
         let mut command = std::process::Command::new(&gcloud);
         command.args(["auth", "application-default", "print-access-token"]);
@@ -975,13 +977,11 @@ async fn google_access_token_with_details(
         if output.status.success() {
             let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !token.is_empty() {
-                return Ok((
-                    token,
-                    vec![
-                        "認証方式: ADC".to_string(),
-                        format!("gcloud: {}", gcloud.display()),
-                    ],
-                ));
+                let details = vec![
+                    "認証方式: ADC".to_string(),
+                    format!("gcloud: {}", gcloud.display()),
+                ];
+                return Ok(cache::store_google_token(cache_key, token, details));
             }
         }
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -1016,6 +1016,10 @@ async fn google_access_token_with_details(
 
     let secret = secrets::get_secret("googleServiceAccount")
         .map_err(|_| "Google CloudサービスアカウントJSONを保存してください。".to_string())?;
+    let cache_key = format!("service:{}", cache::hash_cache_key(&secret));
+    if let Some(cached) = cache::cached_google_token(&cache_key) {
+        return Ok(cached);
+    }
     let account: ServiceAccount = serde_json::from_str(&secret).map_err(|e| e.to_string())?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1050,7 +1054,8 @@ async fn google_access_token_with_details(
         return Err(format!("Google OAuth HTTP {status}: {text}"));
     }
     let token: TokenResponse = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    Ok((
+    Ok(cache::store_google_token(
+        cache_key,
         token.access_token,
         vec!["認証方式: サービスアカウントJSON".to_string()],
     ))
@@ -1197,7 +1202,7 @@ async fn transcribe_openai(
         .map_err(|_| "OpenAI APIキーを保存してください。".to_string())?;
     let dictionary_context = dictionary::prompt_lines(entries);
     let prompt =
-        prompts::openai_transcription_prompt(&settings.prompt_overrides, &dictionary_context);
+        prompts::openai_transcription_prompt(&settings.prompts.overrides, &dictionary_context);
     let file = reqwest::multipart::Part::bytes(clip.wav.clone())
         .file_name("audio.wav")
         .mime_str("audio/wav")
@@ -1242,12 +1247,12 @@ async fn transcribe_gemini_audio(
 ) -> Result<String, String> {
     let key = gemini_api_key(app)?;
     let dictionary_context = dictionary::prompt_lines(entries);
-    let prompt = prompts::gemini_audio_user(&settings.prompt_overrides, &dictionary_context);
-    let system = prompts::gemini_audio_system(&settings.prompt_overrides);
+    let prompt = prompts::gemini_audio_user(&settings.prompts.overrides, &dictionary_context);
+    let system = prompts::gemini_audio_system(&settings.prompts.overrides);
     gemini::generate_from_audio(
         &key,
-        settings.finalization_model.model_id(),
-        settings.finalization_model.thinking_level(),
+        settings.voice.finalization_model.model_id(),
+        settings.voice.finalization_model.thinking_level(),
         system.as_ref(),
         &prompt,
         &clip.wav,
@@ -1273,21 +1278,21 @@ async fn finalize_text(
     };
     let (system, user) = match mode {
         VoiceMode::Dictation => (
-            prompts::dictation_system(&settings.prompt_overrides),
-            prompts::dictation_user(&settings.prompt_overrides, &dictionary_section, transcript),
+            prompts::dictation_system(&settings.prompts.overrides),
+            prompts::dictation_user(&settings.prompts.overrides, &dictionary_section, transcript),
         ),
         VoiceMode::Ask if selected_text.trim().is_empty() => (
-            prompts::ask_without_selection_system(&settings.prompt_overrides),
+            prompts::ask_without_selection_system(&settings.prompts.overrides),
             prompts::ask_without_selection_user(
-                &settings.prompt_overrides,
+                &settings.prompts.overrides,
                 &dictionary_section,
                 transcript,
             ),
         ),
         VoiceMode::Ask => (
-            prompts::ask_with_selection_system(&settings.prompt_overrides),
+            prompts::ask_with_selection_system(&settings.prompts.overrides),
             prompts::ask_with_selection_user(
-                &settings.prompt_overrides,
+                &settings.prompts.overrides,
                 &dictionary_section,
                 selected_text,
                 transcript,
@@ -1296,8 +1301,8 @@ async fn finalize_text(
     };
     gemini::generate_text(
         &key,
-        settings.finalization_model.model_id(),
-        settings.finalization_model.thinking_level(),
+        settings.voice.finalization_model.model_id(),
+        settings.voice.finalization_model.thinking_level(),
         system.as_ref(),
         &user,
         0.2,
@@ -1306,18 +1311,13 @@ async fn finalize_text(
     .map(|s| s.trim().to_string())
 }
 
-fn gemini_api_key(app: &tauri::AppHandle) -> Result<String, String> {
+fn gemini_api_key(_app: &tauri::AppHandle) -> Result<String, String> {
     if let Ok(key) = secrets::get_secret("gemini") {
         if !key.trim().is_empty() {
             return Ok(key);
         }
     }
-    let settings = crate::settings::load_settings(app)?;
-    if settings.gemini_api_key.trim().is_empty() {
-        Err("Gemini APIキーを保存してください。".to_string())
-    } else {
-        Ok(settings.gemini_api_key)
-    }
+    Err("Gemini APIキーを保存してください。".to_string())
 }
 
 fn emit_state_once(
@@ -1578,7 +1578,7 @@ end tell
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout)
-        .trim_end_matches(|c| c == '\r' || c == '\n')
+        .trim_end_matches(['\r', '\n'])
         .to_string();
     if text.trim().is_empty() {
         None
@@ -1711,5 +1711,22 @@ fn restore_clipboard(value: Option<String>) {
 fn write_debug_audio(path: &std::path::Path, wav: &[u8]) {
     if let Ok(mut file) = std::fs::File::create(path) {
         let _ = file.write_all(wav);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn samples_to_wav_writes_valid_header_and_samples() {
+        let samples = [0_i16, i16::MAX, i16::MIN + 1, 42];
+        let wav = samples_to_wav(&samples, 16_000, 1).expect("wav");
+        let cursor = Cursor::new(wav);
+        let reader = hound::WavReader::new(cursor).expect("reader");
+
+        assert_eq!(reader.spec().sample_rate, 16_000);
+        assert_eq!(reader.spec().channels, 1);
+        assert_eq!(reader.into_samples::<i16>().count(), samples.len());
     }
 }

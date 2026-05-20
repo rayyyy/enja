@@ -1,7 +1,10 @@
 use serde::Serialize;
+use std::collections::HashMap;
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 const SERVICE: &str = "com.aimhack.enja";
+static SECRET_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +32,7 @@ pub fn save_secret(provider: &str, secret: &str) -> Result<(), String> {
         .output();
 
     if secret.trim().is_empty() {
+        update_cache(&account, None);
         return Ok(());
     }
 
@@ -47,6 +51,7 @@ pub fn save_secret(provider: &str, secret: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     if output.status.success() {
+        update_cache(&account, Some(secret.to_string()));
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
@@ -55,17 +60,46 @@ pub fn save_secret(provider: &str, secret: &str) -> Result<(), String> {
 
 pub fn get_secret(provider: &str) -> Result<String, String> {
     let account = account_name(provider)?;
+    if let Some(value) = cached_secret(&account) {
+        return Ok(value);
+    }
     let output = Command::new("security")
         .args(["find-generic-password", "-w", "-a", &account, "-s", SERVICE])
         .output()
         .map_err(|e| e.to_string())?;
 
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout)
+        let value = String::from_utf8_lossy(&output.stdout)
             .trim_end()
-            .to_string())
+            .to_string();
+        update_cache(&account, Some(value.clone()));
+        Ok(value)
     } else {
         Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+fn cached_secret(account: &str) -> Option<String> {
+    SECRET_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(account).cloned())
+}
+
+fn update_cache(account: &str, value: Option<String>) {
+    if let Ok(mut cache) = SECRET_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        match value {
+            Some(value) => {
+                cache.insert(account.to_string(), value);
+            }
+            None => {
+                cache.remove(account);
+            }
+        }
     }
 }
 

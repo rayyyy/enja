@@ -2,6 +2,7 @@ import { useAppStore } from "../stores/useAppStore";
 import type { UiLanguage } from "../types";
 import { otherUiLanguage } from "./uiLanguage";
 import { getSettings, saveSettings } from "./commands";
+import { withTranslationLanguages } from "./settingsHelpers";
 
 function normalizePair(source: UiLanguage, target: UiLanguage) {
   if (source === target) {
@@ -33,16 +34,7 @@ export async function persistTranslationLanguages(
 
   try {
     const current = await getSettings();
-    await saveSettings({
-      ...current,
-      geminiApiKey: snap.apiKeyDraft.trim(),
-      doubleTapThresholdMs: Math.min(
-        2000,
-        Math.max(100, snap.doubleTapMsDraft),
-      ),
-      sourceLanguage: src,
-      targetLanguage: tgt,
-    });
+    await saveSettings(withTranslationLanguages(current, src, tgt));
   } catch {
     useAppStore.setState(prev);
     throw new Error("言語の保存に失敗しました。もう一度お試しください。");
