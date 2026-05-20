@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
@@ -30,6 +31,25 @@
         "skipTaskbar": true,
         "resizable": true,
         "shadow": true,
+        "dragDropEnabled": false
+      },
+      {
+        "label": "voice",
+        "title": "Enja Voice",
+        "width": 292,
+        "height": 42,
+        "minWidth": 260,
+        "minHeight": 40,
+        "center": false,
+        "maximizable": false,
+        "decorations": false,
+        "transparent": true,
+        "backgroundColor": "#00000000",
+        "alwaysOnTop": true,
+        "visible": false,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
         "dragDropEnabled": false
       }
     ],

@@ -1,8 +1,8 @@
 import { create } from "zustand";
-import type { UiLanguage } from "../types";
+import type { FinalizationModel, SpeechProfile, UiLanguage } from "../types";
 import { otherUiLanguage } from "../lib/uiLanguage";
 
-type View = "translation" | "settings";
+type View = "translation" | "settings" | "dictionary";
 
 interface AppState {
   view: View;
@@ -16,6 +16,15 @@ interface AppState {
   targetLanguage: UiLanguage;
   sourceLanguageDraft: UiLanguage;
   targetLanguageDraft: UiLanguage;
+  selectedMicrophoneId: string | null;
+  speechProfile: SpeechProfile;
+  finalizationModel: FinalizationModel;
+  interactionSoundsEnabled: boolean;
+  muteSystemAudioDuringRecording: boolean;
+  maxRecordingSeconds: number;
+  googleCloudProjectId: string;
+  googleCloudRegion: string;
+  googleCloudUseAdc: boolean;
   hasTranslated: boolean;
 
   setView: (v: View) => void;
@@ -34,6 +43,17 @@ interface AppState {
     doubleTapMs: number,
     source: UiLanguage,
     target: UiLanguage,
+    voice?: {
+      selectedMicrophoneId: string | null;
+      speechProfile: SpeechProfile;
+      finalizationModel: FinalizationModel;
+      interactionSoundsEnabled: boolean;
+      muteSystemAudioDuringRecording: boolean;
+      maxRecordingSeconds: number;
+      googleCloudProjectId: string;
+      googleCloudRegion: string;
+      googleCloudUseAdc: boolean;
+    },
   ) => void;
   setHasTranslated: (v: boolean) => void;
 }
@@ -50,6 +70,15 @@ export const useAppStore = create<AppState>((set) => ({
   targetLanguage: "ja",
   sourceLanguageDraft: "en",
   targetLanguageDraft: "ja",
+  selectedMicrophoneId: null,
+  speechProfile: "googleChirp3",
+  finalizationModel: "gemini35Flash",
+  interactionSoundsEnabled: true,
+  muteSystemAudioDuringRecording: true,
+  maxRecordingSeconds: 300,
+  googleCloudProjectId: "",
+  googleCloudRegion: "asia-northeast1",
+  googleCloudUseAdc: true,
   hasTranslated: false,
 
   setView: (v) => set({ view: v }),
@@ -76,7 +105,7 @@ export const useAppStore = create<AppState>((set) => ({
       sourceLanguageDraft: s.sourceLanguage,
       targetLanguageDraft: s.targetLanguage,
     })),
-  hydrateFromSettings: (apiKey, doubleTapMs, source, target) =>
+  hydrateFromSettings: (apiKey, doubleTapMs, source, target, voice) =>
     set({
       apiKeyDraft: apiKey,
       doubleTapMsDraft: doubleTapMs,
@@ -84,6 +113,7 @@ export const useAppStore = create<AppState>((set) => ({
       targetLanguage: target,
       sourceLanguageDraft: source,
       targetLanguageDraft: target,
+      ...(voice ?? {}),
     }),
   setHasTranslated: (v) => set({ hasTranslated: v }),
 }));

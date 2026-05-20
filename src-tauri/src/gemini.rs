@@ -1,11 +1,13 @@
 use futures_util::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::Duration;
 use tauri::ipc::Channel;
 
 use crate::settings::UiLanguage;
 
 const MODEL: &str = "gemini-3.1-flash-lite-preview";
+const GEMINI_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 
 const SYSTEM_PROMPT_EN_TO_JA: &str = r#"あなたはプロの翻訳家であり、ネイティブスピーカーです。入力された英語のテキストを自然な日本語に翻訳してください。
 
@@ -24,6 +26,39 @@ pub enum TranslateEvent {
     Done,
     #[serde(rename = "error")]
     Error { message: String },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateContentResponse {
+    #[serde(default)]
+    candidates: Vec<GenerateCandidate>,
+    error: Option<GeminiError>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateCandidate {
+    content: Option<GenerateContent>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateContent {
+    #[serde(default)]
+    parts: Vec<GeneratePart>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeneratePart {
+    text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiError {
+    message: Option<String>,
 }
 
 fn system_prompt(source: UiLanguage, target: UiLanguage) -> &'static str {
@@ -98,6 +133,134 @@ pub async fn stream_translate(
 
     let _ = channel.send(TranslateEvent::Done);
     Ok(())
+}
+
+pub async fn generate_text(
+    api_key: &str,
+    model: &str,
+    thinking_level: &str,
+    system_prompt: &str,
+    user_text: &str,
+    temperature: f32,
+) -> Result<String, String> {
+    generate_content(
+        api_key,
+        model,
+        thinking_level,
+        system_prompt,
+        serde_json::json!([{
+            "role": "user",
+            "parts": [{ "text": user_text }]
+        }]),
+        temperature,
+    )
+    .await
+}
+
+pub async fn generate_from_audio(
+    api_key: &str,
+    model: &str,
+    thinking_level: &str,
+    system_prompt: &str,
+    user_text: &str,
+    audio_wav: &[u8],
+    temperature: f32,
+) -> Result<String, String> {
+    use base64::Engine;
+    let audio = base64::engine::general_purpose::STANDARD.encode(audio_wav);
+    generate_content(
+        api_key,
+        model,
+        thinking_level,
+        system_prompt,
+        serde_json::json!([{
+            "role": "user",
+            "parts": [
+                { "text": user_text },
+                {
+                    "inlineData": {
+                        "mimeType": "audio/wav",
+                        "data": audio
+                    }
+                }
+            ]
+        }]),
+        temperature,
+    )
+    .await
+}
+
+async fn generate_content(
+    api_key: &str,
+    model: &str,
+    thinking_level: &str,
+    system_prompt: &str,
+    contents: serde_json::Value,
+    temperature: f32,
+) -> Result<String, String> {
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+        encode_query_component(model),
+        encode_query_component(api_key)
+    );
+
+    let body = serde_json::json!({
+        "systemInstruction": {
+            "parts": [{ "text": system_prompt }]
+        },
+        "contents": contents,
+        "generationConfig": {
+            "temperature": temperature,
+            "thinkingConfig": {
+                "thinkingLevel": thinking_level
+            }
+        }
+    });
+
+    let response = reqwest::Client::builder()
+        .timeout(GEMINI_REQUEST_TIMEOUT)
+        .build()
+        .map_err(|e| e.to_string())?
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(gemini_request_error)?;
+
+    let status = response.status();
+    let text = response.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!("Gemini HTTP {status}: {text}"));
+    }
+
+    let parsed: GenerateContentResponse = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    if let Some(err) = parsed.error {
+        return Err(err
+            .message
+            .unwrap_or_else(|| "Gemini API error".to_string()));
+    }
+    let out = parsed
+        .candidates
+        .into_iter()
+        .filter_map(|c| c.content)
+        .flat_map(|c| c.parts)
+        .filter_map(|p| p.text)
+        .collect::<Vec<_>>()
+        .join("");
+    if out.trim().is_empty() {
+        Err("Geminiから空の応答が返りました。".to_string())
+    } else {
+        Ok(out)
+    }
+}
+
+fn gemini_request_error(err: reqwest::Error) -> String {
+    if err.is_timeout() {
+        "Geminiの応答がタイムアウトしました。短く録音するか、整形モデルを速いものへ切り替えてください。".to_string()
+    } else {
+        err.to_string()
+    }
 }
 
 /// Returns `true` if the stream should stop (done or fatal error).

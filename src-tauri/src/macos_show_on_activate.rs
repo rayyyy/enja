@@ -43,6 +43,7 @@ mod imp {
         if let Some(w) = h.get_webview_window("main") {
             if let Ok(false) = w.is_visible() {
                 let _ = w.show();
+                let _ = w.unminimize();
                 let _ = w.set_focus();
             }
         }

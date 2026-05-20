@@ -1,36 +1,347 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useState } from "react";
+import type {
+  AppSettings,
+  AudioInputDevice,
+  FinalizationModel,
+  ProviderStatus,
+  SpeechProfile,
+  SpeechSetupCheck,
+} from "../types";
 import { useAppStore } from "../stores/useAppStore";
-import { getSettings, saveSettings } from "../lib/commands";
+import {
+  checkSpeechSetup,
+  getProviderStatus,
+  getSettings,
+  listAudioInputDevices,
+  saveProviderSecret,
+  saveSettings,
+} from "../lib/commands";
+
+type SpeechProfileDoc = {
+  label: string;
+  url: string;
+};
+
+type SpeechProfileOption = {
+  value: SpeechProfile;
+  label: string;
+  badge: string;
+  note: string;
+  price: string;
+  priceNote: string;
+  speed: string;
+  accuracy: string;
+  accuracyNote: string;
+  setupSummary: string;
+  setupSteps: string[];
+  enjaDataFlow: string[];
+  docs: SpeechProfileDoc[];
+};
+
+const SPEECH_PROFILES: SpeechProfileOption[] = [
+  {
+    value: "googleChirp3",
+    label: "Google Chirp 3（精度優先）",
+    badge: "推奨",
+    note: "日本語精度と辞書ヒントを重視。短い録音はChirp 3、長い録音は保存済みのOpenAI/Deepgram/Geminiへ自動フォールバックします。",
+    price: "中",
+    priceNote: "目安 $0.016/分",
+    speed: "高",
+    accuracy: "最高",
+    accuracyNote: "日本語/辞書向き",
+    setupSummary: "Google CloudのProject ID、リージョン、ADCまたはサービスアカウントJSONを設定します。",
+    setupSteps: [
+      "Google CloudでSpeech-to-Text APIを有効化します。",
+      "利用するProject IDを確認し、EnjaのGoogle Cloud Project IDへ入力します。",
+      "Chirp 3が使えるリージョンを選び、EnjaのGoogle Cloudリージョンへ入力します。日本語用途の既定は asia-northeast1 です。",
+      "ローカル開発ではADCを使う場合、gcloud auth application-default login を実行します。",
+      "Spotlight/Dockから起動したEnjaはターミナルとPATHが違うため、Enjaは /opt/homebrew/bin/gcloud、/usr/local/bin/gcloud、~/google-cloud-sdk/bin/gcloud などを自動探索します。",
+      "gcloudが見つからない場合は、Google Cloud SDKを通常の場所へインストールするか、ADCをオフにしてサービスアカウントJSONを保存します。",
+      "ADCを使わない場合はサービスアカウントJSONを作成し、EnjaのサービスアカウントJSON欄へ保存します。",
+    ],
+    enjaDataFlow: [
+      "Enjaは録音WAVをSpeech-to-Text V2 recognizeへ送ります。",
+      "ADC利用時はgcloudからアクセストークンを取得します。GUIアプリのPATHに依存しないよう代表的なgcloud配置場所も探索します。",
+      "modelは chirp_3、languageCodesは ja-JP を使います。",
+      "辞書に登録した優先表記はadaptation phraseとして最大500件渡します。",
+      "取得した文字起こしをGeminiの整形モデルへ渡し、最終文へ整えます。",
+    ],
+    docs: [
+      {
+        label: "Chirp 3モデル",
+        url: "https://cloud.google.com/speech-to-text/v2/docs/chirp-model",
+      },
+      {
+        label: "Speech-to-Text料金",
+        url: "https://cloud.google.com/speech-to-text/pricing",
+      },
+      {
+        label: "ADCの仕組み",
+        url: "https://cloud.google.com/docs/authentication/application-default-credentials",
+      },
+    ],
+  },
+  {
+    value: "deepgramNova3",
+    label: "Deepgram Nova-3（低コスト）",
+    badge: "低コスト",
+    note: "安く速い候補。辞書語はDeepgramのkeytermとして渡すため、専門用語にも寄せやすい構成です。",
+    price: "低",
+    priceNote: "目安 $0.0048/分 + keyterm",
+    speed: "高",
+    accuracy: "中",
+    accuracyNote: "速度重視",
+    setupSummary: "Deepgram APIキーを取得し、EnjaのDeepgram APIキー欄へ保存します。",
+    setupSteps: [
+      "Deepgram ConsoleでAPIキーを作成します。",
+      "EnjaのDeepgram APIキー欄へ貼り付けて保存します。",
+      "音声認識モデルでDeepgram Nova-3を選択します。",
+      "辞書機能を使う場合、登録語はkeytermとしてリクエストに渡されます。",
+    ],
+    enjaDataFlow: [
+      "Enjaは録音WAVをDeepgram /v1/listen へ送ります。",
+      "model=nova-3、language=ja、smart_format=true を指定します。",
+      "辞書に登録した優先表記はkeytermとして最大100件渡します。",
+      "取得した文字起こしをGeminiの整形モデルへ渡し、最終文へ整えます。",
+    ],
+    docs: [
+      {
+        label: "Nova-3クイックスタート",
+        url: "https://developers.deepgram.com/docs/nova-quickstart",
+      },
+      {
+        label: "Deepgram料金",
+        url: "https://deepgram.com/pricing",
+      },
+      {
+        label: "モデル一覧",
+        url: "https://developers.deepgram.com/docs/models",
+      },
+    ],
+  },
+  {
+    value: "openAiGpt4oTranscribe",
+    label: "OpenAI gpt-4o-transcribe",
+    badge: "高精度",
+    note: "セットアップが軽く、長めの録音にも扱いやすい高精度な汎用文字起こしです。",
+    price: "低",
+    priceNote: "目安 $0.006/分",
+    speed: "中",
+    accuracy: "高",
+    accuracyNote: "汎用高精度",
+    setupSummary: "OpenAI APIキーを取得し、EnjaのOpenAI APIキー欄へ保存します。",
+    setupSteps: [
+      "OpenAI PlatformでAPIキーを作成します。",
+      "EnjaのOpenAI APIキー欄へ貼り付けて保存します。",
+      "音声認識モデルでOpenAI gpt-4o-transcribeを選択します。",
+      "必要に応じてOpenAI Platform側で使用量上限や請求アラートを設定します。",
+    ],
+    enjaDataFlow: [
+      "Enjaは録音WAVをOpenAI /v1/audio/transcriptions へ送ります。",
+      "modelは gpt-4o-transcribe、languageは ja を指定します。",
+      "辞書に登録した優先表記はpromptとして渡します。",
+      "取得した文字起こしをGeminiの整形モデルへ渡し、最終文へ整えます。",
+    ],
+    docs: [
+      {
+        label: "Speech to text",
+        url: "https://platform.openai.com/docs/guides/speech-to-text",
+      },
+      {
+        label: "OpenAI料金",
+        url: "https://platform.openai.com/docs/pricing/",
+      },
+      {
+        label: "モデル詳細",
+        url: "https://platform.openai.com/docs/models/gpt-4o-transcribe",
+      },
+    ],
+  },
+  {
+    value: "openAiGpt4oMiniTranscribe",
+    label: "OpenAI gpt-4o-mini-transcribe",
+    badge: "最安寄り",
+    note: "OpenAI構成の低コスト版。軽い日常入力ならコストを優先できます。",
+    price: "最安",
+    priceNote: "目安 $0.003/分",
+    speed: "高",
+    accuracy: "中",
+    accuracyNote: "日常入力向き",
+    setupSummary: "OpenAI APIキーを取得し、EnjaのOpenAI APIキー欄へ保存します。",
+    setupSteps: [
+      "OpenAI PlatformでAPIキーを作成します。",
+      "EnjaのOpenAI APIキー欄へ貼り付けて保存します。",
+      "音声認識モデルでOpenAI gpt-4o-mini-transcribeを選択します。",
+      "精度が足りない場合はgpt-4o-transcribeへ切り替えます。",
+    ],
+    enjaDataFlow: [
+      "Enjaは録音WAVをOpenAI /v1/audio/transcriptions へ送ります。",
+      "modelは gpt-4o-mini-transcribe、languageは ja を指定します。",
+      "辞書に登録した優先表記はpromptとして渡します。",
+      "取得した文字起こしをGeminiの整形モデルへ渡し、最終文へ整えます。",
+    ],
+    docs: [
+      {
+        label: "Speech to text",
+        url: "https://platform.openai.com/docs/guides/speech-to-text",
+      },
+      {
+        label: "OpenAI料金",
+        url: "https://platform.openai.com/docs/pricing/",
+      },
+    ],
+  },
+  {
+    value: "geminiAudio",
+    label: "Gemini音声入力",
+    badge: "簡易",
+    note: "Gemini APIキーだけで試せる簡易構成。専用STTではなく音声理解として文字起こしします。",
+    price: "変動",
+    priceNote: "音声token課金",
+    speed: "中",
+    accuracy: "中",
+    accuracyNote: "簡易構成",
+    setupSummary: "Google AI StudioでGemini APIキーを取得し、EnjaのGemini APIキー欄へ保存します。",
+    setupSteps: [
+      "Google AI StudioでGemini APIキーを作成します。",
+      "EnjaのGemini APIキー欄へ貼り付けて保存します。",
+      "音声認識モデルでGemini音声入力を選択します。",
+      "実際に使うGeminiモデルは、同じ画面の整形モデルで選択したモデルです。",
+    ],
+    enjaDataFlow: [
+      "Enjaは録音WAVをGemini generateContentへ音声入力として送ります。",
+      "辞書に登録した優先表記はプロンプト内に含めます。",
+      "Geminiの音声理解結果を文字起こしとして受け取り、同じGeminiキーで最終整形します。",
+      "Gemini公式ドキュメント上も、専用のリアルタイム文字起こし用途はGoogle Cloud Speech-to-Textが推奨されています。",
+    ],
+    docs: [
+      {
+        label: "Gemini音声入力",
+        url: "https://ai.google.dev/gemini-api/docs/audio",
+      },
+      {
+        label: "Gemini料金",
+        url: "https://ai.google.dev/gemini-api/docs/pricing",
+      },
+      {
+        label: "APIキー作成",
+        url: "https://ai.google.dev/tutorials/setup",
+      },
+    ],
+  },
+];
+
+const FINALIZATION_MODELS: { value: FinalizationModel; label: string }[] = [
+  { value: "gemini31FlashLite", label: "Gemini 3.1 Flash-Lite（最速）" },
+  { value: "gemini35Flash", label: "Gemini 3.5 Flash（高速・標準）" },
+  { value: "gemini31ProPreview", label: "Gemini 3.1 Pro Preview（精度優先）" },
+];
 
 export function SettingsView() {
   const { apiKeyDraft, setApiKeyDraft, setView, hydrateFromSettings } =
     useAppStore();
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [devices, setDevices] = useState<AudioInputDevice[]>([]);
+  const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  const [launchAtLogin, setLaunchAtLogin] = useState(false);
+  const [setupProfile, setSetupProfile] = useState<SpeechProfile | null>(null);
+  const [checkingSetup, setCheckingSetup] = useState(false);
+  const [setupCheck, setSetupCheck] = useState<SpeechSetupCheck | null>(null);
+  const [secrets, setSecrets] = useState({
+    gemini: "",
+    openai: "",
+    deepgram: "",
+    googleServiceAccount: "",
+  });
 
   useEffect(() => {
-    void getSettings().then((s) => setLaunchAtLogin(s.launchAtLogin));
-  }, []);
+    void (async () => {
+      const [s, d, status] = await Promise.all([
+        getSettings(),
+        listAudioInputDevices().catch(() => []),
+        getProviderStatus().catch(() => null),
+      ]);
+      setSettings(s);
+      setApiKeyDraft(s.geminiApiKey);
+      setDevices(d);
+      setProviderStatus(status);
+    })();
+  }, [setApiKeyDraft]);
+
+  function patchSettings(patch: Partial<AppSettings>) {
+    setSettings((prev) => (prev ? { ...prev, ...patch } : prev));
+  }
+
+  function openSetup(profile: SpeechProfile) {
+    setSetupProfile(profile);
+    setSetupCheck(null);
+  }
+
+  async function handleSetupCheck(profile: SpeechProfile) {
+    if (!settings) return;
+    setCheckingSetup(true);
+    setSetupCheck(null);
+    try {
+      setSetupCheck(await checkSpeechSetup(profile, settings));
+    } catch (e) {
+      setSetupCheck({
+        ok: false,
+        message: String(e),
+        details: [],
+      });
+    } finally {
+      setCheckingSetup(false);
+    }
+  }
 
   async function handleSave() {
+    if (!settings) return;
     setSaving(true);
     setMsg(null);
     try {
-      const current = await getSettings();
-      await saveSettings({
-        ...current,
+      const next = {
+        ...settings,
         geminiApiKey: apiKeyDraft.trim(),
-        launchAtLogin,
-      });
-      const s = await getSettings();
-      hydrateFromSettings(
-        s.geminiApiKey,
-        s.doubleTapThresholdMs,
-        s.sourceLanguage,
-        s.targetLanguage,
+      };
+      await saveSettings(next);
+      await Promise.all(
+        ([
+          ["gemini", secrets.gemini],
+          ["openai", secrets.openai],
+          ["deepgram", secrets.deepgram],
+          ["googleServiceAccount", secrets.googleServiceAccount],
+        ] as const)
+          .filter(([, value]) => value.trim())
+          .map(([provider, value]) => saveProviderSecret(provider, value.trim())),
       );
+      const [fresh, status] = await Promise.all([getSettings(), getProviderStatus()]);
+      setSettings(fresh);
+      setProviderStatus(status);
+      hydrateFromSettings(
+        fresh.geminiApiKey,
+        fresh.doubleTapThresholdMs,
+        fresh.sourceLanguage,
+        fresh.targetLanguage,
+        {
+          selectedMicrophoneId: fresh.selectedMicrophoneId,
+          speechProfile: fresh.speechProfile,
+          finalizationModel: fresh.finalizationModel,
+          interactionSoundsEnabled: fresh.interactionSoundsEnabled,
+          muteSystemAudioDuringRecording: fresh.muteSystemAudioDuringRecording,
+          maxRecordingSeconds: fresh.maxRecordingSeconds,
+          googleCloudProjectId: fresh.googleCloudProjectId,
+          googleCloudRegion: fresh.googleCloudRegion,
+          googleCloudUseAdc: fresh.googleCloudUseAdc,
+        },
+      );
+      setSecrets({
+        gemini: "",
+        openai: "",
+        deepgram: "",
+        googleServiceAccount: "",
+      });
       setMsg("保存しました。");
     } catch (e) {
       setMsg(String(e));
@@ -39,96 +350,651 @@ export function SettingsView() {
     }
   }
 
+  if (!settings) {
+    return <p className="text-sm text-neutral-500">設定を読み込んでいます…</p>;
+  }
+
+  const activeSetupProfile = setupProfile
+    ? SPEECH_PROFILES.find((profile) => profile.value === setupProfile)
+    : null;
+
   return (
-    <div className="flex flex-col gap-5">
-      <header className="flex flex-col items-center gap-2 text-center">
-        <h1 className="font-play text-[2.25rem] leading-none font-bold tracking-[0.02em] sm:text-[2.5rem]">
-          <span className="bg-linear-to-br from-neutral-800 via-neutral-700 to-blue-600 bg-clip-text text-transparent">
-            Enja
-          </span>
-        </h1>
-        <p className="max-w-[16rem] text-[11px] leading-snug text-neutral-400">
-          Gemini APIキーを入力して翻訳を有効にします
-        </p>
+    <div className="flex max-h-[560px] min-h-0 flex-col gap-5 overflow-y-auto pr-1">
+      <header className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold text-neutral-900">設定</h1>
+          <p className="mt-1 text-sm text-neutral-500">
+            音声入力、モデル、APIキーを設定します。
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setView("dictionary")}
+            className="rounded-md border border-neutral-200 px-3 py-1.5 text-sm text-neutral-600 hover:bg-neutral-50"
+          >
+            辞書
+          </button>
+          <button
+            type="button"
+            onClick={() => setView("translation")}
+            className="rounded-md border border-neutral-200 px-3 py-1.5 text-sm text-neutral-600 hover:bg-neutral-50"
+          >
+            戻る
+          </button>
+        </div>
       </header>
 
-      <div className="flex items-center justify-between gap-2 border-t border-neutral-100 pt-4">
-        <h2 className="text-base font-semibold text-neutral-800">設定</h2>
-        <button
-          type="button"
-          className="text-xs text-blue-500 underline-offset-2 hover:underline"
-          onClick={() => void openUrl("https://aistudio.google.com/apikey")}
-        >
-          API キーを取得
-        </button>
-      </div>
+      <section className="grid gap-4 rounded-lg border border-neutral-200 bg-white p-4 md:grid-cols-2">
+        <SectionTitle title="音声入力" />
+        <label className="flex flex-col gap-1 text-sm md:col-span-2">
+          <span className="font-medium text-neutral-700">マイク</span>
+          <select
+            value={settings.selectedMicrophoneId ?? ""}
+            onChange={(e) =>
+              patchSettings({ selectedMicrophoneId: e.target.value || null })
+            }
+            className="rounded-md border border-neutral-200 bg-white px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+          >
+            <option value="">システム既定</option>
+            {devices.map((device) => (
+              <option key={device.id} value={device.id}>
+                {device.name}
+                {device.isDefault ? "（既定）" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
 
-      <label className="flex flex-col gap-1 text-sm">
-        <span className="text-neutral-500">Gemini API キー</span>
-        <input
-          className="rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-800 outline-none ring-blue-500/30 focus:ring-2"
-          type="password"
-          autoComplete="off"
-          value={apiKeyDraft}
-          onChange={(e) => setApiKeyDraft(e.target.value)}
-          placeholder="AIza..."
+        <div className="flex flex-col gap-2 md:col-span-2">
+          <div>
+            <h3 className="text-sm font-medium text-neutral-700">音声認識モデル</h3>
+            <p className="mt-1 text-xs leading-relaxed text-neutral-400">
+              料金は公式ページの目安です。実際の請求は利用量、リージョン、追加機能、契約プランで変わります。
+            </p>
+          </div>
+          <div className="overflow-hidden rounded-lg border border-neutral-200">
+            {SPEECH_PROFILES.map((profile) => (
+              <SpeechProfileRow
+                key={profile.value}
+                profile={profile}
+                selected={settings.speechProfile === profile.value}
+                requirements={profileRequirements(
+                  profile.value,
+                  settings,
+                  providerStatus,
+                  apiKeyDraft,
+                  secrets,
+                )}
+                onSelect={() => patchSettings({ speechProfile: profile.value })}
+                onSetup={() => openSetup(profile.value)}
+              />
+            ))}
+          </div>
+        </div>
+
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="font-medium text-neutral-700">整形モデル</span>
+          <select
+            value={settings.finalizationModel}
+            onChange={(e) =>
+              patchSettings({
+                finalizationModel: e.target.value as FinalizationModel,
+              })
+            }
+            className="rounded-md border border-neutral-200 bg-white px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+          >
+            {FINALIZATION_MODELS.map((model) => (
+              <option key={model.value} value={model.value}>
+                {model.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="font-medium text-neutral-700">最大録音秒数</span>
+          <input
+            type="number"
+            min={5}
+            max={600}
+            value={settings.maxRecordingSeconds}
+            onChange={(e) =>
+              patchSettings({ maxRecordingSeconds: Number(e.target.value) })
+            }
+            className="rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+          />
+        </label>
+
+        <Toggle
+          label="インタラクション音"
+          checked={settings.interactionSoundsEnabled}
+          onChange={(checked) => patchSettings({ interactionSoundsEnabled: checked })}
         />
-      </label>
+        <Toggle
+          label="音声入力中にシステム音をミュート"
+          description="録音開始直前にMacの出力をミュートし、録音ストリームを閉じた後で元の音量とミュート状態へ戻します。"
+          checked={settings.muteSystemAudioDuringRecording}
+          onChange={(checked) =>
+            patchSettings({ muteSystemAudioDuringRecording: checked })
+          }
+        />
+        <div className="rounded-lg border border-blue-100 bg-blue-50/70 p-3 text-xs leading-relaxed text-blue-950 md:col-span-2">
+          このミュート設定は、YouTubeなどのPC内再生音がスピーカーから出てマイクへ回り込むのを抑えるための機能です。
+          Typelessのような完全な音声分離ではなく、macOSの出力を録音中だけ止める方式なので、
+          外部スピーカーの残響や別端末の音はマイク側で拾う可能性があります。
+          内蔵スピーカー利用時の実用上の混入はかなり減らせるため、通常はオン推奨です。
+        </div>
+      </section>
 
-      <label className="flex cursor-pointer items-center gap-2 text-sm text-neutral-700">
-        <input
-          type="checkbox"
-          className="size-4 rounded border-neutral-300 text-blue-500 focus:ring-blue-500/30"
-          checked={launchAtLogin}
-          onChange={(e) => {
-            const checked = e.target.checked;
-            setLaunchAtLogin(checked);
-            void (async () => {
-              try {
-                const cur = await getSettings();
-                await saveSettings({ ...cur, launchAtLogin: checked });
-                setMsg(
-                  checked
-                    ? "ログイン時に自動で起動するようにしました。"
-                    : "ログイン時の自動起動をオフにしました。",
-                );
-              } catch (err) {
-                setLaunchAtLogin(!checked);
-                setMsg(String(err));
-              }
-            })();
+      <section className="grid gap-4 rounded-lg border border-neutral-200 bg-white p-4 md:grid-cols-2">
+        <SectionTitle title="APIキー / 認証" />
+        <SecretField
+          label="Gemini APIキー"
+          placeholder={providerStatus?.gemini ? "保存済み" : "AIza..."}
+          value={apiKeyDraft || secrets.gemini}
+          onChange={(value) => {
+            setApiKeyDraft(value);
+            setSecrets((prev) => ({ ...prev, gemini: value }));
           }}
+          helpAction={() => void openUrl("https://aistudio.google.com/apikey")}
+          helpLabel="取得"
         />
-        <span>Mac ログイン時に自動起動する</span>
-      </label>
+        <SecretField
+          label="OpenAI APIキー"
+          placeholder={providerStatus?.openai ? "保存済み" : "sk-..."}
+          value={secrets.openai}
+          onChange={(value) => setSecrets((prev) => ({ ...prev, openai: value }))}
+        />
+        <SecretField
+          label="Deepgram APIキー"
+          placeholder={providerStatus?.deepgram ? "保存済み" : "Deepgram key"}
+          value={secrets.deepgram}
+          onChange={(value) => setSecrets((prev) => ({ ...prev, deepgram: value }))}
+        />
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="font-medium text-neutral-700">Google Cloud Project ID</span>
+          <input
+            value={settings.googleCloudProjectId}
+            onChange={(e) => patchSettings({ googleCloudProjectId: e.target.value })}
+            placeholder="my-gcp-project"
+            className="rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="font-medium text-neutral-700">Google Cloudリージョン</span>
+          <input
+            value={settings.googleCloudRegion}
+            onChange={(e) => patchSettings({ googleCloudRegion: e.target.value })}
+            placeholder="asia-northeast1"
+            className="rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+          />
+        </label>
+        <Toggle
+          label="Google Cloud ADCを使用"
+          checked={settings.googleCloudUseAdc}
+          onChange={(checked) => patchSettings({ googleCloudUseAdc: checked })}
+        />
+        {!settings.googleCloudUseAdc ? (
+          <label className="flex flex-col gap-1 text-sm md:col-span-2">
+            <span className="font-medium text-neutral-700">
+              サービスアカウントJSON
+              {providerStatus?.googleServiceAccount ? "（保存済み）" : ""}
+            </span>
+            <textarea
+              value={secrets.googleServiceAccount}
+              onChange={(e) =>
+                setSecrets((prev) => ({
+                  ...prev,
+                  googleServiceAccount: e.target.value,
+                }))
+              }
+              rows={4}
+              placeholder="{...}"
+              className="resize-none rounded-md border border-neutral-200 px-3 py-2 font-mono text-xs outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+            />
+          </label>
+        ) : null}
+      </section>
 
-      {msg ? (
-        <p className="text-xs text-neutral-500">{msg}</p>
-      ) : null}
+      <section className="grid gap-4 rounded-lg border border-neutral-200 bg-white p-4 md:grid-cols-2">
+        <SectionTitle title="アプリ" />
+        <Toggle
+          label="Macログイン時に自動起動"
+          checked={settings.launchAtLogin}
+          onChange={(checked) => patchSettings({ launchAtLogin: checked })}
+        />
+      </section>
 
-      <div className="mt-1 flex flex-wrap gap-2">
+      <div className="sticky bottom-0 flex items-center gap-3 border-t border-neutral-100 bg-neutral-50/95 py-3 backdrop-blur">
         <button
           type="button"
-          className="rounded-lg bg-blue-500 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-600 disabled:opacity-50"
+          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
           disabled={saving}
           onClick={() => void handleSave()}
         >
           {saving ? "保存中…" : "保存"}
         </button>
-        <button
-          type="button"
-          className="rounded-lg border border-neutral-200 px-4 py-2 text-sm text-neutral-600 transition-colors hover:bg-neutral-50"
-          onClick={() => setView("translation")}
-        >
-          {"\u623b\u308b"}
-        </button>
+        {msg ? <p className="text-sm text-neutral-500">{msg}</p> : null}
       </div>
 
-      <p className="text-[11px] leading-relaxed text-neutral-400">
-        macOS では「システム設定 → プライバシーとセキュリティ →
-        アクセシビリティ」でこのアプリを許可してください（Cmd+C
-        連打の検出に必要です）。
+      <p className="text-xs leading-relaxed text-neutral-400">
+        macOSではアクセシビリティ、入力監視、マイクの許可が必要です。Fnキーが取得できない環境では、将来の代替ショートカット設定で回避できるようにします。
       </p>
+
+      {activeSetupProfile ? (
+        <SetupDialog
+          profile={activeSetupProfile}
+          requirements={profileRequirements(
+            activeSetupProfile.value,
+            settings,
+            providerStatus,
+            apiKeyDraft,
+            secrets,
+          )}
+          onClose={() => setSetupProfile(null)}
+          checking={checkingSetup}
+          checkResult={setupCheck}
+          onCheck={() => void handleSetupCheck(activeSetupProfile.value)}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function profileRequirements(
+  profile: SpeechProfile,
+  settings: AppSettings,
+  providerStatus: ProviderStatus | null,
+  apiKeyDraft: string,
+  secrets: {
+    gemini: string;
+    openai: string;
+    deepgram: string;
+    googleServiceAccount: string;
+  },
+) {
+  switch (profile) {
+    case "googleChirp3":
+      return [
+        {
+          label: "Project ID",
+          ok: Boolean(settings.googleCloudProjectId.trim()),
+          value: settings.googleCloudProjectId.trim() || "未入力",
+        },
+        {
+          label: "リージョン",
+          ok: Boolean(settings.googleCloudRegion.trim()),
+          value: settings.googleCloudRegion.trim() || "未入力",
+        },
+        settings.googleCloudUseAdc
+          ? {
+              label: "認証",
+              ok: true,
+              value: "ADCを使用",
+            }
+          : {
+              label: "認証",
+              ok:
+                Boolean(secrets.googleServiceAccount.trim()) ||
+                Boolean(providerStatus?.googleServiceAccount),
+              value:
+                secrets.googleServiceAccount.trim() || providerStatus?.googleServiceAccount
+                  ? "サービスアカウントJSON"
+                  : "未保存",
+            },
+      ];
+    case "deepgramNova3":
+      return [
+        {
+          label: "Deepgram APIキー",
+          ok: Boolean(secrets.deepgram.trim()) || Boolean(providerStatus?.deepgram),
+          value:
+            secrets.deepgram.trim() || providerStatus?.deepgram ? "保存予定/保存済み" : "未保存",
+        },
+      ];
+    case "openAiGpt4oTranscribe":
+    case "openAiGpt4oMiniTranscribe":
+      return [
+        {
+          label: "OpenAI APIキー",
+          ok: Boolean(secrets.openai.trim()) || Boolean(providerStatus?.openai),
+          value:
+            secrets.openai.trim() || providerStatus?.openai ? "保存予定/保存済み" : "未保存",
+        },
+      ];
+    case "geminiAudio":
+      return [
+        {
+          label: "Gemini APIキー",
+          ok:
+            Boolean(apiKeyDraft.trim()) ||
+            Boolean(secrets.gemini.trim()) ||
+            Boolean(providerStatus?.gemini),
+          value:
+            apiKeyDraft.trim() || secrets.gemini.trim() || providerStatus?.gemini
+              ? "保存予定/保存済み"
+              : "未保存",
+        },
+      ];
+  }
+}
+
+function SpeechProfileRow({
+  profile,
+  selected,
+  requirements,
+  onSelect,
+  onSetup,
+}: {
+  profile: SpeechProfileOption;
+  selected: boolean;
+  requirements: ReturnType<typeof profileRequirements>;
+  onSelect: () => void;
+  onSetup: () => void;
+}) {
+  const configured = requirements.every((item) => item.ok);
+
+  return (
+    <div
+      role="button"
+      aria-pressed={selected}
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.currentTarget !== event.target) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
+      className={`grid w-full gap-3 border-b border-neutral-100 px-4 py-3 text-left last:border-b-0 hover:bg-neutral-50 md:grid-cols-[1fr_auto] ${
+        selected ? "bg-blue-50/80 ring-1 ring-inset ring-blue-200" : "bg-white"
+      }`}
+    >
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={`size-3 rounded-full border ${
+              selected ? "border-blue-600 bg-blue-600" : "border-neutral-300 bg-white"
+            }`}
+          />
+          <span className="font-medium text-neutral-900">{profile.label}</span>
+          <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] text-neutral-600">
+            {profile.badge}
+          </span>
+          <span
+            className={`rounded-full px-2 py-0.5 text-[11px] ${
+              configured
+                ? "bg-emerald-50 text-emerald-700"
+                : "bg-amber-50 text-amber-700"
+            }`}
+          >
+            {configured ? "設定済み" : "要セットアップ"}
+          </span>
+        </div>
+        <p className="mt-1 text-xs leading-relaxed text-neutral-500">{profile.note}</p>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {requirements.map((item) => (
+            <span
+              key={item.label}
+              className={`rounded-full px-2 py-0.5 text-[11px] ${
+                item.ok ? "bg-neutral-100 text-neutral-600" : "bg-red-50 text-red-700"
+              }`}
+            >
+              {item.label}: {item.value}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2 md:items-end">
+        <div className="grid grid-cols-3 gap-1.5">
+          <ModelMetric label="価格" value={profile.price} note={profile.priceNote} />
+          <ModelMetric label="スピード" value={profile.speed} />
+          <ModelMetric label="精度" value={profile.accuracy} note={profile.accuracyNote} />
+        </div>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onSetup();
+          }}
+          className="w-fit rounded-md border border-neutral-200 bg-white px-2.5 py-1 text-xs font-medium text-blue-600 hover:border-blue-200 hover:bg-blue-50"
+        >
+          セットアップ方法
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ModelMetric({
+  label,
+  value,
+  note,
+}: {
+  label: string;
+  value: string;
+  note?: string;
+}) {
+  return (
+    <span className="min-w-[72px] rounded-md border border-neutral-100 bg-white px-2 py-1 text-center">
+      <span className="block text-[10px] text-neutral-400">{label}</span>
+      <span className="block text-xs font-semibold text-neutral-800">{value}</span>
+      {note ? <span className="block truncate text-[10px] text-neutral-400">{note}</span> : null}
+    </span>
+  );
+}
+
+function SetupDialog({
+  profile,
+  requirements,
+  onClose,
+  checking,
+  checkResult,
+  onCheck,
+}: {
+  profile: SpeechProfileOption;
+  requirements: ReturnType<typeof profileRequirements>;
+  onClose: () => void;
+  checking: boolean;
+  checkResult: SpeechSetupCheck | null;
+  onCheck: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/28 p-4">
+      <div className="flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-neutral-100 px-5 py-4">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-lg font-semibold text-neutral-900">{profile.label}</h2>
+              <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-600">
+                {profile.badge}
+              </span>
+            </div>
+            <p className="mt-1 text-sm leading-relaxed text-neutral-500">
+              {profile.setupSummary}
+            </p>
+          </div>
+          <div className="flex shrink-0 gap-2">
+            <button
+              type="button"
+              onClick={onCheck}
+              disabled={checking}
+              className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+            >
+              {checking ? "確認中…" : "疎通確認"}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md border border-neutral-200 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50"
+            >
+              閉じる
+            </button>
+          </div>
+        </div>
+
+        <div className="min-h-0 overflow-y-auto px-5 py-4">
+          {checkResult ? (
+            <div
+              className={`mb-4 rounded-lg border p-3 text-sm leading-relaxed ${
+                checkResult.ok
+                  ? "border-emerald-100 bg-emerald-50 text-emerald-900"
+                  : "border-red-100 bg-red-50 text-red-900"
+              }`}
+            >
+              <p className="font-medium">{checkResult.message}</p>
+              {checkResult.details.length ? (
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">
+                  {checkResult.details.map((detail) => (
+                    <li key={detail}>{detail}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="grid gap-3 md:grid-cols-3">
+            <ModelMetric label="価格" value={profile.price} note={profile.priceNote} />
+            <ModelMetric label="スピード" value={profile.speed} />
+            <ModelMetric label="精度" value={profile.accuracy} note={profile.accuracyNote} />
+          </div>
+
+          <section className="mt-5">
+            <h3 className="text-sm font-semibold text-neutral-900">必要な設定</h3>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {requirements.map((item) => (
+                <span
+                  key={item.label}
+                  className={`rounded-full px-2.5 py-1 text-xs ${
+                    item.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
+                  }`}
+                >
+                  {item.label}: {item.value}
+                </span>
+              ))}
+            </div>
+          </section>
+
+          <section className="mt-5">
+            <h3 className="text-sm font-semibold text-neutral-900">セットアップ手順</h3>
+            <ol className="mt-2 list-decimal space-y-2 pl-5 text-sm leading-relaxed text-neutral-600">
+              {profile.setupSteps.map((step) => (
+                <li key={step}>{step}</li>
+              ))}
+            </ol>
+          </section>
+
+          <section className="mt-5">
+            <h3 className="text-sm font-semibold text-neutral-900">
+              Enjaが設定画面から利用する情報
+            </h3>
+            <ul className="mt-2 list-disc space-y-2 pl-5 text-sm leading-relaxed text-neutral-600">
+              {profile.enjaDataFlow.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </section>
+
+          <section className="mt-5">
+            <h3 className="text-sm font-semibold text-neutral-900">参照ページ</h3>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {profile.docs.map((doc) => (
+                <button
+                  key={doc.url}
+                  type="button"
+                  onClick={() => void openUrl(doc.url)}
+                  className="rounded-md border border-neutral-200 px-3 py-1.5 text-xs font-medium text-blue-600 hover:border-blue-200 hover:bg-blue-50"
+                >
+                  {doc.label}
+                </button>
+              ))}
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SectionTitle({ title }: { title: string }) {
+  return (
+    <h2 className="text-sm font-semibold tracking-wide text-neutral-900 md:col-span-2">
+      {title}
+    </h2>
+  );
+}
+
+function Toggle({
+  label,
+  description,
+  checked,
+  onChange,
+}: {
+  label: string;
+  description?: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="flex items-center justify-between gap-3 rounded-md border border-neutral-100 px-3 py-2 text-sm text-neutral-700">
+      <span className="min-w-0">
+        <span className="block">{label}</span>
+        {description ? (
+          <span className="mt-0.5 block text-xs leading-relaxed text-neutral-400">
+            {description}
+          </span>
+        ) : null}
+      </span>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="size-4 rounded border-neutral-300"
+      />
+    </label>
+  );
+}
+
+function SecretField({
+  label,
+  placeholder,
+  value,
+  onChange,
+  helpAction,
+  helpLabel,
+}: {
+  label: string;
+  placeholder: string;
+  value: string;
+  onChange: (value: string) => void;
+  helpAction?: () => void;
+  helpLabel?: string;
+}) {
+  return (
+    <label className="flex flex-col gap-1 text-sm">
+      <span className="flex items-center justify-between gap-2 font-medium text-neutral-700">
+        {label}
+        {helpAction ? (
+          <button
+            type="button"
+            onClick={helpAction}
+            className="text-xs font-normal text-blue-600 hover:underline"
+          >
+            {helpLabel}
+          </button>
+        ) : null}
+      </span>
+      <input
+        type="password"
+        autoComplete="off"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+      />
+    </label>
   );
 }

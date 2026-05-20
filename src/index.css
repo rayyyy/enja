@@ -10,11 +10,21 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  background: transparent;
 }
 
 body {
-  @apply bg-neutral-50 antialiased text-neutral-800;
+  @apply antialiased text-neutral-800;
+  background: transparent;
   font-family: var(--font-sans);
+}
+
+body.voice-window {
+  background: transparent;
+}
+
+body.voice-window #root {
+  background: transparent;
 }
 
 /* Scrollbar styling */

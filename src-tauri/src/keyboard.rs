@@ -4,14 +4,31 @@
 //! TISGetInputSourceProperty (Text Services Manager) from the event-tap thread
 //! to resolve key names. On macOS Sequoia+ Apple added a dispatch_assert_queue
 //! assertion requiring those TSM calls to happen on the main thread, causing an
-//! instant SIGTRAP crash. Since we only need key-code matching (Meta + C), we
-//! skip TSM entirely and work with raw CGEvent key codes.
+//! instant SIGTRAP crash. Enja only needs a small set of raw key codes and
+//! modifier flags, so we skip TSM entirely and work with CGEvent directly.
+
+#[derive(Debug, Clone, Copy)]
+pub enum KeyboardTrigger {
+    CmdCopyDouble,
+    FunctionPress,
+    FunctionRelease,
+    FunctionSpace,
+    Escape,
+}
 
 #[cfg(target_os = "macos")]
 mod macos {
+    use super::KeyboardTrigger;
     use std::os::raw::c_void;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::Sender;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    /// Delay before treating an Fn press as a Dictation start. This window lets
+    /// the listener detect an Fn+Space chord (Ask mode) without first flashing
+    /// the Dictation overlay.
+    const FN_PRESS_DETECT_MS: u64 = 100;
 
     // --- FFI types -----------------------------------------------------------
 
@@ -33,20 +50,24 @@ mod macos {
 
     const KCG_HID_EVENT_TAP: u32 = 0;
     const KCG_HEAD_INSERT_EVENT_TAP: u32 = 0;
-    const KCG_EVENT_TAP_OPTION_LISTEN_ONLY: u32 = 1;
+    const KCG_EVENT_TAP_OPTION_DEFAULT: u32 = 0;
 
     const KCG_EVENT_KEY_DOWN: u32 = 10;
+    const KCG_EVENT_KEY_UP: u32 = 11;
     const KCG_EVENT_FLAGS_CHANGED: u32 = 12;
     const KCG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
     const KCG_EVENT_TAP_DISABLED_BY_USER: u32 = 0xFFFF_FFFF;
 
     const KCG_KEYBOARD_EVENT_KEYCODE: u32 = 9;
     const KCG_EVENT_FLAG_MASK_COMMAND: u64 = 0x0010_0000;
+    const KCG_EVENT_FLAG_MASK_SECONDARY_FN: u64 = 0x0080_0000;
 
     /// KeyDown | KeyUp | FlagsChanged
     const EVENT_MASK: u64 = (1 << 10) | (1 << 11) | (1 << 12);
 
     const KEYCODE_C: i64 = 8;
+    const KEYCODE_SPACE: i64 = 49;
+    const KEYCODE_ESCAPE: i64 = 53;
 
     // --- FFI bindings --------------------------------------------------------
 
@@ -72,11 +93,7 @@ mod macos {
             port: CFMachPortRef,
             order: i64,
         ) -> CFRunLoopSourceRef;
-        fn CFRunLoopAddSource(
-            rl: CFRunLoopRef,
-            source: CFRunLoopSourceRef,
-            mode: CFRunLoopMode,
-        );
+        fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFRunLoopMode);
         fn CFRunLoopGetCurrent() -> CFRunLoopRef;
         fn CFRunLoopRun();
         static kCFRunLoopCommonModes: CFRunLoopMode;
@@ -87,9 +104,14 @@ mod macos {
     use std::sync::Mutex;
 
     struct ListenerState {
-        tx: Sender<()>,
+        tx: Sender<KeyboardTrigger>,
         threshold: Duration,
         meta_down: bool,
+        fn_down: bool,
+        fn_pending_cancel: Option<Arc<AtomicBool>>,
+        fn_press_emitted: bool,
+        fn_space_combo: bool,
+        fn_space_down: bool,
         last_cmd_c: Option<Instant>,
         tap: CFMachPortRef,
     }
@@ -134,14 +156,44 @@ mod macos {
             KCG_EVENT_FLAGS_CHANGED => {
                 let flags = CGEventGetFlags(event);
                 let cmd_down = (flags & KCG_EVENT_FLAG_MASK_COMMAND) != 0;
+                let fn_down = (flags & KCG_EVENT_FLAG_MASK_SECONDARY_FN) != 0;
                 if cmd_down != state.meta_down {
-                    eprintln!("[enja] meta_down: {} → {} (flags={flags:#X})", state.meta_down, cmd_down);
+                    eprintln!(
+                        "[enja] meta_down: {} → {} (flags={flags:#X})",
+                        state.meta_down, cmd_down
+                    );
                     state.meta_down = cmd_down;
+                }
+                if fn_down != state.fn_down {
+                    eprintln!(
+                        "[enja] fn_down: {} → {} (flags={flags:#X})",
+                        state.fn_down, fn_down
+                    );
+                    state.fn_down = fn_down;
+                    if fn_down {
+                        handle_fn_pressed(state);
+                    } else {
+                        handle_fn_released(state);
+                    }
                 }
             }
             KCG_EVENT_KEY_DOWN => {
-                let keycode =
-                    CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE);
+                let keycode = CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE);
+                if keycode == KEYCODE_ESCAPE {
+                    let _ = state.tx.send(KeyboardTrigger::Escape);
+                    return event;
+                }
+                if keycode == KEYCODE_SPACE && state.fn_down {
+                    if !state.fn_space_down {
+                        if let Some(cancel) = state.fn_pending_cancel.take() {
+                            cancel.store(true, Ordering::SeqCst);
+                        }
+                        let _ = state.tx.send(KeyboardTrigger::FunctionSpace);
+                    }
+                    state.fn_space_down = true;
+                    state.fn_space_combo = true;
+                    return std::ptr::null_mut();
+                }
                 if state.meta_down {
                     eprintln!("[enja] KeyDown while Cmd held: keycode={keycode}");
                 }
@@ -155,7 +207,7 @@ mod macos {
                         );
                         if elapsed <= state.threshold {
                             eprintln!("[enja] >>> TRIGGER!");
-                            let _ = state.tx.send(());
+                            let _ = state.tx.send(KeyboardTrigger::CmdCopyDouble);
                             state.last_cmd_c = None;
                         } else {
                             state.last_cmd_c = Some(now);
@@ -166,59 +218,141 @@ mod macos {
                     }
                 }
             }
+            KCG_EVENT_KEY_UP => {
+                let keycode = CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE);
+                if keycode == KEYCODE_SPACE && state.fn_space_down {
+                    state.fn_space_down = false;
+                    return std::ptr::null_mut();
+                }
+            }
             _ => {}
         }
 
         event
     }
 
+    fn handle_fn_pressed(state: &mut ListenerState) {
+        // A fresh Fn press always invalidates any prior Fn+Space combo bookkeeping.
+        state.fn_space_combo = false;
+        state.fn_space_down = false;
+        state.fn_press_emitted = false;
+
+        // Cancel any stale pending press (shouldn't normally happen because the
+        // matching release clears it, but guard against missed events).
+        if let Some(prev) = state.fn_pending_cancel.take() {
+            prev.store(true, Ordering::SeqCst);
+        }
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        state.fn_pending_cancel = Some(cancel.clone());
+        let tx = state.tx.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(FN_PRESS_DETECT_MS));
+            if cancel.load(Ordering::SeqCst) {
+                return;
+            }
+
+            let mut should_send = false;
+            if let Ok(mut guard) = LISTENER_STATE.lock() {
+                if let Some(state) = guard.as_mut() {
+                    let is_current = state
+                        .fn_pending_cancel
+                        .as_ref()
+                        .map(|c| Arc::ptr_eq(c, &cancel))
+                        .unwrap_or(false);
+                    if is_current && !cancel.load(Ordering::SeqCst) {
+                        state.fn_pending_cancel = None;
+                        state.fn_press_emitted = true;
+                        should_send = true;
+                    }
+                }
+            }
+
+            if should_send {
+                let _ = tx.send(KeyboardTrigger::FunctionPress);
+            }
+        });
+    }
+
+    fn handle_fn_released(state: &mut ListenerState) {
+        // Always cancel any pending press timer first so it can't fire after the
+        // key has already been released.
+        if let Some(cancel) = state.fn_pending_cancel.take() {
+            cancel.store(true, Ordering::SeqCst);
+        }
+
+        let press_was_emitted = std::mem::take(&mut state.fn_press_emitted);
+
+        if state.fn_space_combo {
+            // The matching Fn down formed a chord with Space — Ask was triggered
+            // separately, so this release should not produce a Function event.
+            state.fn_space_combo = false;
+            return;
+        }
+
+        if !press_was_emitted {
+            // The detect-window timer was cancelled before it fired (either a
+            // very fast tap or some other race). Nothing started, nothing to
+            // stop.
+            return;
+        }
+
+        let _ = state.tx.send(KeyboardTrigger::FunctionRelease);
+    }
+
     // --- Public entry point --------------------------------------------------
 
-    pub fn spawn_listener(tx: Sender<()>, threshold_ms: u64) {
+    pub fn spawn_listener(tx: Sender<KeyboardTrigger>, threshold_ms: u64) {
         let threshold = Duration::from_millis(threshold_ms.max(50));
 
-        std::thread::spawn(move || {
-            unsafe {
-                let tap = CGEventTapCreate(
-                    KCG_HID_EVENT_TAP,
-                    KCG_HEAD_INSERT_EVENT_TAP,
-                    KCG_EVENT_TAP_OPTION_LISTEN_ONLY,
-                    EVENT_MASK,
-                    raw_callback,
-                    std::ptr::null_mut(),
-                );
-                if tap.is_null() {
-                    eprintln!(
-                        "[enja] CGEventTapCreate failed. \
+        std::thread::spawn(move || unsafe {
+            let tap = CGEventTapCreate(
+                KCG_HID_EVENT_TAP,
+                KCG_HEAD_INSERT_EVENT_TAP,
+                KCG_EVENT_TAP_OPTION_DEFAULT,
+                EVENT_MASK,
+                raw_callback,
+                std::ptr::null_mut(),
+            );
+            if tap.is_null() {
+                eprintln!(
+                    "[enja] CGEventTapCreate failed. \
                          Grant Input Monitoring / Accessibility permission for this app."
-                    );
-                    return;
-                }
-                eprintln!("[enja] CGEventTap created successfully");
-
-                if let Ok(mut guard) = LISTENER_STATE.lock() {
-                    *guard = Some(Box::new(ListenerState {
-                        tx,
-                        threshold,
-                        meta_down: false,
-                        last_cmd_c: None,
-                        tap,
-                    }));
-                }
-
-                let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
-                if source.is_null() {
-                    eprintln!("[enja] CFMachPortCreateRunLoopSource failed");
-                    return;
-                }
-
-                let current_loop = CFRunLoopGetCurrent();
-                CFRunLoopAddSource(current_loop, source, kCFRunLoopCommonModes);
-                CGEventTapEnable(tap, true);
-                eprintln!("[enja] keyboard listener running (threshold={}ms)", threshold.as_millis());
-                CFRunLoopRun();
-                eprintln!("[enja] keyboard listener CFRunLoop exited");
+                );
+                return;
             }
+            eprintln!("[enja] CGEventTap created successfully");
+
+            if let Ok(mut guard) = LISTENER_STATE.lock() {
+                *guard = Some(Box::new(ListenerState {
+                    tx,
+                    threshold,
+                    meta_down: false,
+                    fn_down: false,
+                    fn_pending_cancel: None,
+                    fn_press_emitted: false,
+                    fn_space_combo: false,
+                    fn_space_down: false,
+                    last_cmd_c: None,
+                    tap,
+                }));
+            }
+
+            let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
+            if source.is_null() {
+                eprintln!("[enja] CFMachPortCreateRunLoopSource failed");
+                return;
+            }
+
+            let current_loop = CFRunLoopGetCurrent();
+            CFRunLoopAddSource(current_loop, source, kCFRunLoopCommonModes);
+            CGEventTapEnable(tap, true);
+            eprintln!(
+                "[enja] keyboard listener running (threshold={}ms)",
+                threshold.as_millis()
+            );
+            CFRunLoopRun();
+            eprintln!("[enja] keyboard listener CFRunLoop exited");
         });
     }
 }
@@ -227,4 +361,4 @@ mod macos {
 pub use macos::spawn_listener;
 
 #[cfg(not(target_os = "macos"))]
-pub fn spawn_listener(_tx: std::sync::mpsc::Sender<()>, _threshold_ms: u64) {}
+pub fn spawn_listener(_tx: std::sync::mpsc::Sender<KeyboardTrigger>, _threshold_ms: u64) {}
