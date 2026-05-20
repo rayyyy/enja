@@ -272,6 +272,15 @@ impl Default for TranslationSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum SystemAudioHandling {
+    #[default]
+    Mute,
+    Isolate,
+    Off,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct VoiceSettings {
@@ -279,7 +288,7 @@ pub struct VoiceSettings {
     pub speech_profile: SpeechProfile,
     pub finalization_model: FinalizationModel,
     pub interaction_sounds_enabled: bool,
-    pub mute_system_audio_during_recording: bool,
+    pub system_audio_handling: SystemAudioHandling,
     pub max_recording_seconds: u64,
     pub google_cloud_project_id: String,
     pub google_cloud_region: String,
@@ -293,7 +302,7 @@ impl Default for VoiceSettings {
             speech_profile: SpeechProfile::default(),
             finalization_model: FinalizationModel::default(),
             interaction_sounds_enabled: true,
-            mute_system_audio_during_recording: true,
+            system_audio_handling: SystemAudioHandling::Mute,
             max_recording_seconds: 300,
             google_cloud_project_id: String::new(),
             google_cloud_region: default_google_cloud_region(),

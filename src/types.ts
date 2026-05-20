@@ -61,12 +61,14 @@ export type TranslationSettings = {
   targetLanguage: UiLanguage;
 };
 
+export type SystemAudioHandling = "mute" | "isolate" | "off";
+
 export type VoiceSettings = {
   selectedMicrophoneId: string | null;
   speechProfile: SpeechProfile;
   finalizationModel: FinalizationModel;
   interactionSoundsEnabled: boolean;
-  muteSystemAudioDuringRecording: boolean;
+  systemAudioHandling: SystemAudioHandling;
   maxRecordingSeconds: number;
   googleCloudProjectId: string;
   googleCloudRegion: string;

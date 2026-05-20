@@ -46,3 +46,6 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
   "NSApplication",
   "NSResponder",
 ] }
+webrtc-audio-processing = { version = "2", features = ["bundled"] }
+core-foundation = "0.10"
+core-foundation-sys = "0.8"

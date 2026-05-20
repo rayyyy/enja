@@ -12,7 +12,7 @@ const baseSettings: AppSettings = {
     speechProfile: "googleChirp3",
     finalizationModel: "gemini35Flash",
     interactionSoundsEnabled: true,
-    muteSystemAudioDuringRecording: true,
+    systemAudioHandling: "mute",
     maxRecordingSeconds: 300,
     googleCloudProjectId: "",
     googleCloudRegion: "asia-northeast1",

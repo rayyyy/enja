@@ -604,19 +604,69 @@ export function SettingsView() {
                   patchVoice({ interactionSoundsEnabled: checked })
                 }
               />
-              <Toggle
-                label="音声入力中にシステム音をミュート"
-                description="録音開始直前にMacの出力をミュートし、録音ストリームを閉じた後で元の音量とミュート状態へ戻します。"
-                checked={settings.voice.muteSystemAudioDuringRecording}
-                onChange={(checked) =>
-                  patchVoice({ muteSystemAudioDuringRecording: checked })
-                }
-              />
-              <div className="rounded-xl bg-blue-50 p-4 text-xs leading-relaxed text-blue-950 sm:col-span-2">
-                このミュート設定は、YouTubeなどのPC内再生音がスピーカーから出てマイクへ回り込むのを抑えるための機能です。
-                Typelessのような完全な音声分離ではなく、macOSの出力を録音中だけ止める方式なので、
-                外部スピーカーの残響や別端末の音はマイク側で拾う可能性があります。
-              </div>
+              <fieldset className="sm:col-span-2">
+                <legend className="mb-2 text-sm font-medium text-slate-900">
+                  PC内部音声の扱い
+                </legend>
+                <div className="grid gap-2">
+                  <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-3 text-sm">
+                    <input
+                      type="radio"
+                      name="systemAudioHandling"
+                      value="mute"
+                      className="mt-1"
+                      checked={settings.voice.systemAudioHandling === "mute"}
+                      onChange={() =>
+                        patchVoice({ systemAudioHandling: "mute" })
+                      }
+                    />
+                    <span>
+                      <span className="block font-medium">録音中はミュート</span>
+                      <span className="block text-xs text-slate-600">
+                        録音開始直前にMacの出力をミュートし、終了後に元へ戻します。シンプルですが、ユーザーにも音が聞こえなくなります。
+                      </span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-3 text-sm">
+                    <input
+                      type="radio"
+                      name="systemAudioHandling"
+                      value="isolate"
+                      className="mt-1"
+                      checked={settings.voice.systemAudioHandling === "isolate"}
+                      onChange={() =>
+                        patchVoice({ systemAudioHandling: "isolate" })
+                      }
+                    />
+                    <span>
+                      <span className="block font-medium">
+                        AECで分離（Typeless相当）
+                      </span>
+                      <span className="block text-xs text-slate-600">
+                        Core Audio Process Tapでシステム音声のみを別経路で取得し、AECでマイクから差し引きます。再生音は止まらず、Netflix等のDRM動画も暗転しません。macOS 14.4以上が必要です。
+                      </span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-3 text-sm">
+                    <input
+                      type="radio"
+                      name="systemAudioHandling"
+                      value="off"
+                      className="mt-1"
+                      checked={settings.voice.systemAudioHandling === "off"}
+                      onChange={() =>
+                        patchVoice({ systemAudioHandling: "off" })
+                      }
+                    />
+                    <span>
+                      <span className="block font-medium">何もしない</span>
+                      <span className="block text-xs text-slate-600">
+                        ヘッドホン利用などで漏れ込みが起きない環境向け。録音への介入はしません。
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              </fieldset>
             </SettingsSectionPanel>
           ) : null}
 

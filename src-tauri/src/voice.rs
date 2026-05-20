@@ -1,10 +1,15 @@
+mod aec;
 mod cache;
+mod system_tap;
 
 use crate::dictionary::{self, DictionaryEntry};
 use crate::gemini;
 use crate::prompts;
 use crate::secrets;
-use crate::settings::{AppSettings, SettingsStore, SpeechProfile};
+use crate::settings::{AppSettings, SettingsStore, SpeechProfile, SystemAudioHandling};
+
+use aec::Aec;
+use system_tap::SystemTap;
 use base64::Engine;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
@@ -80,7 +85,27 @@ struct ActiveSession {
     mode: VoiceMode,
     selected_text: String,
     recorder: Recorder,
-    system_audio_mute: Option<SystemAudioMuteGuard>,
+    audio_aux: Option<AudioAux>,
+}
+
+enum AudioAux {
+    Mute(SystemAudioMuteGuard),
+    Isolate(#[allow(dead_code)] Arc<SystemTap>),
+}
+
+impl AudioAux {
+    fn stop(self) {
+        match self {
+            AudioAux::Mute(guard) => guard.stop(),
+            AudioAux::Isolate(_) => {}
+        }
+    }
+}
+
+#[derive(Clone)]
+enum PipelineMode {
+    Direct,
+    AecIsolate(Arc<SystemTap>),
 }
 
 struct Recorder {
@@ -190,8 +215,8 @@ impl VoiceManager {
         );
 
         let clip = session.recorder.finish();
-        if let Some(guard) = session.system_audio_mute {
-            guard.stop();
+        if let Some(aux) = session.audio_aux {
+            aux.stop();
         }
 
         if app
@@ -266,8 +291,8 @@ impl VoiceManager {
             }
             Some(SessionState::Active(session)) => {
                 session.recorder.cancel();
-                if let Some(guard) = session.system_audio_mute {
-                    guard.stop();
+                if let Some(aux) = session.audio_aux {
+                    aux.stop();
                 }
             }
             None => {}
@@ -313,11 +338,11 @@ async fn finish_start_session(
         emit_state_once(&app, "recording", Some(mode), None);
     }
 
-    let system_audio_mute = prepare_system_audio(&settings);
+    let (audio_aux, pipeline_mode) = prepare_audio_pipeline(&settings);
 
     if is_start_cancelled(&cancelled) {
-        if let Some(guard) = system_audio_mute {
-            guard.stop();
+        if let Some(aux) = audio_aux {
+            aux.stop();
         }
         return Ok(());
     }
@@ -325,15 +350,21 @@ async fn finish_start_session(
     let app_for_recorder = app.clone();
     let microphone_id = settings.voice.selected_microphone_id.clone();
     let max_recording_seconds = settings.voice.max_recording_seconds;
+    let pipeline_for_recorder = pipeline_mode.clone();
     let recorder = tokio::task::spawn_blocking(move || {
-        Recorder::start(app_for_recorder, microphone_id, max_recording_seconds)
+        Recorder::start(
+            app_for_recorder,
+            microphone_id,
+            max_recording_seconds,
+            pipeline_for_recorder,
+        )
     })
     .await
     .map_err(|e| e.to_string())?;
 
     if is_start_cancelled(&cancelled) {
-        if let Some(guard) = system_audio_mute {
-            guard.stop();
+        if let Some(aux) = audio_aux {
+            aux.stop();
         }
         if let Ok(recorder) = recorder {
             recorder.cancel();
@@ -347,8 +378,8 @@ async fn finish_start_session(
     let recorder = match recorder {
         Ok(recorder) => recorder,
         Err(err) => {
-            if let Some(guard) = system_audio_mute {
-                guard.stop();
+            if let Some(aux) = audio_aux {
+                aux.stop();
             }
             fail_start_session(&app, mode, err.clone());
             return Err(err);
@@ -365,16 +396,16 @@ async fn finish_start_session(
     }) = guard.as_ref()
     else {
         recorder.cancel();
-        if let Some(guard) = system_audio_mute {
-            guard.stop();
+        if let Some(aux) = audio_aux {
+            aux.stop();
         }
         return Ok(());
     };
 
     if *starting_mode != mode || is_start_cancelled(starting_cancelled) {
         recorder.cancel();
-        if let Some(guard) = system_audio_mute {
-            guard.stop();
+        if let Some(aux) = audio_aux {
+            aux.stop();
         }
         return Ok(());
     }
@@ -383,7 +414,7 @@ async fn finish_start_session(
         mode,
         selected_text,
         recorder,
-        system_audio_mute,
+        audio_aux,
     }));
     drop(guard);
 
@@ -413,17 +444,32 @@ fn fail_start_session(app: &tauri::AppHandle, mode: VoiceMode, err: String) {
     emit_state(app, "error", Some(mode), Some(err));
 }
 
-fn prepare_system_audio(settings: &AppSettings) -> Option<SystemAudioMuteGuard> {
-    if settings.voice.mute_system_audio_during_recording {
-        if settings.voice.interaction_sounds_enabled {
-            play_interaction_sound("start");
-        }
-        Some(SystemAudioMuteGuard::start())
-    } else {
-        if settings.voice.interaction_sounds_enabled {
-            play_interaction_sound("start");
-        }
-        None
+fn prepare_audio_pipeline(settings: &AppSettings) -> (Option<AudioAux>, PipelineMode) {
+    if settings.voice.interaction_sounds_enabled {
+        play_interaction_sound("start");
+    }
+    match settings.voice.system_audio_handling {
+        SystemAudioHandling::Mute => (
+            Some(AudioAux::Mute(SystemAudioMuteGuard::start())),
+            PipelineMode::Direct,
+        ),
+        SystemAudioHandling::Isolate => match SystemTap::start() {
+            Ok(capture) => {
+                let shared = Arc::new(capture);
+                (
+                    Some(AudioAux::Isolate(shared.clone())),
+                    PipelineMode::AecIsolate(shared),
+                )
+            }
+            Err(err) => {
+                eprintln!("[enja] システム音声分離の開始に失敗しました: {err}");
+                (
+                    Some(AudioAux::Mute(SystemAudioMuteGuard::start())),
+                    PipelineMode::Direct,
+                )
+            }
+        },
+        SystemAudioHandling::Off => (None, PipelineMode::Direct),
     }
 }
 
@@ -440,6 +486,7 @@ impl Recorder {
         app: tauri::AppHandle,
         selected_device_id: Option<String>,
         max_recording_seconds: u64,
+        pipeline: PipelineMode,
     ) -> Result<Self, String> {
         let (control_tx, control_rx) = std::sync::mpsc::channel::<RecorderCommand>();
         let (done_tx, done_rx) = std::sync::mpsc::channel::<Result<AudioClip, String>>();
@@ -451,6 +498,7 @@ impl Recorder {
                 max_recording_seconds,
                 control_rx,
                 init_tx,
+                pipeline,
             );
             let _ = done_tx.send(result);
         });
@@ -524,6 +572,7 @@ fn run_recording_thread(
     max_recording_seconds: u64,
     control_rx: std::sync::mpsc::Receiver<RecorderCommand>,
     init_tx: std::sync::mpsc::Sender<Result<(), String>>,
+    pipeline: PipelineMode,
 ) -> Result<AudioClip, String> {
     let started_at = Instant::now();
     let setup: Result<RecorderSetup, String> = (|| {
@@ -532,14 +581,26 @@ fn run_recording_thread(
             .or_else(|| host.default_input_device())
             .ok_or_else(|| "利用できるマイクが見つかりません。".to_string())?;
         let supported = device.default_input_config().map_err(|e| e.to_string())?;
-        let sample_rate = supported.sample_rate().0;
-        let channels = supported.channels();
+        let device_sample_rate = supported.sample_rate().0;
+        let device_channels = supported.channels();
         let config: cpal::StreamConfig = supported.clone().into();
         let samples = Arc::new(Mutex::new(Vec::<i16>::new()));
-        let max_samples =
-            sample_rate as usize * channels as usize * max_recording_seconds.clamp(5, 600) as usize;
+        let (output_sample_rate, output_channels) = match &pipeline {
+            PipelineMode::Direct => (device_sample_rate, device_channels),
+            PipelineMode::AecIsolate(_) => (aec::SAMPLE_RATE, 1u16),
+        };
+        let max_samples = (output_sample_rate as usize)
+            * (output_channels as usize)
+            * max_recording_seconds.clamp(5, 600) as usize;
         let last_emit = Arc::new(Mutex::new(Instant::now()));
         let err_fn = |err| eprintln!("[enja] audio input stream error: {err}");
+
+        let aec_pipeline = match &pipeline {
+            PipelineMode::Direct => None,
+            PipelineMode::AecIsolate(system) => {
+                Some(AecPipeline::new(system.clone(), device_sample_rate, device_channels)?)
+            }
+        };
 
         let stream = match supported.sample_format() {
             cpal::SampleFormat::F32 => build_input_stream::<f32>(
@@ -549,6 +610,8 @@ fn run_recording_thread(
                 last_emit,
                 max_samples,
                 app,
+                device_channels,
+                aec_pipeline,
                 err_fn,
             ),
             cpal::SampleFormat::I16 => build_input_stream::<i16>(
@@ -558,6 +621,8 @@ fn run_recording_thread(
                 last_emit,
                 max_samples,
                 app,
+                device_channels,
+                aec_pipeline,
                 err_fn,
             ),
             cpal::SampleFormat::U16 => build_input_stream::<u16>(
@@ -567,6 +632,8 @@ fn run_recording_thread(
                 last_emit,
                 max_samples,
                 app,
+                device_channels,
+                aec_pipeline,
                 err_fn,
             ),
             _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
@@ -574,7 +641,7 @@ fn run_recording_thread(
         .map_err(|e| e.to_string())?;
 
         stream.play().map_err(|e| e.to_string())?;
-        Ok((samples, sample_rate, channels, stream))
+        Ok((samples, output_sample_rate, output_channels, stream))
     })();
 
     let (samples, sample_rate, channels, stream) = match setup {
@@ -609,6 +676,58 @@ fn run_recording_thread(
     Ok(AudioClip { wav, duration_secs })
 }
 
+struct AecPipeline {
+    aec: Aec,
+    system: Arc<SystemTap>,
+    step: f64,
+    next_read: f64,
+    input_count: u64,
+    prev_in: f32,
+    mic_frame: Vec<f32>,
+}
+
+impl AecPipeline {
+    fn new(
+        system: Arc<SystemTap>,
+        device_sample_rate: u32,
+        _device_channels: u16,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            aec: Aec::new()?,
+            system,
+            step: device_sample_rate as f64 / aec::SAMPLE_RATE as f64,
+            next_read: 0.0,
+            input_count: 0,
+            prev_in: 0.0,
+            mic_frame: Vec::with_capacity(aec::FRAME_SAMPLES * 4),
+        })
+    }
+
+    fn push_mono(&mut self, sample: f32) {
+        let cur = self.input_count as f64;
+        let prev = cur - 1.0;
+        while self.next_read <= cur {
+            let frac = (self.next_read - prev) as f32;
+            let value = self.prev_in + (sample - self.prev_in) * frac;
+            self.mic_frame.push(value.clamp(-1.0, 1.0));
+            self.next_read += self.step;
+        }
+        self.prev_in = sample;
+        self.input_count += 1;
+    }
+
+    fn drain_frames<F: FnMut(&[f32])>(&mut self, mut emit: F) {
+        while self.mic_frame.len() >= aec::FRAME_SAMPLES {
+            let mut frame: Vec<f32> = self.mic_frame.drain(..aec::FRAME_SAMPLES).collect();
+            let reference = self.system.take_reference(aec::FRAME_SAMPLES);
+            if let Err(err) = self.aec.process(&mut frame, &reference) {
+                eprintln!("[enja] AEC処理に失敗: {err}");
+            }
+            emit(&frame);
+        }
+    }
+}
+
 fn samples_to_wav(samples: &[i16], sample_rate: u32, channels: u16) -> Result<Vec<u8>, String> {
     let spec = hound::WavSpec {
         channels,
@@ -635,28 +754,56 @@ fn build_input_stream<T>(
     last_emit: Arc<Mutex<Instant>>,
     max_samples: usize,
     app: tauri::AppHandle,
+    device_channels: u16,
+    mut aec_pipeline: Option<AecPipeline>,
     err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
 ) -> Result<cpal::Stream, cpal::BuildStreamError>
 where
     T: cpal::Sample + cpal::SizedSample + Send + 'static,
     f32: cpal::FromSample<T>,
 {
+    let chan = device_channels.max(1) as usize;
     device.build_input_stream(
         config,
         move |data: &[T], _| {
             let mut peak = 0.0f32;
             let mut sum = 0.0f32;
-            if let Ok(mut guard) = samples.lock() {
+            let mut count = 0usize;
+
+            if let Some(pipeline) = aec_pipeline.as_mut() {
+                for chunk in data.chunks(chan) {
+                    let mut mono = 0.0_f32;
+                    for sample in chunk {
+                        mono += f32::from_sample(*sample);
+                    }
+                    let mono = (mono / chunk.len().max(1) as f32).clamp(-1.0, 1.0);
+                    peak = peak.max(mono.abs());
+                    sum += mono * mono;
+                    count += 1;
+                    pipeline.push_mono(mono);
+                }
+                let samples_buf = samples.clone();
+                pipeline.drain_frames(|frame| {
+                    if let Ok(mut guard) = samples_buf.lock() {
+                        let remaining = max_samples.saturating_sub(guard.len());
+                        for value in frame.iter().take(remaining) {
+                            guard.push((value.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
+                        }
+                    }
+                });
+            } else if let Ok(mut guard) = samples.lock() {
                 let remaining = max_samples.saturating_sub(guard.len());
                 for sample in data.iter().take(remaining) {
                     let value = f32::from_sample(*sample).clamp(-1.0, 1.0);
                     peak = peak.max(value.abs());
                     sum += value * value;
+                    count += 1;
                     guard.push((value * i16::MAX as f32) as i16);
                 }
             }
-            if !data.is_empty() {
-                let rms = (sum / data.len() as f32).sqrt().clamp(0.0, 1.0);
+
+            if count > 0 {
+                let rms = (sum / count as f32).sqrt().clamp(0.0, 1.0);
                 if let Ok(mut last) = last_emit.lock() {
                     if last.elapsed() >= Duration::from_millis(45) {
                         *last = Instant::now();
