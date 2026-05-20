@@ -10,8 +10,11 @@
 #[derive(Debug, Clone, Copy)]
 pub enum KeyboardTrigger {
     CmdCopyDouble,
-    FunctionPress,
-    FunctionRelease,
+    /// An Fn key tap (press + release) that did *not* form a chord with Space.
+    /// Emitted on Fn release so we can wait and see whether Space arrives
+    /// during the hold.
+    FunctionTap,
+    /// Space was pressed while Fn was held — Ask mode.
     FunctionSpace,
     Escape,
 }
@@ -220,20 +223,21 @@ mod macos {
     }
 
     fn handle_fn_pressed(state: &mut ListenerState) {
-        // Any new Fn press starts a fresh combo cycle.
+        // Start a fresh chord-detection cycle. No event is sent yet — we wait
+        // until Fn is released to decide between Dictation (no Space) and Ask
+        // (Space was pressed during the hold).
         state.fn_space_combo = false;
         state.fn_space_down = false;
-        let _ = state.tx.send(KeyboardTrigger::FunctionPress);
     }
 
     fn handle_fn_released(state: &mut ListenerState) {
         if state.fn_space_combo {
-            // The matching Fn down formed a chord with Space — Ask was triggered
-            // separately, so this release should not produce a Function event.
+            // The Fn hold included a Space press, so Ask has already been
+            // triggered. Nothing else to do — just clean up.
             state.fn_space_combo = false;
             return;
         }
-        let _ = state.tx.send(KeyboardTrigger::FunctionRelease);
+        let _ = state.tx.send(KeyboardTrigger::FunctionTap);
     }
 
     // --- Public entry point --------------------------------------------------
