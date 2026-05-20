@@ -1,0 +1,41 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="metal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#3D3D45"/>
+      <stop offset="0.18" stop-color="#0E0E12"/>
+      <stop offset="0.45" stop-color="#050507"/>
+      <stop offset="0.62" stop-color="#2A2A32"/>
+      <stop offset="0.85" stop-color="#0A0A0E"/>
+      <stop offset="1"    stop-color="#1B1B22"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#FFFFFF" stop-opacity="0.32"/>
+      <stop offset="0.15" stop-color="#FFFFFF" stop-opacity="0"/>
+      <stop offset="0.85" stop-color="#FFFFFF" stop-opacity="0"/>
+      <stop offset="1"    stop-color="#FFFFFF" stop-opacity="0.08"/>
+    </linearGradient>
+    <clipPath id="squircle">
+      <rect width="1024" height="1024" rx="225" ry="225"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#squircle)">
+    <rect width="1024" height="1024" fill="#FFFFFF"/>
+
+    <g transform="translate(512 512)">
+      <g fill="url(#metal)">
+        <rect x="-236" y="-228" width="472" height="108" rx="54"/>
+        <rect x="-236" y="-54"  width="312" height="108" rx="54"/>
+        <rect x="-236" y="120"  width="472" height="108" rx="54"/>
+      </g>
+      <g fill="url(#rim)">
+        <rect x="-236" y="-228" width="472" height="108" rx="54"/>
+        <rect x="-236" y="-54"  width="312" height="108" rx="54"/>
+        <rect x="-236" y="120"  width="472" height="108" rx="54"/>
+      </g>
+    </g>
+
+    <rect x="0.5" y="0.5" width="1023" height="1023" rx="224.5" ry="224.5"
+          fill="none" stroke="#0A0A18" stroke-opacity="0.08" stroke-width="1"/>
+  </g>
+</svg>
