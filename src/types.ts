@@ -7,7 +7,6 @@ export type UiLanguage = "en" | "ja";
 
 export type SpeechProfile =
   | "googleChirp3"
-  | "deepgramNova3"
   | "openAiGpt4oTranscribe"
   | "openAiGpt4oMiniTranscribe"
   | "geminiAudio";
@@ -124,7 +123,6 @@ export type DictionaryEntryInput = {
 export type ProviderStatus = {
   gemini: boolean;
   openai: boolean;
-  deepgram: boolean;
   googleServiceAccount: boolean;
 };
 

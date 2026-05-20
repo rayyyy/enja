@@ -866,12 +866,6 @@ pub async fn check_speech_profile_setup(
 ) -> Result<SpeechSetupCheck, String> {
     match profile {
         SpeechProfile::GoogleChirp3 => check_google_chirp3_setup(&settings).await,
-        SpeechProfile::DeepgramNova3 => Ok(check_secret_setup(
-            "Deepgram APIキー",
-            "deepgram",
-            "Deepgram APIキーが保存されています。",
-            "Deepgram APIキーを保存してください。",
-        )),
         SpeechProfile::OpenAiGpt4oTranscribe | SpeechProfile::OpenAiGpt4oMiniTranscribe => {
             Ok(check_secret_setup(
                 "OpenAI APIキー",
@@ -979,7 +973,6 @@ async fn transcribe(
                 transcribe_google_chirp3(settings, entries, clip).await
             }
         }
-        SpeechProfile::DeepgramNova3 => transcribe_deepgram(entries, clip).await,
         SpeechProfile::OpenAiGpt4oTranscribe => {
             transcribe_openai("gpt-4o-transcribe", settings, entries, clip).await
         }
@@ -998,9 +991,6 @@ async fn transcribe_long_audio_fallback(
 ) -> Result<String, String> {
     if secrets::get_secret("openai").is_ok_and(|key| !key.trim().is_empty()) {
         return transcribe_openai("gpt-4o-transcribe", settings, entries, clip).await;
-    }
-    if secrets::get_secret("deepgram").is_ok_and(|key| !key.trim().is_empty()) {
-        return transcribe_deepgram(entries, clip).await;
     }
     transcribe_gemini_audio(app, settings, entries, clip).await
 }
@@ -1024,7 +1014,7 @@ async fn transcribe_google_chirp3(
 ) -> Result<String, String> {
     if clip.duration_secs > 60.0 || clip.wav.len() > 10 * 1024 * 1024 {
         return Err(
-            "Google Chirp 3の同期認識は1分/10MBまでです。長い録音はDeepgramまたはOpenAIを選択してください。"
+            "Google Chirp 3の同期認識は1分/10MBまでです。長い録音はOpenAIまたはGeminiへ自動フォールバックします。"
                 .to_string(),
         );
     }
@@ -1292,51 +1282,6 @@ fn resolve_gcloud_path() -> Result<PathBuf, String> {
         "gcloudが見つかりません。ターミナルではログイン済みでも、Spotlight/Dockから起動したEnjaではPATHが異なることがあります。Google Cloud SDKをHomebrewなど通常の場所に入れるか、ADCをオフにしてサービスアカウントJSONを保存してください。探した場所: {}",
         searched.join(", ")
     ))
-}
-
-async fn transcribe_deepgram(
-    entries: &[DictionaryEntry],
-    clip: &AudioClip,
-) -> Result<String, String> {
-    let key = secrets::get_secret("deepgram")
-        .map_err(|_| "Deepgram APIキーを保存してください。".to_string())?;
-    let phrases = dictionary::enabled_phrases(entries);
-    let mut url =
-        reqwest::Url::parse("https://api.deepgram.com/v1/listen").map_err(|e| e.to_string())?;
-    {
-        let mut q = url.query_pairs_mut();
-        q.append_pair("model", "nova-3");
-        q.append_pair("language", "ja");
-        q.append_pair("smart_format", "true");
-        for phrase in phrases.iter().take(100) {
-            q.append_pair("keyterm", phrase);
-        }
-    }
-    let response = http_client(SPEECH_REQUEST_TIMEOUT)?
-        .post(url)
-        .header("Authorization", format!("Token {key}"))
-        .header("Content-Type", "audio/wav")
-        .body(clip.wav.clone())
-        .send()
-        .await
-        .map_err(|e| speech_request_error("Deepgram", e))?;
-    let status = response.status();
-    let text = response.text().await.map_err(|e| e.to_string())?;
-    if !status.is_success() {
-        return Err(format!("Deepgram HTTP {status}: {text}"));
-    }
-    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let out = v
-        .pointer("/results/channels/0/alternatives/0/transcript")
-        .and_then(|t| t.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if out.is_empty() {
-        Err("Deepgramの文字起こし結果が空でした。".to_string())
-    } else {
-        Ok(out)
-    }
 }
 
 async fn transcribe_openai(

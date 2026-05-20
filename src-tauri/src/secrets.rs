@@ -11,7 +11,6 @@ static SECRET_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 pub struct ProviderStatus {
     pub gemini: bool,
     pub openai: bool,
-    pub deepgram: bool,
     pub google_service_account: bool,
 }
 
@@ -19,7 +18,6 @@ pub fn provider_status() -> ProviderStatus {
     ProviderStatus {
         gemini: get_secret("gemini").is_ok_and(|s| !s.trim().is_empty()),
         openai: get_secret("openai").is_ok_and(|s| !s.trim().is_empty()),
-        deepgram: get_secret("deepgram").is_ok_and(|s| !s.trim().is_empty()),
         google_service_account: get_secret("googleServiceAccount")
             .is_ok_and(|s| !s.trim().is_empty()),
     }
@@ -105,7 +103,7 @@ fn update_cache(account: &str, value: Option<String>) {
 
 fn account_name(provider: &str) -> Result<String, String> {
     match provider {
-        "gemini" | "openai" | "deepgram" | "googleServiceAccount" => {
+        "gemini" | "openai" | "googleServiceAccount" => {
             Ok(format!("{SERVICE}.{provider}"))
         }
         _ => Err("未知のプロバイダーです。".to_string()),

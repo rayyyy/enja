@@ -42,7 +42,7 @@
 
 - `settings.json` を Tauri の **アプリ設定ディレクトリ**（`app.path().app_config_dir()`）に保存。
 - 内容は `AppSettings` のネスト構造（`translation`、`voice`、`shortcuts`、`prompts`、`app`）。実装は `src-tauri/src/settings.rs`。
-- Gemini / OpenAI / Deepgram / Google Service Account などのシークレットは `src-tauri/src/secrets.rs` 経由で macOS Keychain に保存し、`settings.json` には入れない。
+- Gemini / OpenAI / Google Service Account などのシークレットは `src-tauri/src/secrets.rs` 経由で macOS Keychain に保存し、`settings.json` には入れない。
 
 ## UI・ウィンドウ
 

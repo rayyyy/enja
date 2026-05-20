@@ -24,8 +24,8 @@ impl UiLanguage {
 #[serde(rename_all = "camelCase")]
 pub enum SpeechProfile {
     #[default]
+    #[serde(alias = "deepgramNova3")]
     GoogleChirp3,
-    DeepgramNova3,
     OpenAiGpt4oTranscribe,
     OpenAiGpt4oMiniTranscribe,
     GeminiAudio,

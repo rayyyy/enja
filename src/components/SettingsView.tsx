@@ -69,7 +69,7 @@ const SPEECH_PROFILES: SpeechProfileOption[] = [
     value: "googleChirp3",
     label: "Google Chirp 3（精度優先）",
     badge: "推奨",
-    note: "日本語精度と辞書ヒントを重視。短い録音はChirp 3、長い録音は保存済みのOpenAI/Deepgram/Geminiへ自動フォールバックします。",
+    note: "日本語精度と辞書ヒントを重視。短い録音はChirp 3、長い録音は保存済みのOpenAI/Geminiへ自動フォールバックします。",
     price: "中",
     priceNote: "目安 $0.016/分",
     speed: "高",
@@ -104,44 +104,6 @@ const SPEECH_PROFILES: SpeechProfileOption[] = [
       {
         label: "ADCの仕組み",
         url: "https://cloud.google.com/docs/authentication/application-default-credentials",
-      },
-    ],
-  },
-  {
-    value: "deepgramNova3",
-    label: "Deepgram Nova-3（低コスト）",
-    badge: "低コスト",
-    note: "安く速い候補。辞書語はDeepgramのkeytermとして渡すため、専門用語にも寄せやすい構成です。",
-    price: "低",
-    priceNote: "目安 $0.0048/分 + keyterm",
-    speed: "高",
-    accuracy: "中",
-    accuracyNote: "速度重視",
-    setupSummary: "Deepgram APIキーを取得し、EnjaのDeepgram APIキー欄へ保存します。",
-    setupSteps: [
-      "Deepgram ConsoleでAPIキーを作成します。",
-      "EnjaのDeepgram APIキー欄へ貼り付けて保存します。",
-      "音声認識モデルでDeepgram Nova-3を選択します。",
-      "辞書機能を使う場合、登録語はkeytermとしてリクエストに渡されます。",
-    ],
-    enjaDataFlow: [
-      "Enjaは録音WAVをDeepgram /v1/listen へ送ります。",
-      "model=nova-3、language=ja、smart_format=true を指定します。",
-      "辞書に登録した優先表記はkeytermとして最大100件渡します。",
-      "取得した文字起こしをGeminiの整形モデルへ渡し、最終文へ整えます。",
-    ],
-    docs: [
-      {
-        label: "Nova-3クイックスタート",
-        url: "https://developers.deepgram.com/docs/nova-quickstart",
-      },
-      {
-        label: "Deepgram料金",
-        url: "https://deepgram.com/pricing",
-      },
-      {
-        label: "モデル一覧",
-        url: "https://developers.deepgram.com/docs/models",
       },
     ],
   },
@@ -293,7 +255,6 @@ export function SettingsView() {
   const [secrets, setSecrets] = useState<ProviderSecretsDraft>({
     gemini: "",
     openai: "",
-    deepgram: "",
     googleServiceAccount: "",
   });
 
@@ -434,7 +395,6 @@ export function SettingsView() {
         ([
           ["gemini", secrets.gemini],
           ["openai", secrets.openai],
-          ["deepgram", secrets.deepgram],
           ["googleServiceAccount", secrets.googleServiceAccount],
         ] as const)
           .filter(([, value]) => value.trim())
@@ -447,7 +407,6 @@ export function SettingsView() {
       setSecrets({
         gemini: "",
         openai: "",
-        deepgram: "",
         googleServiceAccount: "",
       });
       setMsg("保存しました。");
@@ -754,7 +713,6 @@ function profileRequirements(
   secrets: {
     gemini: string;
     openai: string;
-    deepgram: string;
     googleServiceAccount: string;
   },
 ) {
@@ -787,15 +745,6 @@ function profileRequirements(
                   ? "サービスアカウントJSON"
                   : "未保存",
             },
-      ];
-    case "deepgramNova3":
-      return [
-        {
-          label: "Deepgram APIキー",
-          ok: Boolean(secrets.deepgram.trim()) || Boolean(providerStatus?.deepgram),
-          value:
-            secrets.deepgram.trim() || providerStatus?.deepgram ? "保存予定/保存済み" : "未保存",
-        },
       ];
     case "openAiGpt4oTranscribe":
     case "openAiGpt4oMiniTranscribe":

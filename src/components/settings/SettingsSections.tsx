@@ -19,7 +19,6 @@ import {
 export type ProviderSecretsDraft = {
   gemini: string;
   openai: string;
-  deepgram: string;
   googleServiceAccount: string;
 };
 
@@ -141,12 +140,6 @@ export function AuthSettingsSection({
         placeholder={providerStatus?.openai ? "保存済み" : "sk-..."}
         value={secrets.openai}
         onChange={(value) => onSecretsChange({ ...secrets, openai: value })}
-      />
-      <SecretField
-        label="Deepgram APIキー"
-        placeholder={providerStatus?.deepgram ? "保存済み" : "Deepgram key"}
-        value={secrets.deepgram}
-        onChange={(value) => onSecretsChange({ ...secrets, deepgram: value })}
       />
       <label className="flex flex-col gap-1.5 text-sm">
         <span className="font-medium text-neutral-800">Google Cloud Project ID</span>

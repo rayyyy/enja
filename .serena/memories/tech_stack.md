@@ -5,4 +5,4 @@
 - Desktop/native: Tauri 2, Rust 2021.
 - Native crates in `src-tauri/Cargo.toml`: `tauri` with `macos-private-api`, `tauri-plugin-autostart`, `tauri-plugin-opener`, `reqwest` with rustls/json/multipart/stream, `tokio`, `serde`, `serde_json`, `arboard`, `cpal`, `hound`, `jsonwebtoken`, `base64`.
 - macOS keyboard path uses CGEventTap directly rather than `rdev`.
-- AI/STT providers are Gemini finalization/audio, Google Speech-to-Text Chirp 3, Deepgram Nova 3, and OpenAI transcription endpoints.
+- AI/STT providers are Gemini finalization/audio, Google Speech-to-Text Chirp 3, and OpenAI transcription endpoints.
