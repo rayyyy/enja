@@ -3,6 +3,7 @@ mod gemini;
 mod keyboard;
 #[cfg(target_os = "macos")]
 mod macos_show_on_activate;
+mod prompts;
 mod secrets;
 mod settings;
 mod voice;
@@ -10,7 +11,11 @@ mod voice;
 use dictionary::{DictionaryEntry, DictionaryEntryInput};
 use gemini::{stream_translate, TranslateEvent};
 use keyboard::KeyboardTrigger;
-use settings::{load_settings, save_settings_to_disk, AppSettings, SettingsStore, SpeechProfile};
+use serde::Serialize;
+use settings::{
+    load_settings, save_settings_to_disk, AppSettings, PromptTemplates, SettingsStore,
+    ShortcutAction, ShortcutBinding, SpeechProfile,
+};
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager, Runtime, State};
 use tauri_plugin_autostart::ManagerExt;
@@ -48,15 +53,36 @@ fn get_settings(app: tauri::AppHandle) -> Result<AppSettings, String> {
 
 #[tauri::command]
 fn save_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(), String> {
-    secrets::save_secret("gemini", settings.gemini_api_key.trim())?;
-    let mut disk_settings = settings.clone();
+    let mut sanitized = settings.clone();
+    sanitized.sanitize();
+    sanitized.validate_shortcuts()?;
+    prompts::validate_overrides(&sanitized.prompt_overrides)?;
+
+    secrets::save_secret("gemini", sanitized.gemini_api_key.trim())?;
+    let mut disk_settings = sanitized.clone();
     disk_settings.gemini_api_key.clear();
     save_settings_to_disk(&app, &disk_settings)?;
     if let Some(store) = app.try_state::<SettingsStore>() {
         store.replace(disk_settings);
     }
-    apply_launch_at_login(&app, settings.launch_at_login)?;
+    keyboard::update_runtime_settings(keyboard::KeyboardRuntimeSettings::from(&sanitized));
+    apply_launch_at_login(&app, sanitized.launch_at_login)?;
     Ok(())
+}
+
+#[tauri::command]
+fn get_prompt_defaults() -> PromptTemplates {
+    prompts::defaults()
+}
+
+#[tauri::command]
+fn start_shortcut_capture(action: ShortcutAction) -> Result<(), String> {
+    keyboard::begin_shortcut_capture(action)
+}
+
+#[tauri::command]
+fn cancel_shortcut_capture() -> Result<(), String> {
+    keyboard::cancel_shortcut_capture()
 }
 
 #[tauri::command]
@@ -79,6 +105,7 @@ async fn translate(
         channel,
         settings.source_language,
         settings.target_language,
+        &settings.prompt_overrides,
     )
     .await
 }
@@ -191,11 +218,13 @@ pub fn run() {
             app.manage(settings_store);
 
             let settings = app.state::<SettingsStore>().get();
-            let threshold = settings.double_tap_threshold_ms;
             if let Err(e) = apply_launch_at_login(&app.handle(), settings.launch_at_login) {
                 eprintln!("[enja] launch at login: {e}");
             }
-            keyboard::spawn_listener(trigger_tx, threshold);
+            keyboard::spawn_listener(
+                trigger_tx,
+                keyboard::KeyboardRuntimeSettings::from(&settings),
+            );
 
             #[cfg(target_os = "macos")]
             macos_show_on_activate::init(app.handle().clone());
@@ -233,7 +262,10 @@ pub fn run() {
             delete_dictionary_entry,
             save_provider_secret,
             get_provider_status,
-            check_speech_setup
+            check_speech_setup,
+            get_prompt_defaults,
+            start_shortcut_capture,
+            cancel_shortcut_capture
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -285,7 +317,33 @@ fn handle_keyboard_trigger(app: tauri::AppHandle, trigger: KeyboardTrigger) {
                 let _ = manager.cancel_session(app.clone());
             }
         }
+        KeyboardTrigger::ShortcutCaptured { action, shortcut } => {
+            let _ = app.emit(
+                "shortcut-captured",
+                ShortcutCapturedEvent { action, shortcut },
+            );
+        }
+        KeyboardTrigger::ShortcutCaptureCancelled { action, reason } => {
+            let _ = app.emit(
+                "shortcut-capture-cancelled",
+                ShortcutCaptureCancelledEvent { action, reason },
+            );
+        }
     }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShortcutCapturedEvent {
+    action: ShortcutAction,
+    shortcut: ShortcutBinding,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShortcutCaptureCancelledEvent {
+    action: ShortcutAction,
+    reason: String,
 }
 
 fn read_clipboard_text() -> String {

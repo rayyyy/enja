@@ -4,18 +4,11 @@ use serde_json::Value;
 use std::time::Duration;
 use tauri::ipc::Channel;
 
-use crate::settings::UiLanguage;
+use crate::prompts;
+use crate::settings::{PromptOverrides, UiLanguage};
 
 const MODEL: &str = "gemini-3.1-flash-lite-preview";
 const GEMINI_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
-
-const SYSTEM_PROMPT_EN_TO_JA: &str = r#"あなたはプロの翻訳家であり、ネイティブスピーカーです。入力された英語のテキストを自然な日本語に翻訳してください。
-
-出力は翻訳文のみとし、見出し・ラベル（「翻訳」など）・前置き・解説・ニュアンス説明・別の表現案・箇条書きは一切出力しないでください。段落が必要な場合は空行で区切ってよい。"#;
-
-const SYSTEM_PROMPT_JA_TO_EN: &str = r#"You are a professional translator and native speaker. Translate the user's Japanese input into natural English.
-
-Output only the translation. Do not output headings, labels (such as "Translation"), preambles, explanations, nuance notes, alternative phrasings, or bullet points. Use a blank line between paragraphs if needed."#;
 
 #[derive(Clone, Serialize)]
 #[serde(tag = "type")]
@@ -61,22 +54,15 @@ struct GeminiError {
     message: Option<String>,
 }
 
-fn system_prompt(source: UiLanguage, target: UiLanguage) -> &'static str {
-    match (source, target) {
-        (UiLanguage::En, UiLanguage::Ja) => SYSTEM_PROMPT_EN_TO_JA,
-        (UiLanguage::Ja, UiLanguage::En) => SYSTEM_PROMPT_JA_TO_EN,
-        _ => SYSTEM_PROMPT_EN_TO_JA,
-    }
-}
-
 pub async fn stream_translate(
     api_key: &str,
     user_text: &str,
     channel: Channel<TranslateEvent>,
     source: UiLanguage,
     target: UiLanguage,
+    prompt_overrides: &PromptOverrides,
 ) -> Result<(), String> {
-    let prompt = system_prompt(source, target);
+    let prompt = prompts::translation_system_prompt(prompt_overrides, source, target);
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:streamGenerateContent?alt=sse&key={}",
         encode_query_component(api_key)
@@ -84,7 +70,7 @@ pub async fn stream_translate(
 
     let body = serde_json::json!({
         "systemInstruction": {
-            "parts": [{ "text": prompt }]
+            "parts": [{ "text": prompt.as_ref() }]
         },
         "contents": [{
             "role": "user",

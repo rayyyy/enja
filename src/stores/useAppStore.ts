@@ -1,5 +1,10 @@
 import { create } from "zustand";
-import type { FinalizationModel, SpeechProfile, UiLanguage } from "../types";
+import type {
+  FinalizationModel,
+  ShortcutBinding,
+  SpeechProfile,
+  UiLanguage,
+} from "../types";
 import { otherUiLanguage } from "../lib/uiLanguage";
 
 type View = "translation" | "settings" | "dictionary";
@@ -25,6 +30,8 @@ interface AppState {
   googleCloudProjectId: string;
   googleCloudRegion: string;
   googleCloudUseAdc: boolean;
+  voiceDictationShortcut: ShortcutBinding;
+  voiceAskShortcut: ShortcutBinding;
   hasTranslated: boolean;
 
   setView: (v: View) => void;
@@ -53,6 +60,8 @@ interface AppState {
       googleCloudProjectId: string;
       googleCloudRegion: string;
       googleCloudUseAdc: boolean;
+      voiceDictationShortcut: ShortcutBinding;
+      voiceAskShortcut: ShortcutBinding;
     },
   ) => void;
   setHasTranslated: (v: boolean) => void;
@@ -79,6 +88,30 @@ export const useAppStore = create<AppState>((set) => ({
   googleCloudProjectId: "",
   googleCloudRegion: "asia-northeast1",
   googleCloudUseAdc: true,
+  voiceDictationShortcut: {
+    keyCode: null,
+    key: "fn",
+    label: "Fn",
+    modifiers: {
+      command: false,
+      option: false,
+      control: false,
+      shift: false,
+      function: false,
+    },
+  },
+  voiceAskShortcut: {
+    keyCode: 49,
+    key: "space",
+    label: "Fn Space",
+    modifiers: {
+      command: false,
+      option: false,
+      control: false,
+      shift: false,
+      function: true,
+    },
+  },
   hasTranslated: false,
 
   setView: (v) => set({ view: v }),

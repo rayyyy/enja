@@ -2,10 +2,13 @@ import { useEffect, useLayoutEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import type { VoiceLevelEvent, VoiceResultEvent, VoiceStateEvent } from "../types";
 import { cancelVoiceSession } from "../lib/commands";
+import { useAppStore } from "../stores/useAppStore";
 
 const BARS = 12;
 
 export function VoiceOverlay() {
+  const voiceDictationShortcut = useAppStore((s) => s.voiceDictationShortcut);
+  const voiceAskShortcut = useAppStore((s) => s.voiceAskShortcut);
   const [state, setState] = useState<VoiceStateEvent>({
     state: "recording",
     mode: "dictation",
@@ -187,15 +190,15 @@ export function VoiceOverlay() {
             ))}
           </div>
           {!showInlineText ? (
-            <div className="flex w-[54px] shrink-0 justify-end">
+            <div className="flex min-w-[54px] max-w-[96px] shrink-0 justify-end">
               <span
-                className={`flex h-5 items-center rounded-md border px-2 text-[10px] font-semibold leading-none ${
+                className={`flex h-5 max-w-full items-center truncate rounded-md border px-2 text-[10px] font-semibold leading-none ${
                   isAskMode
                     ? "border-sky-200/25 bg-sky-300/10 text-sky-100"
                     : "border-emerald-200/20 bg-emerald-300/10 text-emerald-100/80"
                 }`}
               >
-                {isAskMode ? "Space" : "Fn"}
+                {isAskMode ? voiceAskShortcut.label : voiceDictationShortcut.label}
               </span>
             </div>
           ) : null}

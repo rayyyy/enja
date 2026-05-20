@@ -17,6 +17,39 @@ export type FinalizationModel =
   | "gemini35Flash"
   | "gemini31FlashLite";
 
+export type ShortcutAction = "voiceDictation" | "voiceAsk";
+
+export type ShortcutModifiers = {
+  command: boolean;
+  option: boolean;
+  control: boolean;
+  shift: boolean;
+  function: boolean;
+};
+
+export type ShortcutBinding = {
+  keyCode: number | null;
+  key: string;
+  label: string;
+  modifiers: ShortcutModifiers;
+};
+
+export type PromptOverrides = {
+  translateEnToJa: string | null;
+  translateJaToEn: string | null;
+  openaiTranscription: string | null;
+  geminiAudioSystem: string | null;
+  geminiAudioUser: string | null;
+  dictationSystem: string | null;
+  dictationUser: string | null;
+  askWithoutSelectionSystem: string | null;
+  askWithoutSelectionUser: string | null;
+  askWithSelectionSystem: string | null;
+  askWithSelectionUser: string | null;
+};
+
+export type PromptTemplates = Record<keyof PromptOverrides, string>;
+
 export type AppSettings = {
   geminiApiKey: string;
   doubleTapThresholdMs: number;
@@ -32,6 +65,9 @@ export type AppSettings = {
   googleCloudProjectId: string;
   googleCloudRegion: string;
   googleCloudUseAdc: boolean;
+  voiceDictationShortcut: ShortcutBinding;
+  voiceAskShortcut: ShortcutBinding;
+  promptOverrides: PromptOverrides;
 };
 
 export type AudioInputDevice = {
@@ -88,4 +124,14 @@ export type VoiceResultEvent = {
   text: string;
   inserted: boolean;
   reason: string | null;
+};
+
+export type ShortcutCapturedEvent = {
+  action: ShortcutAction;
+  shortcut: ShortcutBinding;
+};
+
+export type ShortcutCaptureCancelledEvent = {
+  action: ShortcutAction;
+  reason: string;
 };

@@ -32,6 +32,8 @@ function App() {
           googleCloudProjectId: s.googleCloudProjectId,
           googleCloudRegion: s.googleCloudRegion,
           googleCloudUseAdc: s.googleCloudUseAdc,
+          voiceDictationShortcut: s.voiceDictationShortcut,
+          voiceAskShortcut: s.voiceAskShortcut,
         },
       );
       if (!s.geminiApiKey?.trim()) {
@@ -81,7 +83,7 @@ function App() {
       {view === "settings" || view === "dictionary" ? (
         <div className="flex min-h-0 flex-1 flex-col border-t border-neutral-200/90 shadow-[0_1px_2px_-1px_rgba(0,0,0,0.06)]">
           <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-            <div className={view === "dictionary" ? "w-full max-w-3xl" : "w-full max-w-4xl"}>
+            <div className={view === "dictionary" ? "w-full max-w-3xl" : "w-full max-w-6xl"}>
               {view === "dictionary" ? <DictionaryView /> : <SettingsView />}
             </div>
           </div>

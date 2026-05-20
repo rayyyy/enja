@@ -1,5 +1,6 @@
 use crate::dictionary::{self, DictionaryEntry};
 use crate::gemini;
+use crate::prompts;
 use crate::secrets;
 use crate::settings::{AppSettings, SettingsStore, SpeechProfile};
 use base64::Engine;
@@ -832,10 +833,10 @@ async fn transcribe(
         }
         SpeechProfile::DeepgramNova3 => transcribe_deepgram(entries, clip).await,
         SpeechProfile::OpenAiGpt4oTranscribe => {
-            transcribe_openai("gpt-4o-transcribe", entries, clip).await
+            transcribe_openai("gpt-4o-transcribe", settings, entries, clip).await
         }
         SpeechProfile::OpenAiGpt4oMiniTranscribe => {
-            transcribe_openai("gpt-4o-mini-transcribe", entries, clip).await
+            transcribe_openai("gpt-4o-mini-transcribe", settings, entries, clip).await
         }
         SpeechProfile::GeminiAudio => transcribe_gemini_audio(app, settings, entries, clip).await,
     }
@@ -848,7 +849,7 @@ async fn transcribe_long_audio_fallback(
     clip: &AudioClip,
 ) -> Result<String, String> {
     if secrets::get_secret("openai").is_ok_and(|key| !key.trim().is_empty()) {
-        return transcribe_openai("gpt-4o-transcribe", entries, clip).await;
+        return transcribe_openai("gpt-4o-transcribe", settings, entries, clip).await;
     }
     if secrets::get_secret("deepgram").is_ok_and(|key| !key.trim().is_empty()) {
         return transcribe_deepgram(entries, clip).await;
@@ -1188,19 +1189,15 @@ async fn transcribe_deepgram(
 
 async fn transcribe_openai(
     model: &str,
+    settings: &AppSettings,
     entries: &[DictionaryEntry],
     clip: &AudioClip,
 ) -> Result<String, String> {
     let key = secrets::get_secret("openai")
         .map_err(|_| "OpenAI APIキーを保存してください。".to_string())?;
     let dictionary_context = dictionary::prompt_lines(entries);
-    let prompt = if dictionary_context.is_empty() {
-        "日本語の音声です。固有名詞と専門用語を正確に文字起こししてください。".to_string()
-    } else {
-        format!(
-            "日本語の音声です。固有名詞と専門用語を正確に文字起こししてください。\n優先表記:\n{dictionary_context}"
-        )
-    };
+    let prompt =
+        prompts::openai_transcription_prompt(&settings.prompt_overrides, &dictionary_context);
     let file = reqwest::multipart::Part::bytes(clip.wav.clone())
         .file_name("audio.wav")
         .mime_str("audio/wav")
@@ -1245,19 +1242,13 @@ async fn transcribe_gemini_audio(
 ) -> Result<String, String> {
     let key = gemini_api_key(app)?;
     let dictionary_context = dictionary::prompt_lines(entries);
-    let prompt = if dictionary_context.is_empty() {
-        "添付された日本語音声を、できるだけ正確に文字起こししてください。出力は文字起こし本文のみ。"
-            .to_string()
-    } else {
-        format!(
-            "添付された日本語音声を、できるだけ正確に文字起こししてください。出力は文字起こし本文のみ。\n優先表記:\n{dictionary_context}"
-        )
-    };
+    let prompt = prompts::gemini_audio_user(&settings.prompt_overrides, &dictionary_context);
+    let system = prompts::gemini_audio_system(&settings.prompt_overrides);
     gemini::generate_from_audio(
         &key,
         settings.finalization_model.model_id(),
         settings.finalization_model.thinking_level(),
-        "あなたは日本語音声の文字起こし専門家です。",
+        system.as_ref(),
         &prompt,
         &clip.wav,
         0.1,
@@ -1282,21 +1273,24 @@ async fn finalize_text(
     };
     let (system, user) = match mode {
         VoiceMode::Dictation => (
-            "あなたは日本語の音声入力編集者です。音声認識結果を、ユーザーがそのまま貼り付けられる自然な日本語文に整形します。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。",
-            format!(
-                "{dictionary_section}\n\n音声認識結果:\n{transcript}\n\n要件:\n- 話し言葉の不要な言い直しを整理する。\n- 録音内に「これをこうまとめて」などの指示が含まれる場合、その意図に従って最終文章を作る。\n- 辞書の優先表記を必ず尊重する。\n- 内容を勝手に増やさない。"
-            ),
+            prompts::dictation_system(&settings.prompt_overrides),
+            prompts::dictation_user(&settings.prompt_overrides, &dictionary_section, transcript),
         ),
         VoiceMode::Ask if selected_text.trim().is_empty() => (
-            "あなたは日本語の音声入力編集者です。音声指示だけを根拠に、ユーザーがそのまま貼り付けられる最終本文を作ります。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。",
-            format!(
-                "{dictionary_section}\n\n選択中テキストは取得できませんでした。\n\n音声指示の文字起こし:\n{transcript}\n\n要件:\n- 音声指示だけに基づいて最終本文を作る。\n- 選択されていない文章、過去のクリップボード、過去の会話内容を推測して混ぜない。\n- 辞書の優先表記を必ず尊重する。\n- 内容を勝手に増やさない。"
+            prompts::ask_without_selection_system(&settings.prompt_overrides),
+            prompts::ask_without_selection_user(
+                &settings.prompt_overrides,
+                &dictionary_section,
+                transcript,
             ),
         ),
         VoiceMode::Ask => (
-            "あなたは日本語の文章編集者です。選択中テキストを、音声指示に従って書き換えます。出力は置換後の本文のみ。前置き、説明、引用符、ラベルは出しません。",
-            format!(
-                "{dictionary_section}\n\n選択中テキスト:\n{selected_text}\n\n音声指示の文字起こし:\n{transcript}\n\n要件:\n- 音声指示に従って選択中テキストを書き換える。\n- 指示が曖昧な場合は、選択中テキストの意味を保ったまま自然に整える。\n- 辞書の優先表記を必ず尊重する。\n- 出力は置換する本文のみ。"
+            prompts::ask_with_selection_system(&settings.prompt_overrides),
+            prompts::ask_with_selection_user(
+                &settings.prompt_overrides,
+                &dictionary_section,
+                selected_text,
+                transcript,
             ),
         ),
     };
@@ -1304,7 +1298,7 @@ async fn finalize_text(
         &key,
         settings.finalization_model.model_id(),
         settings.finalization_model.thinking_level(),
-        system,
+        system.as_ref(),
         &user,
         0.2,
     )
