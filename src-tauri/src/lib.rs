@@ -11,11 +11,24 @@ use dictionary::{DictionaryEntry, DictionaryEntryInput};
 use gemini::{stream_translate, TranslateEvent};
 use keyboard::KeyboardTrigger;
 use settings::{load_settings, save_settings_to_disk, AppSettings, SettingsStore, SpeechProfile};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager, Runtime, State};
 use tauri_plugin_autostart::ManagerExt;
 use voice::{AudioInputDevice, SpeechSetupCheck, VoiceManager, VoiceMode};
+
+/// Delay before treating a standalone Fn press as a Dictation start. Gives the
+/// user a short window to follow Fn with Space (Ask mode) without first
+/// flashing the Dictation overlay. Stopping is *not* delayed — see
+/// `KeyboardTrigger::FunctionPress` handling below.
+const FN_DICTATION_START_DELAY_MS: u64 = 100;
+
+/// Bumped on every Fn release / Fn+Space / Escape. A pending dictation start
+/// task that was scheduled with generation `g` only fires if the counter is
+/// still `g` after the delay expires. This is what makes the start window
+/// cancellable from any code path.
+static FN_PRESS_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// True while a voice session was just started by an Fn press. The matching Fn
 /// release should not stop that fresh session — it just consumes this flag so
@@ -24,6 +37,10 @@ use voice::{AudioInputDevice, SpeechSetupCheck, VoiceManager, VoiceMode};
 /// timeouts always reset the flag implicitly: as soon as the manager reports
 /// not-active again, the next press starts cleanly.
 static SKIP_NEXT_FN_RELEASE: AtomicBool = AtomicBool::new(false);
+
+fn invalidate_pending_fn_start() {
+    FN_PRESS_GENERATION.fetch_add(1, Ordering::SeqCst);
+}
 
 fn show_main_window<R: Runtime>(app: &impl Manager<R>) {
     if let Some(w) = app.get_webview_window("main") {
@@ -267,16 +284,39 @@ fn handle_keyboard_trigger(app: tauri::AppHandle, trigger: KeyboardTrigger) {
                 return;
             };
             if manager.is_active() {
-                // A session is already running (Dictation or Ask started earlier).
-                // Leave the skip flag cleared so the matching release toggles it
-                // off.
+                // A session is already running — the matching release should
+                // toggle it off immediately (no delay), so clear the skip flag
+                // and don't schedule a new start.
                 SKIP_NEXT_FN_RELEASE.store(false, Ordering::SeqCst);
-            } else {
-                SKIP_NEXT_FN_RELEASE.store(true, Ordering::SeqCst);
-                let _ = manager.start_session(app.clone(), VoiceMode::Dictation);
+                return;
             }
+
+            // Defer the actual start a hair so an Fn+Space chord can pre-empt
+            // it without first flashing the Dictation overlay. Use a generation
+            // counter so any subsequent release / Fn+Space / Escape cancels
+            // this exact attempt.
+            let generation = FN_PRESS_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+            SKIP_NEXT_FN_RELEASE.store(true, Ordering::SeqCst);
+            let app_for_task = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(FN_DICTATION_START_DELAY_MS)).await;
+                if FN_PRESS_GENERATION.load(Ordering::SeqCst) != generation {
+                    return;
+                }
+                let Some(manager) = app_for_task.try_state::<VoiceManager>() else {
+                    return;
+                };
+                if !manager.is_active() {
+                    let _ = manager.start_session(app_for_task.clone(), VoiceMode::Dictation);
+                }
+            });
         }
         KeyboardTrigger::FunctionRelease => {
+            // Always cancel any pending dictation-start attempt: either we're
+            // about to consume it (fast tap before the delay elapsed) or the
+            // session already started and the generation no longer matters.
+            invalidate_pending_fn_start();
+
             if SKIP_NEXT_FN_RELEASE.swap(false, Ordering::SeqCst) {
                 return;
             }
@@ -294,10 +334,12 @@ fn handle_keyboard_trigger(app: tauri::AppHandle, trigger: KeyboardTrigger) {
             }
         }
         KeyboardTrigger::FunctionSpace => {
-            // Fn+Space takes over Fn's role for this hold; clear any pending
-            // skip so a subsequent Fn release doesn't accidentally swallow a
-            // future toggle.
+            // Fn+Space takes over Fn's role: drop the pending Dictation start
+            // and clear the skip flag so a subsequent Fn release can't swallow
+            // a future toggle.
+            invalidate_pending_fn_start();
             SKIP_NEXT_FN_RELEASE.store(false, Ordering::SeqCst);
+
             let Some(manager) = app.try_state::<VoiceManager>() else {
                 return;
             };
@@ -306,6 +348,7 @@ fn handle_keyboard_trigger(app: tauri::AppHandle, trigger: KeyboardTrigger) {
             }
         }
         KeyboardTrigger::Escape => {
+            invalidate_pending_fn_start();
             SKIP_NEXT_FN_RELEASE.store(false, Ordering::SeqCst);
             if let Some(manager) = app.try_state::<VoiceManager>() {
                 let _ = manager.cancel_session(app.clone());

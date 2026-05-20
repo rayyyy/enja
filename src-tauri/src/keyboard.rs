@@ -20,15 +20,8 @@ pub enum KeyboardTrigger {
 mod macos {
     use super::KeyboardTrigger;
     use std::os::raw::c_void;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::Sender;
-    use std::sync::Arc;
     use std::time::{Duration, Instant};
-
-    /// Delay before treating an Fn press as a Dictation start. This window lets
-    /// the listener detect an Fn+Space chord (Ask mode) without first flashing
-    /// the Dictation overlay.
-    const FN_PRESS_DETECT_MS: u64 = 100;
 
     // --- FFI types -----------------------------------------------------------
 
@@ -108,8 +101,6 @@ mod macos {
         threshold: Duration,
         meta_down: bool,
         fn_down: bool,
-        fn_pending_cancel: Option<Arc<AtomicBool>>,
-        fn_press_emitted: bool,
         fn_space_combo: bool,
         fn_space_down: bool,
         last_cmd_c: Option<Instant>,
@@ -185,9 +176,6 @@ mod macos {
                 }
                 if keycode == KEYCODE_SPACE && state.fn_down {
                     if !state.fn_space_down {
-                        if let Some(cancel) = state.fn_pending_cancel.take() {
-                            cancel.store(true, Ordering::SeqCst);
-                        }
                         let _ = state.tx.send(KeyboardTrigger::FunctionSpace);
                     }
                     state.fn_space_down = true;
@@ -232,71 +220,19 @@ mod macos {
     }
 
     fn handle_fn_pressed(state: &mut ListenerState) {
-        // A fresh Fn press always invalidates any prior Fn+Space combo bookkeeping.
+        // Any new Fn press starts a fresh combo cycle.
         state.fn_space_combo = false;
         state.fn_space_down = false;
-        state.fn_press_emitted = false;
-
-        // Cancel any stale pending press (shouldn't normally happen because the
-        // matching release clears it, but guard against missed events).
-        if let Some(prev) = state.fn_pending_cancel.take() {
-            prev.store(true, Ordering::SeqCst);
-        }
-
-        let cancel = Arc::new(AtomicBool::new(false));
-        state.fn_pending_cancel = Some(cancel.clone());
-        let tx = state.tx.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(FN_PRESS_DETECT_MS));
-            if cancel.load(Ordering::SeqCst) {
-                return;
-            }
-
-            let mut should_send = false;
-            if let Ok(mut guard) = LISTENER_STATE.lock() {
-                if let Some(state) = guard.as_mut() {
-                    let is_current = state
-                        .fn_pending_cancel
-                        .as_ref()
-                        .map(|c| Arc::ptr_eq(c, &cancel))
-                        .unwrap_or(false);
-                    if is_current && !cancel.load(Ordering::SeqCst) {
-                        state.fn_pending_cancel = None;
-                        state.fn_press_emitted = true;
-                        should_send = true;
-                    }
-                }
-            }
-
-            if should_send {
-                let _ = tx.send(KeyboardTrigger::FunctionPress);
-            }
-        });
+        let _ = state.tx.send(KeyboardTrigger::FunctionPress);
     }
 
     fn handle_fn_released(state: &mut ListenerState) {
-        // Always cancel any pending press timer first so it can't fire after the
-        // key has already been released.
-        if let Some(cancel) = state.fn_pending_cancel.take() {
-            cancel.store(true, Ordering::SeqCst);
-        }
-
-        let press_was_emitted = std::mem::take(&mut state.fn_press_emitted);
-
         if state.fn_space_combo {
             // The matching Fn down formed a chord with Space — Ask was triggered
             // separately, so this release should not produce a Function event.
             state.fn_space_combo = false;
             return;
         }
-
-        if !press_was_emitted {
-            // The detect-window timer was cancelled before it fired (either a
-            // very fast tap or some other race). Nothing started, nothing to
-            // stop.
-            return;
-        }
-
         let _ = state.tx.send(KeyboardTrigger::FunctionRelease);
     }
 
@@ -329,8 +265,6 @@ mod macos {
                     threshold,
                     meta_down: false,
                     fn_down: false,
-                    fn_pending_cancel: None,
-                    fn_press_emitted: false,
                     fn_space_combo: false,
                     fn_space_down: false,
                     last_cmd_c: None,
