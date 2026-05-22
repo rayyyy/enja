@@ -1072,6 +1072,7 @@ dependencies = [
  "bytes",
  "core-foundation",
  "core-foundation-sys",
+ "coreaudio-sys",
  "cpal",
  "futures-util",
  "hound",

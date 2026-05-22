@@ -222,6 +222,7 @@ pub fn run() {
             macos_show_on_activate::init(app.handle().clone());
 
             std::thread::spawn(voice::prewarm_microphone);
+            voice::spawn_audio_input_device_watcher(app.handle().clone());
 
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {

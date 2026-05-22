@@ -7,5 +7,7 @@
   <string>音声入力の録音にマイクを使用します。</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>現在の入力先へ音声入力結果を貼り付けるために使用します。</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>PC内部音声の分離処理にシステム音声を取得するために使用します。</string>
 </dict>
 </plist>

@@ -301,7 +301,6 @@ impl SystemTap {
         }
         out
     }
-
 }
 
 impl Drop for SystemTap {
@@ -361,10 +360,7 @@ fn build_aggregate_description(
         &CFString::new("tapautostart").as_CFType(),
         &CFNumber::from(1i32).as_CFType(),
     );
-    dict.add(
-        &CFString::new("taps").as_CFType(),
-        &taps_array.as_CFType(),
-    );
+    dict.add(&CFString::new("taps").as_CFType(), &taps_array.as_CFType());
     dict.to_immutable()
 }
 

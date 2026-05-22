@@ -31,6 +31,7 @@ import {
   ShortcutSettingsSection,
   type ProviderSecretsDraft,
 } from "./settings/SettingsSections";
+import { remapSelectedMicrophoneId } from "../lib/audioInputDevices";
 import {
   checkSpeechSetup,
   cancelShortcutCapture,
@@ -260,17 +261,70 @@ export function SettingsView() {
 
   useEffect(() => {
     void (async () => {
-      const [s, d, status, catalog] = await Promise.all([
+      const [s, status, catalog] = await Promise.all([
         getSettings(),
-        listAudioInputDevices().catch(() => []),
         getProviderStatus().catch(() => null),
         getPromptCatalog(),
       ]);
       setSettings(s);
-      setDevices(d);
       setProviderStatus(status);
       setPromptCatalog(catalog);
     })();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    function applyDeviceList(nextDevices: AudioInputDevice[]) {
+      if (cancelled) {
+        return;
+      }
+
+      setDevices(nextDevices);
+      setSettings((prev) => {
+        if (!prev) {
+          return prev;
+        }
+
+        const nextSelectedId = remapSelectedMicrophoneId(
+          prev.voice.selectedMicrophoneId,
+          nextDevices,
+        );
+        if (nextSelectedId === prev.voice.selectedMicrophoneId) {
+          return prev;
+        }
+
+        return {
+          ...prev,
+          voice: {
+            ...prev.voice,
+            selectedMicrophoneId: nextSelectedId,
+          },
+        };
+      });
+    }
+
+    async function refreshDevices() {
+      const nextDevices = await listAudioInputDevices().catch(() => []);
+      applyDeviceList(nextDevices);
+    }
+
+    const nativeListener = listen<AudioInputDevice[]>(
+      "audio-input-devices-changed",
+      (event) => {
+        applyDeviceList(event.payload);
+      },
+    );
+    const mediaDevices = navigator.mediaDevices;
+
+    void refreshDevices();
+    mediaDevices?.addEventListener?.("devicechange", refreshDevices);
+
+    return () => {
+      cancelled = true;
+      void nativeListener.then((fn) => fn());
+      mediaDevices?.removeEventListener?.("devicechange", refreshDevices);
+    };
   }, []);
 
   useEffect(() => {

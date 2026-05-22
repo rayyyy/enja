@@ -9,19 +9,22 @@ use crate::secrets;
 use crate::settings::{AppSettings, SettingsStore, SpeechProfile, SystemAudioHandling};
 
 use aec::Aec;
-use system_tap::SystemTap;
 use base64::Engine;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
 use serde::{Deserialize, Serialize};
 use std::io::{Cursor, Write};
+#[cfg(target_os = "macos")]
+use std::os::raw::c_void;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use system_tap::SystemTap;
 use tauri::{Emitter, Manager};
 
 const SPEECH_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const AUDIO_INPUT_DEVICES_CHANGED_EVENT: &str = "audio-input-devices-changed";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -481,6 +484,10 @@ pub fn prewarm_microphone() {
     let _ = list_audio_input_devices();
 }
 
+pub fn spawn_audio_input_device_watcher(app: tauri::AppHandle) {
+    audio_input_device_watcher::spawn(app);
+}
+
 impl Recorder {
     fn start(
         app: tauri::AppHandle,
@@ -597,9 +604,11 @@ fn run_recording_thread(
 
         let aec_pipeline = match &pipeline {
             PipelineMode::Direct => None,
-            PipelineMode::AecIsolate(system) => {
-                Some(AecPipeline::new(system.clone(), device_sample_rate, device_channels)?)
-            }
+            PipelineMode::AecIsolate(system) => Some(AecPipeline::new(
+                system.clone(),
+                device_sample_rate,
+                device_channels,
+            )?),
         };
 
         let stream = match supported.sample_format() {
@@ -825,22 +834,41 @@ where
 
 pub fn list_audio_input_devices() -> Result<Vec<AudioInputDevice>, String> {
     let host = cpal::default_host();
-    let default_name = host
-        .default_input_device()
-        .and_then(|d| d.name().ok())
-        .unwrap_or_default();
-    let mut out = Vec::new();
+    let default_name = host.default_input_device().and_then(|d| d.name().ok());
+    let mut name_counts = std::collections::HashMap::<String, usize>::new();
+    let mut entries = Vec::new();
+
     for (idx, device) in host.input_devices().map_err(|e| e.to_string())?.enumerate() {
         let name = device
             .name()
             .unwrap_or_else(|_| "名称未取得のマイク".to_string());
+        *name_counts.entry(name.clone()).or_insert(0) += 1;
+        entries.push((idx, name));
+    }
+
+    let mut out = Vec::with_capacity(entries.len());
+    for (idx, name) in entries {
+        let is_default = default_name
+            .as_deref()
+            .is_some_and(|default| default == name && name_counts.get(&name) == Some(&1));
         out.push(AudioInputDevice {
             id: format!("{name}#{idx}"),
-            is_default: name == default_name,
+            is_default,
             name,
         });
     }
     Ok(out)
+}
+
+fn parse_audio_input_device_id(selected_id: &str) -> Option<&str> {
+    let hash_index = selected_id.rfind('#')?;
+    if hash_index == 0 {
+        return None;
+    }
+    selected_id[hash_index + 1..]
+        .parse::<usize>()
+        .ok()
+        .map(|_| &selected_id[..hash_index])
 }
 
 fn input_device_by_id(
@@ -850,13 +878,212 @@ fn input_device_by_id(
     let Some(selected_id) = selected_id else {
         return Ok(None);
     };
+
+    let selected_name = parse_audio_input_device_id(selected_id);
+    let mut same_name_match = None;
+    let mut same_name_count = 0usize;
+
     for (idx, device) in host.input_devices().map_err(|e| e.to_string())?.enumerate() {
         let name = device.name().unwrap_or_default();
         if selected_id == format!("{name}#{idx}") {
             return Ok(Some(device));
         }
+        if selected_name == Some(name.as_str()) {
+            same_name_count += 1;
+            same_name_match = Some(device);
+        }
+    }
+    if same_name_count == 1 {
+        return Ok(same_name_match);
     }
     Ok(None)
+}
+
+fn audio_input_devices_signature(devices: &[AudioInputDevice]) -> Vec<(String, String, bool)> {
+    devices
+        .iter()
+        .map(|device| (device.id.clone(), device.name.clone(), device.is_default))
+        .collect()
+}
+
+fn poll_audio_input_devices(app: tauri::AppHandle, interval: Duration) {
+    let mut last_signature = list_audio_input_devices()
+        .map(|devices| audio_input_devices_signature(&devices))
+        .unwrap_or_default();
+
+    loop {
+        std::thread::sleep(interval);
+        let devices = match list_audio_input_devices() {
+            Ok(devices) => devices,
+            Err(err) => {
+                eprintln!("[enja] audio input device refresh failed: {err}");
+                continue;
+            }
+        };
+        let signature = audio_input_devices_signature(&devices);
+        if signature != last_signature {
+            last_signature = signature;
+            let _ = app.emit(AUDIO_INPUT_DEVICES_CHANGED_EVENT, devices);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod audio_input_device_watcher {
+    use super::{
+        audio_input_devices_signature, list_audio_input_devices, poll_audio_input_devices,
+        AUDIO_INPUT_DEVICES_CHANGED_EVENT,
+    };
+    use coreaudio_sys::{
+        kAudioHardwareNoError, kAudioHardwarePropertyDefaultInputDevice,
+        kAudioHardwarePropertyDevices, kAudioObjectPropertyElementMaster,
+        kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject, AudioObjectAddPropertyListener,
+        AudioObjectPropertyAddress, AudioObjectRemovePropertyListener, OSStatus,
+    };
+    use std::ffi::c_void;
+    use std::sync::mpsc::{self, Receiver, Sender};
+    use std::time::Duration;
+    use tauri::Emitter;
+
+    const REFRESH_DEBOUNCE: Duration = Duration::from_millis(300);
+
+    pub fn spawn(app: tauri::AppHandle) {
+        std::thread::spawn(move || {
+            let (tx, rx) = mpsc::channel();
+            let _listeners = match CoreAudioDeviceListeners::register(tx) {
+                Ok(listeners) => listeners,
+                Err(err) => {
+                    eprintln!("[enja] CoreAudio device watcher unavailable: {err}");
+                    poll_audio_input_devices(app, Duration::from_secs(2));
+                    return;
+                }
+            };
+
+            run_event_loop(app, rx);
+        });
+    }
+
+    fn run_event_loop(app: tauri::AppHandle, rx: Receiver<()>) {
+        let mut last_signature = list_audio_input_devices()
+            .map(|devices| audio_input_devices_signature(&devices))
+            .unwrap_or_default();
+
+        while rx.recv().is_ok() {
+            std::thread::sleep(REFRESH_DEBOUNCE);
+            while rx.try_recv().is_ok() {}
+
+            let devices = match list_audio_input_devices() {
+                Ok(devices) => devices,
+                Err(err) => {
+                    eprintln!("[enja] audio input device refresh failed: {err}");
+                    continue;
+                }
+            };
+            let signature = audio_input_devices_signature(&devices);
+            if signature != last_signature {
+                last_signature = signature;
+                let _ = app.emit(AUDIO_INPUT_DEVICES_CHANGED_EVENT, devices);
+            }
+        }
+    }
+
+    struct CoreAudioDeviceListeners {
+        client_data: *mut Sender<()>,
+        devices_registered: bool,
+        default_input_registered: bool,
+    }
+
+    impl CoreAudioDeviceListeners {
+        fn register(tx: Sender<()>) -> Result<Self, String> {
+            let mut listeners = Self {
+                client_data: Box::into_raw(Box::new(tx)),
+                devices_registered: false,
+                default_input_registered: false,
+            };
+
+            unsafe {
+                listeners.add_listener(kAudioHardwarePropertyDevices)?;
+                listeners.devices_registered = true;
+                listeners.add_listener(kAudioHardwarePropertyDefaultInputDevice)?;
+                listeners.default_input_registered = true;
+            }
+
+            Ok(listeners)
+        }
+
+        unsafe fn add_listener(&self, selector: u32) -> Result<(), String> {
+            let address = listener_address(selector);
+            let status = AudioObjectAddPropertyListener(
+                kAudioObjectSystemObject,
+                &address,
+                Some(audio_device_listener),
+                self.client_data.cast::<c_void>(),
+            );
+            if status == kAudioHardwareNoError as OSStatus {
+                Ok(())
+            } else {
+                Err(format!(
+                    "AudioObjectAddPropertyListener({selector}) returned {status}"
+                ))
+            }
+        }
+
+        unsafe fn remove_listener(&self, selector: u32) {
+            let address = listener_address(selector);
+            let _ = AudioObjectRemovePropertyListener(
+                kAudioObjectSystemObject,
+                &address,
+                Some(audio_device_listener),
+                self.client_data.cast::<c_void>(),
+            );
+        }
+    }
+
+    impl Drop for CoreAudioDeviceListeners {
+        fn drop(&mut self) {
+            unsafe {
+                if self.default_input_registered {
+                    self.remove_listener(kAudioHardwarePropertyDefaultInputDevice);
+                }
+                if self.devices_registered {
+                    self.remove_listener(kAudioHardwarePropertyDevices);
+                }
+                drop(Box::from_raw(self.client_data));
+            }
+        }
+    }
+
+    fn listener_address(selector: u32) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress {
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMaster,
+        }
+    }
+
+    unsafe extern "C" fn audio_device_listener(
+        _object_id: u32,
+        _address_count: u32,
+        _addresses: *const AudioObjectPropertyAddress,
+        client_data: *mut c_void,
+    ) -> OSStatus {
+        if client_data.is_null() {
+            return kAudioHardwareNoError as OSStatus;
+        }
+        let tx = &*(client_data as *const Sender<()>);
+        let _ = tx.send(());
+        kAudioHardwareNoError as OSStatus
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod audio_input_device_watcher {
+    use super::poll_audio_input_devices;
+    use std::time::Duration;
+
+    pub fn spawn(app: tauri::AppHandle) {
+        std::thread::spawn(move || poll_audio_input_devices(app, Duration::from_secs(2)));
+    }
 }
 
 pub async fn check_speech_profile_setup(
@@ -1706,7 +1933,7 @@ fn wait_for_copied_selection(sentinel: &str, timeout: Duration) -> Option<String
 
 #[cfg(target_os = "macos")]
 fn paste_text(text: &str) -> bool {
-    if !focused_text_target_available() {
+    if !should_attempt_paste() {
         return false;
     }
     let original = read_clipboard_text();
@@ -1730,16 +1957,88 @@ fn paste_text(_text: &str) -> bool {
 
 #[cfg(target_os = "macos")]
 fn run_keystroke(key: &str) -> bool {
-    let script =
-        format!("tell application \"System Events\" to keystroke \"{key}\" using command down");
-    std::process::Command::new("osascript")
-        .args(["-e", &script])
-        .output()
-        .is_ok_and(|o| o.status.success())
+    let Some(keycode) = command_keycode(key) else {
+        return false;
+    };
+    post_command_key(keycode)
 }
 
 #[cfg(target_os = "macos")]
-fn focused_text_target_available() -> bool {
+fn command_keycode(key: &str) -> Option<u16> {
+    match key {
+        "c" => Some(8),
+        "v" => Some(9),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+type CGEventRef = *mut c_void;
+#[cfg(target_os = "macos")]
+type CGEventSourceRef = *mut c_void;
+
+#[cfg(target_os = "macos")]
+const KCG_HID_EVENT_TAP: u32 = 0;
+#[cfg(target_os = "macos")]
+const KCG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE: u32 = 1;
+#[cfg(target_os = "macos")]
+const KCG_EVENT_FLAG_MASK_COMMAND: u64 = 0x0010_0000;
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGEventSourceCreate(state_id: u32) -> CGEventSourceRef;
+    fn CGEventCreateKeyboardEvent(
+        source: CGEventSourceRef,
+        virtual_key: u16,
+        key_down: bool,
+    ) -> CGEventRef;
+    fn CGEventSetFlags(event: CGEventRef, flags: u64);
+    fn CGEventPost(tap: u32, event: CGEventRef);
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CFRelease(cf: *const c_void);
+}
+
+#[cfg(target_os = "macos")]
+fn post_command_key(keycode: u16) -> bool {
+    unsafe {
+        let source = CGEventSourceCreate(KCG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE);
+        if source.is_null() {
+            return false;
+        }
+
+        let key_down = CGEventCreateKeyboardEvent(source, keycode, true);
+        let key_up = CGEventCreateKeyboardEvent(source, keycode, false);
+        if key_down.is_null() || key_up.is_null() {
+            if !key_down.is_null() {
+                CFRelease(key_down.cast_const());
+            }
+            if !key_up.is_null() {
+                CFRelease(key_up.cast_const());
+            }
+            CFRelease(source.cast_const());
+            return false;
+        }
+
+        CGEventSetFlags(key_down, KCG_EVENT_FLAG_MASK_COMMAND);
+        CGEventSetFlags(key_up, KCG_EVENT_FLAG_MASK_COMMAND);
+        CGEventPost(KCG_HID_EVENT_TAP, key_down);
+        std::thread::sleep(Duration::from_millis(12));
+        CGEventPost(KCG_HID_EVENT_TAP, key_up);
+
+        CFRelease(key_down.cast_const());
+        CFRelease(key_up.cast_const());
+        CFRelease(source.cast_const());
+        true
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn should_attempt_paste() -> bool {
     let script = r#"
 tell application "System Events"
   try
@@ -1747,11 +2046,15 @@ tell application "System Events"
     set focusedElement to value of attribute "AXFocusedUIElement" of frontApp
     set roleValue to ""
     set subroleValue to ""
+    set attributeNames to {}
     try
       set roleValue to value of attribute "AXRole" of focusedElement as text
     end try
     try
       set subroleValue to value of attribute "AXSubrole" of focusedElement as text
+    end try
+    try
+      set attributeNames to name of every attribute of focusedElement
     end try
     if roleValue is "AXTextArea" then return "1"
     if roleValue is "AXTextField" then return "1"
@@ -1759,9 +2062,34 @@ tell application "System Events"
     if roleValue is "AXSearchField" then return "1"
     if subroleValue is "AXTextArea" then return "1"
     if subroleValue is "AXTextField" then return "1"
-    return "0"
+    if attributeNames contains "AXSelectedTextRange" then return "1"
+    if attributeNames contains "AXInsertionPointLineNumber" then return "1"
+    if roleValue is "AXButton" then return "0"
+    if roleValue is "AXCheckBox" then return "0"
+    if roleValue is "AXRadioButton" then return "0"
+    if roleValue is "AXMenuItem" then return "0"
+    if roleValue is "AXMenuButton" then return "0"
+    if roleValue is "AXPopUpButton" then return "0"
+    if roleValue is "AXSlider" then return "0"
+    if roleValue is "AXScrollBar" then return "0"
+    if roleValue is "AXToolbar" then return "0"
+    if roleValue is "AXTabGroup" then return "0"
+    if roleValue is "AXWindow" then return "0"
+    if roleValue is "AXSheet" then return "0"
+    if roleValue is "AXMenuBar" then return "0"
+    if roleValue is "AXMenu" then return "0"
+    if roleValue is "AXList" then return "0"
+    if roleValue is "AXOutline" then return "0"
+    if roleValue is "AXTable" then return "0"
+    if roleValue is "AXRow" then return "0"
+    if roleValue is "AXCell" then return "0"
+    -- Electron/WebKit editors often expose the focused editor as AXGroup,
+    -- AXWebArea, AXScrollArea, or AXUnknown. Treat unclear roles as pasteable
+    -- and let the actual Cmd+V decide whether insertion is possible.
+    if roleValue is "AXStaticText" then return "0"
+    return "1"
   on error
-    return "0"
+    return "1"
   end try
 end tell
 "#;
@@ -1771,7 +2099,7 @@ end tell
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 fn read_clipboard_text() -> Option<String> {
@@ -1820,5 +2148,19 @@ mod tests {
         assert_eq!(reader.spec().sample_rate, 16_000);
         assert_eq!(reader.spec().channels, 1);
         assert_eq!(reader.into_samples::<i16>().count(), samples.len());
+    }
+
+    #[test]
+    fn parse_audio_input_device_id_reads_trailing_index_only() {
+        assert_eq!(
+            parse_audio_input_device_id("MacBook Pro Microphone#0"),
+            Some("MacBook Pro Microphone")
+        );
+        assert_eq!(
+            parse_audio_input_device_id("Studio #1#2"),
+            Some("Studio #1")
+        );
+        assert_eq!(parse_audio_input_device_id("invalid"), None);
+        assert_eq!(parse_audio_input_device_id("Mic#abc"), None);
     }
 }
