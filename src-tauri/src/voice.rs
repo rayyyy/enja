@@ -33,7 +33,18 @@ const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const AUDIO_INPUT_DEVICES_CHANGED_EVENT: &str = "audio-input-devices-changed";
 const VOICE_WINDOW_EDGE_MARGIN: f64 = 16.0;
 const VOICE_WINDOW_BOTTOM_MARGIN: f64 = 42.0;
+const VOICE_WINDOW_FOLLOW_INTERVAL_MS: u64 = 180;
 static VOICE_STATE_SEQ: AtomicU64 = AtomicU64::new(1);
+static VOICE_WINDOW_FOLLOW_SEQ: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VoiceWindowMonitorKey {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    scale_bits: u64,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -2009,7 +2020,19 @@ fn show_voice_window(app: &tauri::AppHandle, expanded: bool) {
     let Some(window) = app.get_webview_window("voice") else {
         return;
     };
+    let monitor_key = configure_voice_window(app, &window, expanded);
+    let _ = window.set_always_on_top(true);
+    let _ = window.show();
+    start_voice_window_follow(app, expanded, monitor_key);
+}
+
+fn configure_voice_window(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    expanded: bool,
+) -> Option<VoiceWindowMonitorKey> {
     let target_monitor = voice_window_target_monitor(app);
+    let monitor_key = target_monitor.as_ref().map(voice_window_monitor_key);
     let scale = target_monitor
         .as_ref()
         .map(|monitor| monitor.scale_factor())
@@ -2051,8 +2074,44 @@ fn show_voice_window(app: &tauri::AppHandle, expanded: bool) {
         let y = (screen_y + screen_height - window_height - bottom_margin).clamp(min_y, max_y);
         let _ = window.set_position(tauri::PhysicalPosition::new(f64_to_i32(x), f64_to_i32(y)));
     }
-    let _ = window.set_always_on_top(true);
-    let _ = window.show();
+
+    monitor_key
+}
+
+fn start_voice_window_follow(
+    app: &tauri::AppHandle,
+    expanded: bool,
+    monitor_key: Option<VoiceWindowMonitorKey>,
+) {
+    let token = VOICE_WINDOW_FOLLOW_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut current_monitor = monitor_key;
+        loop {
+            tokio::time::sleep(Duration::from_millis(VOICE_WINDOW_FOLLOW_INTERVAL_MS)).await;
+            if VOICE_WINDOW_FOLLOW_SEQ.load(Ordering::SeqCst) != token {
+                return;
+            }
+
+            let Some(window) = app.get_webview_window("voice") else {
+                return;
+            };
+            if !window.is_visible().unwrap_or(false) {
+                return;
+            }
+
+            let next_monitor = voice_window_target_monitor(&app)
+                .as_ref()
+                .map(voice_window_monitor_key);
+            if next_monitor != current_monitor {
+                current_monitor = configure_voice_window(&app, &window, expanded);
+            }
+        }
+    });
+}
+
+fn stop_voice_window_follow() {
+    VOICE_WINDOW_FOLLOW_SEQ.fetch_add(1, Ordering::SeqCst);
 }
 
 fn voice_window_target_monitor(app: &tauri::AppHandle) -> Option<tauri::window::Monitor> {
@@ -2072,6 +2131,18 @@ fn voice_window_target_monitor(app: &tauri::AppHandle) -> Option<tauri::window::
     }
 
     app.primary_monitor().ok().flatten()
+}
+
+fn voice_window_monitor_key(monitor: &tauri::window::Monitor) -> VoiceWindowMonitorKey {
+    let pos = monitor.position();
+    let size = monitor.size();
+    VoiceWindowMonitorKey {
+        x: pos.x,
+        y: pos.y,
+        width: size.width,
+        height: size.height,
+        scale_bits: monitor.scale_factor().to_bits(),
+    }
 }
 
 fn monitor_contains_physical_point(monitor: &tauri::window::Monitor, x: f64, y: f64) -> bool {
@@ -2097,6 +2168,7 @@ fn f64_to_i32(value: f64) -> i32 {
 }
 
 fn hide_voice_window(app: &tauri::AppHandle) {
+    stop_voice_window_follow();
     if let Some(window) = app.get_webview_window("voice") {
         let _ = window.hide();
     }
