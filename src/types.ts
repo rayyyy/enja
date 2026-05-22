@@ -62,6 +62,25 @@ export type TranslationSettings = {
 
 export type SystemAudioHandling = "mute" | "isolate" | "off";
 
+export type VoiceModePresetKey =
+  | "default"
+  | "speed"
+  | "aiPrompt"
+  | "casual"
+  | "formal";
+
+export type VoiceModeProfile = {
+  id: string;
+  name: string;
+  description: string;
+  formattingEnabled: boolean;
+  systemPrompt: string;
+  userPrompt: string;
+  deletable: boolean;
+  order: number;
+  presetKey: VoiceModePresetKey | null;
+};
+
 export type VoiceSettings = {
   selectedMicrophoneId: string | null;
   speechProfile: SpeechProfile;
@@ -72,6 +91,8 @@ export type VoiceSettings = {
   googleCloudProjectId: string;
   googleCloudRegion: string;
   googleCloudUseAdc: boolean;
+  modeProfiles: VoiceModeProfile[];
+  activeModeProfileId: string;
 };
 
 export type ShortcutSettings = {
@@ -137,6 +158,8 @@ export type VoiceMode = "dictation" | "ask";
 export type VoiceStateEvent = {
   state: "idle" | "recording" | "processing" | "inserted" | "fallback" | "error";
   mode: VoiceMode | null;
+  modeProfileId: string | null;
+  modeProfileName: string | null;
   message: string | null;
   seq?: number;
 };

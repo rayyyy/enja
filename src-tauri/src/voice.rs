@@ -6,7 +6,10 @@ use crate::dictionary::{self, DictionaryEntry};
 use crate::gemini;
 use crate::prompts;
 use crate::secrets;
-use crate::settings::{AppSettings, SettingsStore, SpeechProfile, SystemAudioHandling};
+use crate::settings::{
+    save_settings_to_disk, AppSettings, SettingsStore, SpeechProfile, SystemAudioHandling,
+    VoiceModeProfile,
+};
 
 use aec::Aec;
 use base64::Engine;
@@ -58,6 +61,8 @@ pub struct SpeechSetupCheck {
 struct VoiceStateEvent {
     state: &'static str,
     mode: Option<VoiceMode>,
+    mode_profile_id: Option<String>,
+    mode_profile_name: Option<String>,
     message: Option<String>,
     seq: u64,
 }
@@ -84,6 +89,7 @@ pub struct VoiceManager {
 enum SessionState {
     Starting {
         mode: VoiceMode,
+        mode_profile_id: String,
         cancelled: Arc<Mutex<bool>>,
     },
     Active(ActiveSession),
@@ -96,9 +102,17 @@ type ProcessingCancel = Arc<AtomicBool>;
 
 struct ActiveSession {
     mode: VoiceMode,
+    mode_profile_id: String,
     selected_text: String,
     recorder: Recorder,
     audio_aux: Option<AudioAux>,
+}
+
+#[derive(Debug, Clone)]
+struct VoiceModeProfileSnapshot {
+    id: String,
+    name: String,
+    formatting_enabled: bool,
 }
 
 enum AudioAux {
@@ -164,6 +178,23 @@ impl VoiceManager {
     }
 
     pub fn start_session(&self, app: tauri::AppHandle, mode: VoiceMode) -> Result<(), String> {
+        let settings = app
+            .try_state::<SettingsStore>()
+            .map(|store| store.get())
+            .unwrap_or_default();
+        let mode_profile = if mode == VoiceMode::Dictation {
+            settings
+                .voice
+                .active_mode_profile()
+                .map(snapshot_from_profile)
+        } else {
+            None
+        };
+        let mode_profile_id = mode_profile
+            .as_ref()
+            .map(|profile| profile.id.clone())
+            .unwrap_or_default();
+
         let mut guard = self.active.lock().map_err(|e| e.to_string())?;
         if guard.is_some() {
             return Ok(());
@@ -171,12 +202,13 @@ impl VoiceManager {
 
         if mode == VoiceMode::Dictation {
             show_voice_window(&app, false);
-            emit_state_once(&app, "recording", Some(mode), None);
+            emit_state_once(&app, "recording", Some(mode), mode_profile.clone(), None);
         }
 
         let cancelled = Arc::new(Mutex::new(false));
         *guard = Some(SessionState::Starting {
             mode,
+            mode_profile_id,
             cancelled: cancelled.clone(),
         });
         drop(guard);
@@ -203,7 +235,7 @@ impl VoiceManager {
                     if let Ok(mut flag) = cancelled.lock() {
                         *flag = true;
                     }
-                    emit_state(&app, "idle", None, None);
+                    emit_state(&app, "idle", None, None, None);
                     hide_voice_window(&app);
                     return Ok(());
                 }
@@ -232,16 +264,28 @@ impl VoiceManager {
     ) -> Result<(), String> {
         let ActiveSession {
             mode,
+            mode_profile_id,
             selected_text,
             recorder,
             audio_aux,
         } = session;
+        let mode_profile = profile_snapshot_for_id(&app, &mode_profile_id);
+        let processing_message = if mode == VoiceMode::Dictation
+            && mode_profile
+                .as_ref()
+                .is_some_and(|profile| !profile.formatting_enabled)
+        {
+            "文字起こしを出力しています…"
+        } else {
+            "音声を整形しています…"
+        };
         show_voice_window(&app, false);
         emit_state(
             &app,
             "processing",
             Some(mode),
-            Some("音声を整形しています…".to_string()),
+            mode_profile.clone(),
+            Some(processing_message.to_string()),
         );
 
         let clip = recorder.finish_after_signal(move || {
@@ -271,13 +315,19 @@ impl VoiceManager {
                     return Ok(());
                 }
                 show_voice_window(&app, true);
-                emit_state(&app, "error", Some(mode), Some(message.clone()));
+                emit_state(
+                    &app,
+                    "error",
+                    Some(mode),
+                    mode_profile.clone(),
+                    Some(message.clone()),
+                );
                 return Err(message);
             }
         };
 
         let result = tokio::select! {
-            result = process_clip(&app, mode, &selected_text, clip) => result,
+            result = process_clip(&app, mode, &mode_profile_id, &selected_text, clip) => result,
             _ = wait_processing_cancelled(cancelled.clone()) => {
                 self.clear_processing_session(&cancelled);
                 return Ok(());
@@ -307,6 +357,7 @@ impl VoiceManager {
                         &app,
                         "fallback",
                         Some(mode),
+                        mode_profile.clone(),
                         Some(
                             "入力先が見つからなかったため、コピー用に表示しています。".to_string(),
                         ),
@@ -324,7 +375,13 @@ impl VoiceManager {
             }
             Err(message) => {
                 show_voice_window(&app, true);
-                emit_state(&app, "error", Some(mode), Some(message.clone()));
+                emit_state(
+                    &app,
+                    "error",
+                    Some(mode),
+                    mode_profile,
+                    Some(message.clone()),
+                );
                 Err(message)
             }
         }
@@ -352,8 +409,71 @@ impl VoiceManager {
             }
             None => {}
         }
-        emit_state(&app, "idle", None, None);
+        emit_state(&app, "idle", None, None, None);
         hide_voice_window(&app);
+        Ok(())
+    }
+
+    pub fn cycle_mode_profile(&self, app: tauri::AppHandle) -> Result<(), String> {
+        let Some(store) = app.try_state::<SettingsStore>() else {
+            return Err("SettingsStore is unavailable.".to_string());
+        };
+        let mut settings = store.get();
+        settings.sanitize();
+
+        let current_id = {
+            let guard = self.active.lock().map_err(|e| e.to_string())?;
+            match guard.as_ref() {
+                Some(SessionState::Starting {
+                    mode,
+                    mode_profile_id,
+                    ..
+                }) if *mode == VoiceMode::Dictation => mode_profile_id.clone(),
+                Some(SessionState::Active(session)) if session.mode == VoiceMode::Dictation => {
+                    session.mode_profile_id.clone()
+                }
+                _ => return Ok(()),
+            }
+        };
+
+        let next_id = settings
+            .voice
+            .next_mode_profile_id(&current_id)
+            .ok_or_else(|| "切り替え可能な音声モードがありません。".to_string())?;
+        settings.voice.active_mode_profile_id = next_id.clone();
+        settings.sanitize();
+        settings.voice.validate_mode_profiles()?;
+        let next_profile = settings
+            .voice
+            .mode_profile_by_id(&next_id)
+            .map(snapshot_from_profile);
+
+        save_settings_to_disk(&app, &settings)?;
+        store.replace(settings);
+
+        let mut guard = self.active.lock().map_err(|e| e.to_string())?;
+        match guard.as_mut() {
+            Some(SessionState::Starting {
+                mode,
+                mode_profile_id,
+                ..
+            }) if *mode == VoiceMode::Dictation => {
+                *mode_profile_id = next_id;
+            }
+            Some(SessionState::Active(session)) if session.mode == VoiceMode::Dictation => {
+                session.mode_profile_id = next_id;
+            }
+            _ => return Ok(()),
+        }
+        drop(guard);
+
+        emit_state(
+            &app,
+            "recording",
+            Some(VoiceMode::Dictation),
+            next_profile,
+            None,
+        );
         Ok(())
     }
 
@@ -406,7 +526,7 @@ async fn finish_start_session(
 
     if mode == VoiceMode::Ask {
         show_voice_window(&app, false);
-        emit_state_once(&app, "recording", Some(mode), None);
+        emit_state_once(&app, "recording", Some(mode), None, None);
     }
 
     let (audio_aux, pipeline_mode) = prepare_audio_pipeline(&settings);
@@ -441,7 +561,7 @@ async fn finish_start_session(
             recorder.cancel();
         }
         if clear_starting_session(&app, &cancelled) {
-            emit_state(&app, "idle", None, None);
+            emit_state(&app, "idle", None, None, None);
             hide_voice_window(&app);
         }
         return Ok(());
@@ -464,6 +584,7 @@ async fn finish_start_session(
     let mut guard = manager.active.lock().map_err(|e| e.to_string())?;
     let Some(SessionState::Starting {
         mode: starting_mode,
+        mode_profile_id: starting_mode_profile_id,
         cancelled: starting_cancelled,
     }) = guard.as_ref()
     else {
@@ -485,15 +606,23 @@ async fn finish_start_session(
         return Ok(());
     }
 
+    let starting_mode_profile_id = starting_mode_profile_id.clone();
     *guard = Some(SessionState::Active(ActiveSession {
         mode,
+        mode_profile_id: starting_mode_profile_id.clone(),
         selected_text,
         recorder,
         audio_aux,
     }));
     drop(guard);
 
-    emit_state(&app, "recording", Some(mode), None);
+    emit_state(
+        &app,
+        "recording",
+        Some(mode),
+        profile_snapshot_for_id(&app, &starting_mode_profile_id),
+        None,
+    );
     Ok(())
 }
 
@@ -541,11 +670,22 @@ fn fail_start_session(
     cancelled: &Arc<Mutex<bool>>,
     err: String,
 ) {
+    let mode_profile = if mode == VoiceMode::Dictation {
+        app.try_state::<SettingsStore>().and_then(|store| {
+            let settings = store.get();
+            settings
+                .voice
+                .active_mode_profile()
+                .map(snapshot_from_profile)
+        })
+    } else {
+        None
+    };
     if !clear_starting_session(app, cancelled) {
         return;
     }
     show_voice_window(app, true);
-    emit_state(app, "error", Some(mode), Some(err));
+    emit_state(app, "error", Some(mode), mode_profile, Some(err));
 }
 
 fn prepare_audio_pipeline(settings: &AppSettings) -> (Option<AudioAux>, PipelineMode) {
@@ -1279,13 +1419,23 @@ fn check_secret_setup(
 async fn process_clip(
     app: &tauri::AppHandle,
     mode: VoiceMode,
+    mode_profile_id: &str,
     selected_text: &str,
     clip: AudioClip,
 ) -> Result<String, String> {
     let settings = crate::settings::load_settings(app)?;
     let entries = dictionary::load_dictionary(app)?;
     let transcript = transcribe(app, &settings, &entries, &clip).await?;
-    finalize_text(app, &settings, &entries, mode, selected_text, &transcript).await
+    finalize_text(
+        app,
+        &settings,
+        &entries,
+        mode,
+        mode_profile_id,
+        selected_text,
+        &transcript,
+    )
+    .await
 }
 
 async fn transcribe(
@@ -1687,9 +1837,24 @@ async fn finalize_text(
     settings: &AppSettings,
     entries: &[DictionaryEntry],
     mode: VoiceMode,
+    mode_profile_id: &str,
     selected_text: &str,
     transcript: &str,
 ) -> Result<String, String> {
+    let dictation_profile = if mode == VoiceMode::Dictation {
+        Some(
+            settings
+                .voice
+                .mode_profile_or_default(mode_profile_id)
+                .ok_or_else(|| "音声モードが見つかりません。".to_string())?,
+        )
+    } else {
+        None
+    };
+    if dictation_profile.is_some_and(|profile| !profile.formatting_enabled) {
+        return Ok(transcript.trim().to_string());
+    }
+
     let key = gemini_api_key(app)?;
     let dictionary_context = dictionary::prompt_lines(entries);
     let dictionary_section = if dictionary_context.trim().is_empty() {
@@ -1698,12 +1863,15 @@ async fn finalize_text(
         format!("優先表記辞書:\n{dictionary_context}")
     };
     let (system, user) = match mode {
-        VoiceMode::Dictation => (
-            prompts::dictation_system(&settings.prompts.overrides),
-            prompts::dictation_user(&settings.prompts.overrides, &dictionary_section, transcript),
-        ),
+        VoiceMode::Dictation => {
+            let profile = dictation_profile.expect("dictation profile");
+            (
+                profile.system_prompt.clone(),
+                prompts::voice_mode_user(&profile.user_prompt, &dictionary_section, transcript),
+            )
+        }
         VoiceMode::Ask if selected_text.trim().is_empty() => (
-            prompts::ask_without_selection_system(&settings.prompts.overrides),
+            prompts::ask_without_selection_system(&settings.prompts.overrides).to_string(),
             prompts::ask_without_selection_user(
                 &settings.prompts.overrides,
                 &dictionary_section,
@@ -1711,7 +1879,7 @@ async fn finalize_text(
             ),
         ),
         VoiceMode::Ask => (
-            prompts::ask_with_selection_system(&settings.prompts.overrides),
+            prompts::ask_with_selection_system(&settings.prompts.overrides).to_string(),
             prompts::ask_with_selection_user(
                 &settings.prompts.overrides,
                 &dictionary_section,
@@ -1724,7 +1892,7 @@ async fn finalize_text(
         &key,
         settings.voice.finalization_model.model_id(),
         settings.voice.finalization_model.thinking_level(),
-        system.as_ref(),
+        &system,
         &user,
         0.2,
     )
@@ -1741,18 +1909,43 @@ fn gemini_api_key(_app: &tauri::AppHandle) -> Result<String, String> {
     Err("Gemini APIキーを保存してください。".to_string())
 }
 
+fn snapshot_from_profile(profile: &VoiceModeProfile) -> VoiceModeProfileSnapshot {
+    VoiceModeProfileSnapshot {
+        id: profile.id.clone(),
+        name: profile.name.clone(),
+        formatting_enabled: profile.formatting_enabled,
+    }
+}
+
+fn profile_snapshot_for_id(
+    app: &tauri::AppHandle,
+    mode_profile_id: &str,
+) -> Option<VoiceModeProfileSnapshot> {
+    app.try_state::<SettingsStore>().and_then(|store| {
+        let settings = store.get();
+        settings
+            .voice
+            .mode_profile_or_default(mode_profile_id)
+            .map(snapshot_from_profile)
+    })
+}
+
 fn emit_state_once(
     app: &tauri::AppHandle,
     state: &'static str,
     mode: Option<VoiceMode>,
+    mode_profile: Option<VoiceModeProfileSnapshot>,
     message: Option<String>,
 ) {
     let seq = next_voice_state_seq();
+    let (mode_profile_id, mode_profile_name) = state_profile_fields(mode_profile);
     let _ = app.emit(
         "voice-state",
         VoiceStateEvent {
             state,
             mode,
+            mode_profile_id,
+            mode_profile_name,
             message,
             seq,
         },
@@ -1763,12 +1956,16 @@ fn emit_state(
     app: &tauri::AppHandle,
     state: &'static str,
     mode: Option<VoiceMode>,
+    mode_profile: Option<VoiceModeProfileSnapshot>,
     message: Option<String>,
 ) {
     let seq = next_voice_state_seq();
+    let (mode_profile_id, mode_profile_name) = state_profile_fields(mode_profile);
     let event = VoiceStateEvent {
         state,
         mode,
+        mode_profile_id,
+        mode_profile_name,
         message,
         seq,
     };
@@ -1780,6 +1977,15 @@ fn emit_state(
             let _ = app.emit("voice-state", event.clone());
         }
     });
+}
+
+fn state_profile_fields(
+    mode_profile: Option<VoiceModeProfileSnapshot>,
+) -> (Option<String>, Option<String>) {
+    match mode_profile {
+        Some(profile) => (Some(profile.id), Some(profile.name)),
+        None => (None, None),
+    }
 }
 
 fn emit_result(app: &tauri::AppHandle, event: VoiceResultEvent) {

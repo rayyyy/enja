@@ -18,6 +18,9 @@ pub enum KeyboardTrigger {
     FunctionTap,
     /// Space was pressed while Fn was held — Ask mode.
     FunctionSpace,
+    /// Control was tapped by itself. Voice mode cycling decides whether it is
+    /// currently meaningful.
+    VoiceModeCycle,
     Escape,
     ShortcutCaptured {
         action: ShortcutAction,
@@ -141,6 +144,8 @@ mod macos {
         threshold: Duration,
         runtime: KeyboardRuntimeSettings,
         meta_down: bool,
+        control_down: bool,
+        control_chord_used: bool,
         fn_down: bool,
         /// True while Fn is held and a Space press has already been registered
         /// for this hold. Used so the matching Fn release suppresses the
@@ -208,9 +213,24 @@ mod macos {
             KCG_EVENT_FLAGS_CHANGED => {
                 let flags = CGEventGetFlags(event);
                 let cmd_down = (flags & KCG_EVENT_FLAG_MASK_COMMAND) != 0;
+                let control_down = (flags & KCG_EVENT_FLAG_MASK_CONTROL) != 0;
                 let fn_down = (flags & KCG_EVENT_FLAG_MASK_SECONDARY_FN) != 0;
                 if cmd_down != state.meta_down {
                     state.meta_down = cmd_down;
+                }
+                if control_down != state.control_down {
+                    state.control_down = control_down;
+                    if state.capture_action.is_none() {
+                        if control_down {
+                            handle_control_pressed(state, flags);
+                        } else {
+                            handle_control_released(state, flags);
+                        }
+                    } else {
+                        state.control_chord_used = false;
+                    }
+                } else if state.control_down && control_has_other_modifiers(flags) {
+                    state.control_chord_used = true;
                 }
                 if fn_down != state.fn_down {
                     state.fn_down = fn_down;
@@ -229,6 +249,9 @@ mod macos {
                 if state.capture_action.is_some() {
                     handle_capture_key_down(state, keycode, flags);
                     return std::ptr::null_mut();
+                }
+                if state.control_down {
+                    state.control_chord_used = true;
                 }
                 if keycode == KEYCODE_ESCAPE {
                     // Any pending FunctionTap should be dropped — the user is
@@ -337,6 +360,26 @@ mod macos {
     fn invalidate_pending_fn_tap(state: &mut ListenerState) {
         state.fn_release_generation = state.fn_release_generation.wrapping_add(1);
         state.fn_recent_release = false;
+    }
+
+    fn handle_control_pressed(state: &mut ListenerState, flags: u64) {
+        state.control_chord_used = control_has_other_modifiers(flags);
+    }
+
+    fn handle_control_released(state: &mut ListenerState, flags: u64) {
+        let should_cycle = !state.control_chord_used && !control_has_other_modifiers(flags);
+        state.control_chord_used = false;
+        if should_cycle {
+            let _ = state.tx.send(KeyboardTrigger::VoiceModeCycle);
+        }
+    }
+
+    fn control_has_other_modifiers(flags: u64) -> bool {
+        let other_modifiers = KCG_EVENT_FLAG_MASK_SHIFT
+            | KCG_EVENT_FLAG_MASK_ALTERNATE
+            | KCG_EVENT_FLAG_MASK_COMMAND
+            | KCG_EVENT_FLAG_MASK_SECONDARY_FN;
+        (flags & other_modifiers) != 0
     }
 
     fn handle_capture_fn_change(state: &mut ListenerState, fn_down: bool) {
@@ -547,6 +590,8 @@ mod macos {
                     voice_ask_shortcut: ShortcutBinding::fn_space(),
                 },
                 meta_down: false,
+                control_down: false,
+                control_chord_used: false,
                 fn_down: false,
                 fn_space_combo: false,
                 fn_chord_used: false,
@@ -611,6 +656,32 @@ mod macos {
                 trigger => panic!("unexpected trigger: {trigger:?}"),
             }
         }
+
+        #[test]
+        fn control_tap_emits_voice_mode_cycle() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut state = state_with_tx(tx);
+
+            handle_control_pressed(&mut state, KCG_EVENT_FLAG_MASK_CONTROL);
+            handle_control_released(&mut state, 0);
+
+            assert!(matches!(
+                rx.recv_timeout(Duration::from_millis(20)).expect("trigger"),
+                KeyboardTrigger::VoiceModeCycle
+            ));
+        }
+
+        #[test]
+        fn control_chord_does_not_emit_voice_mode_cycle() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut state = state_with_tx(tx);
+
+            handle_control_pressed(&mut state, KCG_EVENT_FLAG_MASK_CONTROL);
+            state.control_chord_used = true;
+            handle_control_released(&mut state, 0);
+
+            assert!(rx.recv_timeout(Duration::from_millis(20)).is_err());
+        }
     }
 
     // --- Public entry point --------------------------------------------------
@@ -640,6 +711,8 @@ mod macos {
                     threshold,
                     runtime: runtime.clone(),
                     meta_down: false,
+                    control_down: false,
+                    control_chord_used: false,
                     fn_down: false,
                     fn_space_combo: false,
                     fn_chord_used: false,

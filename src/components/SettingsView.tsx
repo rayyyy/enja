@@ -29,6 +29,7 @@ import {
   AuthSettingsSection,
   PromptSettingsSection,
   ShortcutSettingsSection,
+  VoiceModeSettingsSection,
   type ProviderSecretsDraft,
 } from "./settings/SettingsSections";
 import { remapSelectedMicrophoneId } from "../lib/audioInputDevices";
@@ -226,10 +227,11 @@ const FINALIZATION_MODELS: { value: FinalizationModel; label: string }[] = [
   { value: "gemini31ProPreview", label: "Gemini 3.1 Pro Preview（精度優先）" },
 ];
 
-type SettingsSection = "voice" | "shortcuts" | "prompts" | "auth" | "app";
+type SettingsSection = "voice" | "voiceModes" | "shortcuts" | "prompts" | "auth" | "app";
 
 const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "voice", label: "音声入力" },
+  { id: "voiceModes", label: "音声モード" },
   { id: "shortcuts", label: "ショートカット" },
   { id: "prompts", label: "プロンプト" },
   { id: "auth", label: "API / 認証" },
@@ -695,6 +697,10 @@ export function SettingsView() {
                 patchApp({ doubleTapThresholdMs: value })
               }
             />
+          ) : null}
+
+          {activeSection === "voiceModes" ? (
+            <VoiceModeSettingsSection voice={settings.voice} onChange={patchVoice} />
           ) : null}
 
           {activeSection === "prompts" ? (

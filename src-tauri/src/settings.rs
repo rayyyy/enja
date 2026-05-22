@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::RwLock;
 use tauri::AppHandle;
 use tauri::Manager;
@@ -281,6 +282,197 @@ pub enum SystemAudioHandling {
     Off,
 }
 
+pub const DEFAULT_VOICE_MODE_ID: &str = "default";
+const TRANSCRIPT_TOKEN: &str = "{{transcript}}";
+
+const DEFAULT_MODE_SYSTEM: &str = "あなたは日本語の音声入力編集者です。音声認識結果を、ユーザーがそのまま貼り付けられる自然な日本語文に整形します。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。";
+
+const DEFAULT_MODE_USER: &str = r#"{{dictionary_section}}
+
+音声認識結果:
+{{transcript}}
+
+要件:
+- 話し言葉の不要な言い直しを整理する。
+- 録音内に「これをこうまとめて」などの指示が含まれる場合、その意図に従って最終文章を作る。
+- 辞書の優先表記を必ず尊重する。
+- 内容を勝手に増やさない。"#;
+
+const SPEED_MODE_SYSTEM: &str = "あなたは日本語の音声入力編集者です。音声認識結果を必要最小限だけ整えます。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。";
+
+const SPEED_MODE_USER: &str = r#"{{dictionary_section}}
+
+音声認識結果:
+{{transcript}}
+
+要件:
+- 文字起こし結果を大きく変えず、明らかな誤字や不要な空白だけ整える。
+- 内容を勝手に増やさない。"#;
+
+const AI_PROMPT_MODE_SYSTEM: &str = "あなたはAIプロンプト設計者です。音声認識結果から、AIに渡しやすい明確で実行可能なプロンプトを作成します。出力はプロンプト本文のみ。前置き、説明、引用符、ラベルは出しません。";
+
+const AI_PROMPT_MODE_USER: &str = r#"{{dictionary_section}}
+
+話した内容:
+{{transcript}}
+
+要件:
+- 話した意図を、AIへ渡す明確なプロンプトに再構成する。
+- 目的、背景、入力、制約、期待する出力形式を必要に応じて整理する。
+- 箇条書きや見出しは、プロンプトとして読みやすい場合だけ使う。
+- 内容を勝手に増やさず、曖昧な部分は自然な依頼文としてまとめる。"#;
+
+const CASUAL_MODE_SYSTEM: &str = "あなたは日本語チャット文の編集者です。音声認識結果を、Slackなどのチャットにそのまま送れる親しみやすい文章へ整えます。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。";
+
+const CASUAL_MODE_USER: &str = r#"{{dictionary_section}}
+
+音声認識結果:
+{{transcript}}
+
+要件:
+- くだけすぎない親しみやすい文体にする。
+- 必要に応じて感嘆符を使い、硬さを和らげる。
+- 口癖、言い直し、不要な間を整理する。
+- 辞書の優先表記を必ず尊重する。
+- 内容を勝手に増やさない。"#;
+
+const FORMAL_MODE_SYSTEM: &str = "あなたは日本語ビジネス文の編集者です。音声認識結果を、メール返信などに適したやや丁寧な文章へ整えます。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。";
+
+const FORMAL_MODE_USER: &str = r#"{{dictionary_section}}
+
+音声認識結果:
+{{transcript}}
+
+要件:
+- メールや業務チャットで使いやすい、やや丁寧な文体にする。
+- 過度に堅くしすぎず、自然な敬体で整える。
+- 口癖、言い直し、不要な間を整理する。
+- 辞書の優先表記を必ず尊重する。
+- 内容を勝手に増やさない。"#;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VoiceModePresetKey {
+    Default,
+    Speed,
+    AiPrompt,
+    Casual,
+    Formal,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct VoiceModeProfile {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default = "default_true")]
+    pub formatting_enabled: bool,
+    pub system_prompt: String,
+    pub user_prompt: String,
+    pub deletable: bool,
+    pub order: i64,
+    pub preset_key: Option<VoiceModePresetKey>,
+}
+
+impl Default for VoiceModeProfile {
+    fn default() -> Self {
+        default_voice_mode_profile()
+    }
+}
+
+fn voice_mode_profile(
+    id: &str,
+    name: &str,
+    description: &str,
+    formatting_enabled: bool,
+    system_prompt: &str,
+    user_prompt: &str,
+    deletable: bool,
+    order: i64,
+    preset_key: Option<VoiceModePresetKey>,
+) -> VoiceModeProfile {
+    VoiceModeProfile {
+        id: id.to_string(),
+        name: name.to_string(),
+        description: description.to_string(),
+        formatting_enabled,
+        system_prompt: system_prompt.to_string(),
+        user_prompt: user_prompt.to_string(),
+        deletable,
+        order,
+        preset_key,
+    }
+}
+
+fn default_voice_mode_profile() -> VoiceModeProfile {
+    voice_mode_profile(
+        DEFAULT_VOICE_MODE_ID,
+        "デフォルト",
+        "話した内容を自然な日本語文として整えます。",
+        true,
+        DEFAULT_MODE_SYSTEM,
+        DEFAULT_MODE_USER,
+        false,
+        0,
+        Some(VoiceModePresetKey::Default),
+    )
+}
+
+pub fn default_voice_mode_profiles() -> Vec<VoiceModeProfile> {
+    vec![
+        default_voice_mode_profile(),
+        voice_mode_profile(
+            "speed",
+            "スピード",
+            "整形せず、文字起こし結果をすぐに出力します。",
+            false,
+            SPEED_MODE_SYSTEM,
+            SPEED_MODE_USER,
+            true,
+            1,
+            Some(VoiceModePresetKey::Speed),
+        ),
+        voice_mode_profile(
+            "aiPrompt",
+            "AIプロンプト",
+            "話した内容をAIに渡しやすいプロンプトへ整えます。",
+            true,
+            AI_PROMPT_MODE_SYSTEM,
+            AI_PROMPT_MODE_USER,
+            true,
+            2,
+            Some(VoiceModePresetKey::AiPrompt),
+        ),
+        voice_mode_profile(
+            "casual",
+            "カジュアル",
+            "Slackなどに合う親しみやすい文体へ整えます。",
+            true,
+            CASUAL_MODE_SYSTEM,
+            CASUAL_MODE_USER,
+            true,
+            3,
+            Some(VoiceModePresetKey::Casual),
+        ),
+        voice_mode_profile(
+            "formal",
+            "フォーマル",
+            "メール返信などに合うやや丁寧な文体へ整えます。",
+            true,
+            FORMAL_MODE_SYSTEM,
+            FORMAL_MODE_USER,
+            true,
+            4,
+            Some(VoiceModePresetKey::Formal),
+        ),
+    ]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct VoiceSettings {
@@ -293,6 +485,8 @@ pub struct VoiceSettings {
     pub google_cloud_project_id: String,
     pub google_cloud_region: String,
     pub google_cloud_use_adc: bool,
+    pub mode_profiles: Vec<VoiceModeProfile>,
+    pub active_mode_profile_id: String,
 }
 
 impl Default for VoiceSettings {
@@ -307,7 +501,146 @@ impl Default for VoiceSettings {
             google_cloud_project_id: String::new(),
             google_cloud_region: default_google_cloud_region(),
             google_cloud_use_adc: true,
+            mode_profiles: default_voice_mode_profiles(),
+            active_mode_profile_id: DEFAULT_VOICE_MODE_ID.to_string(),
         }
+    }
+}
+
+impl VoiceSettings {
+    fn ensure_mode_profiles(&mut self, overrides: &PromptOverrides) {
+        if self.mode_profiles.is_empty() {
+            self.mode_profiles = default_voice_mode_profiles();
+            if let Some(default_profile) = self
+                .mode_profiles
+                .iter_mut()
+                .find(|profile| profile.id == DEFAULT_VOICE_MODE_ID)
+            {
+                if let Some(system_prompt) = overrides.dictation_system.as_deref() {
+                    default_profile.system_prompt = system_prompt.trim().to_string();
+                }
+                if let Some(user_prompt) = overrides.dictation_user.as_deref() {
+                    default_profile.user_prompt = user_prompt.trim().to_string();
+                }
+            }
+        }
+
+        if !self
+            .mode_profiles
+            .iter()
+            .any(|profile| profile.id == DEFAULT_VOICE_MODE_ID)
+        {
+            self.mode_profiles.insert(0, default_voice_mode_profile());
+        }
+
+        let mut seen = HashSet::new();
+        for (index, profile) in self.mode_profiles.iter_mut().enumerate() {
+            profile.id = profile.id.trim().to_string();
+            if profile.id.is_empty() {
+                profile.id = format!("custom-{index}");
+            }
+            if !seen.insert(profile.id.clone()) {
+                profile.id = format!("custom-{index}");
+                seen.insert(profile.id.clone());
+            }
+            profile.name = profile.name.trim().to_string();
+            profile.description = profile.description.trim().to_string();
+            profile.system_prompt = profile.system_prompt.trim().to_string();
+            profile.user_prompt = profile.user_prompt.trim().to_string();
+            if profile.id == DEFAULT_VOICE_MODE_ID {
+                profile.deletable = false;
+                profile.preset_key = Some(VoiceModePresetKey::Default);
+            }
+        }
+
+        self.mode_profiles.sort_by(|a, b| a.order.cmp(&b.order));
+        for (index, profile) in self.mode_profiles.iter_mut().enumerate() {
+            profile.order = index as i64;
+        }
+
+        if self.active_mode_profile_id.trim().is_empty()
+            || !self
+                .mode_profiles
+                .iter()
+                .any(|profile| profile.id == self.active_mode_profile_id)
+        {
+            self.active_mode_profile_id = DEFAULT_VOICE_MODE_ID.to_string();
+        }
+    }
+
+    pub fn mode_profile_by_id(&self, id: &str) -> Option<&VoiceModeProfile> {
+        self.mode_profiles.iter().find(|profile| profile.id == id)
+    }
+
+    pub fn mode_profile_or_default(&self, id: &str) -> Option<&VoiceModeProfile> {
+        self.mode_profile_by_id(id)
+            .or_else(|| self.mode_profile_by_id(DEFAULT_VOICE_MODE_ID))
+            .or_else(|| self.mode_profiles.first())
+    }
+
+    pub fn active_mode_profile(&self) -> Option<&VoiceModeProfile> {
+        self.mode_profile_or_default(&self.active_mode_profile_id)
+    }
+
+    pub fn next_mode_profile_id(&self, current_id: &str) -> Option<String> {
+        if self.mode_profiles.is_empty() {
+            return None;
+        }
+        let current_index = self
+            .mode_profiles
+            .iter()
+            .position(|profile| profile.id == current_id)
+            .unwrap_or_else(|| {
+                self.mode_profiles
+                    .iter()
+                    .position(|profile| profile.id == DEFAULT_VOICE_MODE_ID)
+                    .unwrap_or(0)
+            });
+        let next_index = (current_index + 1) % self.mode_profiles.len();
+        Some(self.mode_profiles[next_index].id.clone())
+    }
+
+    pub fn validate_mode_profiles(&self) -> Result<(), String> {
+        if self.mode_profiles.is_empty() {
+            return Err("音声モードを1つ以上設定してください。".to_string());
+        }
+
+        let mut seen = HashSet::new();
+        let mut has_default = false;
+        for profile in &self.mode_profiles {
+            if profile.id.trim().is_empty() {
+                return Err("音声モードのIDが空です。".to_string());
+            }
+            if !seen.insert(profile.id.as_str()) {
+                return Err("音声モードのIDが重複しています。".to_string());
+            }
+            if profile.name.trim().is_empty() {
+                return Err("音声モード名を入力してください。".to_string());
+            }
+            if profile.formatting_enabled && !profile.user_prompt.contains(TRANSCRIPT_TOKEN) {
+                return Err(format!(
+                    "{}のユーザープロンプトには {TRANSCRIPT_TOKEN} を含めてください。",
+                    profile.name
+                ));
+            }
+            if profile.id == DEFAULT_VOICE_MODE_ID {
+                has_default = true;
+                if profile.deletable {
+                    return Err("デフォルトモードは削除不可にしてください。".to_string());
+                }
+            }
+        }
+
+        if !has_default {
+            return Err("デフォルトモードが必要です。".to_string());
+        }
+        if self
+            .mode_profile_by_id(&self.active_mode_profile_id)
+            .is_none()
+        {
+            return Err("現在ONの音声モードが見つかりません。".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -376,6 +709,7 @@ impl AppSettings {
         self.shortcuts.voice_dictation.normalize();
         self.shortcuts.voice_ask.normalize();
         self.prompts.overrides.sanitize();
+        self.voice.ensure_mode_profiles(&self.prompts.overrides);
     }
 
     pub fn validate_shortcuts(&self) -> Result<(), String> {
@@ -482,6 +816,17 @@ mod tests {
         assert_eq!(settings.translation.target_language, UiLanguage::Ja);
         assert_eq!(settings.app.double_tap_threshold_ms, 400);
         assert_eq!(settings.shortcuts.voice_dictation.label, "Fn");
+        assert_eq!(settings.voice.active_mode_profile_id, DEFAULT_VOICE_MODE_ID);
+        assert_eq!(settings.voice.mode_profiles.len(), 5);
+        assert_eq!(settings.voice.mode_profiles[1].id, "speed");
+        assert!(!settings.voice.mode_profiles[1].formatting_enabled);
+        assert!(
+            !settings
+                .voice
+                .mode_profile_by_id(DEFAULT_VOICE_MODE_ID)
+                .expect("default profile")
+                .deletable
+        );
     }
 
     #[test]
@@ -497,6 +842,67 @@ mod tests {
         assert_eq!(settings.voice.max_recording_seconds, 600);
         assert_eq!(settings.voice.google_cloud_region, "asia-northeast1");
         assert_eq!(settings.app.double_tap_threshold_ms, 100);
+    }
+
+    #[test]
+    fn sanitize_migrates_legacy_dictation_prompts_into_default_mode() {
+        let mut settings = AppSettings::default();
+        settings.voice.mode_profiles.clear();
+        settings.voice.active_mode_profile_id = String::new();
+        settings.prompts.overrides.dictation_system = Some("legacy system".to_string());
+        settings.prompts.overrides.dictation_user = Some("legacy {{transcript}}".to_string());
+
+        settings.sanitize();
+
+        let default_profile = settings
+            .voice
+            .mode_profile_by_id(DEFAULT_VOICE_MODE_ID)
+            .expect("default profile");
+        assert_eq!(default_profile.system_prompt, "legacy system");
+        assert_eq!(default_profile.user_prompt, "legacy {{transcript}}");
+        assert_eq!(settings.voice.active_mode_profile_id, DEFAULT_VOICE_MODE_ID);
+    }
+
+    #[test]
+    fn sanitize_restores_default_mode_and_falls_back_active_mode() {
+        let mut settings = AppSettings::default();
+        settings.voice.mode_profiles = vec![VoiceModeProfile {
+            id: "custom".to_string(),
+            name: "Custom".to_string(),
+            description: String::new(),
+            formatting_enabled: true,
+            system_prompt: "system".to_string(),
+            user_prompt: "{{transcript}}".to_string(),
+            deletable: true,
+            order: 0,
+            preset_key: None,
+        }];
+        settings.voice.active_mode_profile_id = "missing".to_string();
+
+        settings.sanitize();
+
+        assert!(settings
+            .voice
+            .mode_profile_by_id(DEFAULT_VOICE_MODE_ID)
+            .is_some());
+        assert_eq!(settings.voice.active_mode_profile_id, DEFAULT_VOICE_MODE_ID);
+    }
+
+    #[test]
+    fn validate_mode_profiles_requires_transcript_placeholder() {
+        let mut settings = AppSettings::default();
+        settings.voice.mode_profiles[0].user_prompt = "missing".to_string();
+
+        assert!(settings.voice.validate_mode_profiles().is_err());
+    }
+
+    #[test]
+    fn validate_mode_profiles_allows_missing_prompt_when_formatting_disabled() {
+        let mut settings = AppSettings::default();
+        settings.voice.mode_profiles[1].formatting_enabled = false;
+        settings.voice.mode_profiles[1].user_prompt = String::new();
+
+        assert!(settings.voice.validate_mode_profiles().is_ok());
     }
 
     #[test]

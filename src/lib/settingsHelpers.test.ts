@@ -17,6 +17,20 @@ const baseSettings: AppSettings = {
     googleCloudProjectId: "",
     googleCloudRegion: "asia-northeast1",
     googleCloudUseAdc: true,
+    modeProfiles: [
+      {
+        id: "default",
+        name: "デフォルト",
+        description: "話した内容を自然な日本語文として整えます。",
+        formattingEnabled: true,
+        systemPrompt: "system",
+        userPrompt: "{{transcript}}",
+        deletable: false,
+        order: 0,
+        presetKey: "default",
+      },
+    ],
+    activeModeProfileId: "default",
   },
   shortcuts: {
     voiceDictation: {

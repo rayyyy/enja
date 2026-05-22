@@ -17,19 +17,6 @@ const GEMINI_AUDIO_SYSTEM: &str = "あなたは日本語音声の文字起こし
 const GEMINI_AUDIO_USER: &str =
     "添付された日本語音声を、できるだけ正確に文字起こししてください。出力は文字起こし本文のみ。{{dictionary_context_block}}";
 
-const DICTATION_SYSTEM: &str = "あなたは日本語の音声入力編集者です。音声認識結果を、ユーザーがそのまま貼り付けられる自然な日本語文に整形します。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。";
-
-const DICTATION_USER: &str = r#"{{dictionary_section}}
-
-音声認識結果:
-{{transcript}}
-
-要件:
-- 話し言葉の不要な言い直しを整理する。
-- 録音内に「これをこうまとめて」などの指示が含まれる場合、その意図に従って最終文章を作る。
-- 辞書の優先表記を必ず尊重する。
-- 内容を勝手に増やさない。"#;
-
 const ASK_WITHOUT_SELECTION_SYSTEM: &str = "あなたは日本語の音声入力編集者です。音声指示だけを根拠に、ユーザーがそのまま貼り付けられる最終本文を作ります。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。";
 
 const ASK_WITHOUT_SELECTION_USER: &str = r#"{{dictionary_section}}
@@ -99,20 +86,6 @@ pub fn catalog() -> Vec<PromptCatalogItem> {
             GEMINI_AUDIO_USER,
         ),
         catalog_item(
-            "dictationSystem",
-            "音声入力整形: system",
-            3,
-            &[],
-            DICTATION_SYSTEM,
-        ),
-        catalog_item(
-            "dictationUser",
-            "音声入力整形: user",
-            8,
-            &["{{transcript}}"],
-            DICTATION_USER,
-        ),
-        catalog_item(
             "askWithoutSelectionSystem",
             "Ask（選択なし）: system",
             3,
@@ -160,11 +133,6 @@ fn catalog_item(
 }
 
 pub fn validate_overrides(overrides: &PromptOverrides) -> Result<(), String> {
-    validate_required(
-        "音声入力のユーザープロンプト",
-        overrides.dictation_user.as_deref(),
-        &["{{transcript}}"],
-    )?;
     validate_required(
         "選択なしAskのユーザープロンプト",
         overrides.ask_without_selection_user.as_deref(),
@@ -243,17 +211,9 @@ pub fn gemini_audio_user(overrides: &PromptOverrides, dictionary_context: &str) 
     )
 }
 
-pub fn dictation_system(overrides: &PromptOverrides) -> Cow<'_, str> {
-    template_or_default(overrides.dictation_system.as_deref(), DICTATION_SYSTEM)
-}
-
-pub fn dictation_user(
-    overrides: &PromptOverrides,
-    dictionary_section: &str,
-    transcript: &str,
-) -> String {
+pub fn voice_mode_user(template: &str, dictionary_section: &str, transcript: &str) -> String {
     render(
-        &template_or_default(overrides.dictation_user.as_deref(), DICTATION_USER),
+        template,
         &[
             ("{{dictionary_section}}", dictionary_section),
             ("{{transcript}}", transcript),
@@ -332,17 +292,6 @@ fn render(template: &str, replacements: &[(&str, &str)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn renders_dictation_prompt() {
-        let out = dictation_user(
-            &PromptOverrides::default(),
-            "優先表記辞書は空です。",
-            "テストです",
-        );
-        assert!(out.contains("優先表記辞書は空です。"));
-        assert!(out.contains("テストです"));
-    }
 
     #[test]
     fn rejects_missing_required_placeholder() {

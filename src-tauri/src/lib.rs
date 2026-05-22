@@ -51,6 +51,7 @@ fn save_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(), Str
     let mut sanitized = settings.clone();
     sanitized.sanitize();
     sanitized.validate_shortcuts()?;
+    sanitized.voice.validate_mode_profiles()?;
     prompts::validate_overrides(&sanitized.prompts.overrides)?;
 
     save_settings_to_disk(&app, &sanitized)?;
@@ -303,6 +304,13 @@ fn handle_keyboard_trigger(app: tauri::AppHandle, trigger: KeyboardTrigger) {
             };
             if !manager.is_active() {
                 let _ = manager.start_session(app.clone(), VoiceMode::Ask);
+            }
+        }
+        KeyboardTrigger::VoiceModeCycle => {
+            if let Some(manager) = app.try_state::<VoiceManager>() {
+                if let Err(err) = manager.cycle_mode_profile(app.clone()) {
+                    eprintln!("[enja] voice mode cycle failed: {err}");
+                }
             }
         }
         KeyboardTrigger::Escape => {

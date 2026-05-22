@@ -12,6 +12,8 @@ export function VoiceOverlay() {
   const [state, setState] = useState<VoiceStateEvent>({
     state: "recording",
     mode: "dictation",
+    modeProfileId: "default",
+    modeProfileName: "デフォルト",
     message: null,
   });
   const [level, setLevel] = useState<VoiceLevelEvent>({ rms: 0, peak: 0 });
@@ -104,6 +106,10 @@ export function VoiceOverlay() {
 
   const expanded = state.state === "fallback" || state.state === "error";
   const isAskMode = state.mode === "ask";
+  const modeName = isAskMode ? "Ask" : (state.modeProfileName ?? "デフォルト");
+  const compactShortcutLabel = isAskMode
+    ? voiceAskShortcut.label
+    : `${modeName} · ${voiceDictationShortcut.label}`;
   const showInlineText = expanded;
   const stateGlyph =
     state.state === "recording"
@@ -171,6 +177,15 @@ export function VoiceOverlay() {
                 <p className="truncate text-[15px] font-semibold text-white">
                   {state.state === "error" ? "エラー" : "コピーして使用"}
                 </p>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                    isAskMode
+                      ? "bg-sky-300/10 text-sky-100"
+                      : "bg-emerald-300/10 text-emerald-100"
+                  }`}
+                >
+                  {modeName}
+                </span>
               </div>
               <p className="mt-1 truncate text-[11px] text-white/58">
                 {state.message ?? "入力先が見つかりませんでした。"}
@@ -201,7 +216,7 @@ export function VoiceOverlay() {
             </div>
           ) : null}
           {!showInlineText && isActive ? (
-            <div className="flex min-w-[54px] max-w-[96px] shrink-0 justify-end">
+            <div className="flex min-w-[72px] max-w-[132px] shrink-0 justify-end">
               <span
                 className={`flex h-5 max-w-full items-center truncate rounded-md border px-2 text-[10px] font-semibold leading-none ${
                   isAskMode
@@ -209,7 +224,7 @@ export function VoiceOverlay() {
                     : "border-emerald-200/20 bg-emerald-300/10 text-emerald-100/80"
                 }`}
               >
-                {isAskMode ? voiceAskShortcut.label : voiceDictationShortcut.label}
+                {compactShortcutLabel}
               </span>
             </div>
           ) : null}
