@@ -31,6 +31,8 @@ use tauri::{Emitter, Manager};
 const SPEECH_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const AUDIO_INPUT_DEVICES_CHANGED_EVENT: &str = "audio-input-devices-changed";
+const VOICE_WINDOW_EDGE_MARGIN: f64 = 16.0;
+const VOICE_WINDOW_BOTTOM_MARGIN: f64 = 42.0;
 static VOICE_STATE_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2007,13 +2009,18 @@ fn show_voice_window(app: &tauri::AppHandle, expanded: bool) {
     let Some(window) = app.get_webview_window("voice") else {
         return;
     };
-    let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
+    let target_monitor = voice_window_target_monitor(app);
+    let scale = target_monitor
+        .as_ref()
+        .map(|monitor| monitor.scale_factor())
+        .unwrap_or_else(|| window.scale_factor().unwrap_or(1.0))
+        .max(1.0);
     let (mut width, mut height) = if expanded {
         (840.0_f64, 420.0_f64)
     } else {
         (292.0_f64, 42.0_f64)
     };
-    if let Ok(Some(monitor)) = app.primary_monitor() {
+    if let Some(monitor) = target_monitor.as_ref() {
         let size = monitor.size();
         let logical_width = size.width as f64 / scale;
         let logical_height = size.height as f64 / scale;
@@ -2022,20 +2029,71 @@ fn show_voice_window(app: &tauri::AppHandle, expanded: bool) {
     }
     let _ = window.set_focusable(expanded);
     let _ = window.set_shadow(expanded);
-    let _ = window.set_size(tauri::LogicalSize::new(width, height));
-    if let Ok(Some(monitor)) = app.primary_monitor() {
+    let physical_width = logical_to_physical(width, scale);
+    let physical_height = logical_to_physical(height, scale);
+    let _ = window.set_size(tauri::PhysicalSize::new(physical_width, physical_height));
+    if let Some(monitor) = target_monitor.as_ref() {
         let pos = monitor.position();
         let size = monitor.size();
-        let logical_x = pos.x as f64 / scale;
-        let logical_y = pos.y as f64 / scale;
-        let logical_width = size.width as f64 / scale;
-        let logical_height = size.height as f64 / scale;
-        let x = logical_x + ((logical_width - width) / 2.0).max(16.0);
-        let y = logical_y + logical_height - height - 42.0;
-        let _ = window.set_position(tauri::LogicalPosition::new(x, y.max(logical_y + 16.0)));
+        let screen_x = pos.x as f64;
+        let screen_y = pos.y as f64;
+        let screen_width = size.width as f64;
+        let screen_height = size.height as f64;
+        let edge_margin = logical_to_physical_f64(VOICE_WINDOW_EDGE_MARGIN, scale);
+        let bottom_margin = logical_to_physical_f64(VOICE_WINDOW_BOTTOM_MARGIN, scale);
+        let window_width = physical_width as f64;
+        let window_height = physical_height as f64;
+        let min_x = screen_x + edge_margin;
+        let max_x = (screen_x + screen_width - window_width - edge_margin).max(min_x);
+        let x = (screen_x + (screen_width - window_width) / 2.0).clamp(min_x, max_x);
+        let min_y = screen_y + edge_margin;
+        let max_y = (screen_y + screen_height - window_height - edge_margin).max(min_y);
+        let y = (screen_y + screen_height - window_height - bottom_margin).clamp(min_y, max_y);
+        let _ = window.set_position(tauri::PhysicalPosition::new(f64_to_i32(x), f64_to_i32(y)));
     }
     let _ = window.set_always_on_top(true);
     let _ = window.show();
+}
+
+fn voice_window_target_monitor(app: &tauri::AppHandle) -> Option<tauri::window::Monitor> {
+    if let Ok(cursor) = app.cursor_position() {
+        if let Ok(Some(monitor)) = app.monitor_from_point(cursor.x, cursor.y) {
+            return Some(monitor);
+        }
+
+        if let Ok(monitors) = app.available_monitors() {
+            if let Some(monitor) = monitors
+                .into_iter()
+                .find(|monitor| monitor_contains_physical_point(monitor, cursor.x, cursor.y))
+            {
+                return Some(monitor);
+            }
+        }
+    }
+
+    app.primary_monitor().ok().flatten()
+}
+
+fn monitor_contains_physical_point(monitor: &tauri::window::Monitor, x: f64, y: f64) -> bool {
+    let pos = monitor.position();
+    let size = monitor.size();
+    let left = pos.x as f64;
+    let top = pos.y as f64;
+    x >= left && x < left + size.width as f64 && y >= top && y < top + size.height as f64
+}
+
+fn logical_to_physical(value: f64, scale: f64) -> u32 {
+    logical_to_physical_f64(value, scale)
+        .clamp(1.0, u32::MAX as f64)
+        .round() as u32
+}
+
+fn logical_to_physical_f64(value: f64, scale: f64) -> f64 {
+    (value * scale).round()
+}
+
+fn f64_to_i32(value: f64) -> i32 {
+    value.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
 }
 
 fn hide_voice_window(app: &tauri::AppHandle) {
