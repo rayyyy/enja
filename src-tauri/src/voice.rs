@@ -17,7 +17,10 @@ use std::io::{Cursor, Write};
 #[cfg(target_os = "macos")]
 use std::os::raw::c_void;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex,
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use system_tap::SystemTap;
 use tauri::{Emitter, Manager};
@@ -25,6 +28,7 @@ use tauri::{Emitter, Manager};
 const SPEECH_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const AUDIO_INPUT_DEVICES_CHANGED_EVENT: &str = "audio-input-devices-changed";
+static VOICE_STATE_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -55,6 +59,7 @@ struct VoiceStateEvent {
     state: &'static str,
     mode: Option<VoiceMode>,
     message: Option<String>,
+    seq: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -82,7 +87,12 @@ enum SessionState {
         cancelled: Arc<Mutex<bool>>,
     },
     Active(ActiveSession),
+    Processing {
+        cancelled: ProcessingCancel,
+    },
 }
+
+type ProcessingCancel = Arc<AtomicBool>;
 
 struct ActiveSession {
     mode: VoiceMode,
@@ -182,33 +192,50 @@ impl VoiceManager {
     }
 
     pub async fn stop_session(&self, app: tauri::AppHandle) -> Result<(), String> {
-        let session = {
+        let (session, cancelled) = {
             let mut guard = self.active.lock().map_err(|e| e.to_string())?;
-            guard.take()
-        };
-        let Some(session) = session else {
-            return Ok(());
+            let Some(session) = guard.take() else {
+                return Ok(());
+            };
+
+            match session {
+                SessionState::Starting { cancelled, .. } => {
+                    if let Ok(mut flag) = cancelled.lock() {
+                        *flag = true;
+                    }
+                    emit_state(&app, "idle", None, None);
+                    hide_voice_window(&app);
+                    return Ok(());
+                }
+                SessionState::Active(session) => {
+                    let cancelled = Arc::new(AtomicBool::new(false));
+                    *guard = Some(SessionState::Processing {
+                        cancelled: cancelled.clone(),
+                    });
+                    (session, cancelled)
+                }
+                SessionState::Processing { cancelled } => {
+                    *guard = Some(SessionState::Processing { cancelled });
+                    return Ok(());
+                }
+            }
         };
 
-        match session {
-            SessionState::Starting { cancelled, .. } => {
-                if let Ok(mut flag) = cancelled.lock() {
-                    *flag = true;
-                }
-                emit_state(&app, "idle", None, None);
-                hide_voice_window(&app);
-                Ok(())
-            }
-            SessionState::Active(session) => self.stop_active_session(app, session).await,
-        }
+        self.stop_active_session(app, session, cancelled).await
     }
 
     async fn stop_active_session(
         &self,
         app: tauri::AppHandle,
         session: ActiveSession,
+        cancelled: ProcessingCancel,
     ) -> Result<(), String> {
-        let mode = session.mode;
+        let ActiveSession {
+            mode,
+            selected_text,
+            recorder,
+            audio_aux,
+        } = session;
         show_voice_window(&app, false);
         emit_state(
             &app,
@@ -217,9 +244,15 @@ impl VoiceManager {
             Some("音声を整形しています…".to_string()),
         );
 
-        let clip = session.recorder.finish();
-        if let Some(aux) = session.audio_aux {
-            aux.stop();
+        let clip = recorder.finish_after_signal(move || {
+            if let Some(aux) = audio_aux {
+                aux.stop();
+            }
+        });
+
+        if is_processing_cancelled(&cancelled) {
+            self.clear_processing_session(&cancelled);
+            return Ok(());
         }
 
         if app
@@ -233,12 +266,28 @@ impl VoiceManager {
         let clip = match clip {
             Ok(clip) => clip,
             Err(message) => {
+                if is_processing_cancelled(&cancelled) || !self.clear_processing_session(&cancelled)
+                {
+                    return Ok(());
+                }
                 show_voice_window(&app, true);
                 emit_state(&app, "error", Some(mode), Some(message.clone()));
                 return Err(message);
             }
         };
-        let result = process_clip(&app, mode, &session.selected_text, clip).await;
+
+        let result = tokio::select! {
+            result = process_clip(&app, mode, &selected_text, clip) => result,
+            _ = wait_processing_cancelled(cancelled.clone()) => {
+                self.clear_processing_session(&cancelled);
+                return Ok(());
+            }
+        };
+
+        if is_processing_cancelled(&cancelled) || !self.clear_processing_session(&cancelled) {
+            return Ok(());
+        }
+
         match result {
             Ok(text) => {
                 let inserted = paste_text(&text);
@@ -298,6 +347,9 @@ impl VoiceManager {
                     aux.stop();
                 }
             }
+            Some(SessionState::Processing { cancelled }) => {
+                cancel_processing(&cancelled);
+            }
             None => {}
         }
         emit_state(&app, "idle", None, None);
@@ -307,6 +359,22 @@ impl VoiceManager {
 
     pub fn is_active(&self) -> bool {
         self.active.lock().is_ok_and(|guard| guard.is_some())
+    }
+
+    fn clear_processing_session(&self, cancelled: &ProcessingCancel) -> bool {
+        let Ok(mut guard) = self.active.lock() else {
+            return false;
+        };
+        let should_clear = matches!(
+            guard.as_ref(),
+            Some(SessionState::Processing {
+                cancelled: current
+            }) if Arc::ptr_eq(current, cancelled)
+        );
+        if should_clear {
+            *guard = None;
+        }
+        should_clear
     }
 }
 
@@ -372,9 +440,10 @@ async fn finish_start_session(
         if let Ok(recorder) = recorder {
             recorder.cancel();
         }
-        clear_starting_session(&app);
-        emit_state(&app, "idle", None, None);
-        hide_voice_window(&app);
+        if clear_starting_session(&app, &cancelled) {
+            emit_state(&app, "idle", None, None);
+            hide_voice_window(&app);
+        }
         return Ok(());
     }
 
@@ -384,7 +453,7 @@ async fn finish_start_session(
             if let Some(aux) = audio_aux {
                 aux.stop();
             }
-            fail_start_session(&app, mode, err.clone());
+            fail_start_session(&app, mode, &cancelled, err.clone());
             return Err(err);
         }
     };
@@ -405,7 +474,10 @@ async fn finish_start_session(
         return Ok(());
     };
 
-    if *starting_mode != mode || is_start_cancelled(starting_cancelled) {
+    if *starting_mode != mode
+        || !Arc::ptr_eq(starting_cancelled, &cancelled)
+        || is_start_cancelled(starting_cancelled)
+    {
         recorder.cancel();
         if let Some(aux) = audio_aux {
             aux.stop();
@@ -429,20 +501,49 @@ fn is_start_cancelled(cancelled: &Arc<Mutex<bool>>) -> bool {
     cancelled.lock().is_ok_and(|flag| *flag)
 }
 
-fn clear_starting_session(app: &tauri::AppHandle) {
-    let Some(manager) = app.try_state::<VoiceManager>() else {
-        return;
-    };
-    let Ok(mut guard) = manager.active.lock() else {
-        return;
-    };
-    if matches!(guard.as_ref(), Some(SessionState::Starting { .. })) {
-        *guard = None;
+fn cancel_processing(cancelled: &ProcessingCancel) {
+    cancelled.store(true, Ordering::SeqCst);
+}
+
+fn is_processing_cancelled(cancelled: &ProcessingCancel) -> bool {
+    cancelled.load(Ordering::SeqCst)
+}
+
+async fn wait_processing_cancelled(cancelled: ProcessingCancel) {
+    while !is_processing_cancelled(&cancelled) {
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 
-fn fail_start_session(app: &tauri::AppHandle, mode: VoiceMode, err: String) {
-    clear_starting_session(app);
+fn clear_starting_session(app: &tauri::AppHandle, cancelled: &Arc<Mutex<bool>>) -> bool {
+    let Some(manager) = app.try_state::<VoiceManager>() else {
+        return false;
+    };
+    let Ok(mut guard) = manager.active.lock() else {
+        return false;
+    };
+    let should_clear = matches!(
+        guard.as_ref(),
+        Some(SessionState::Starting {
+            cancelled: current,
+            ..
+        }) if Arc::ptr_eq(current, cancelled)
+    );
+    if should_clear {
+        *guard = None;
+    }
+    should_clear
+}
+
+fn fail_start_session(
+    app: &tauri::AppHandle,
+    mode: VoiceMode,
+    cancelled: &Arc<Mutex<bool>>,
+    err: String,
+) {
+    if !clear_starting_session(app, cancelled) {
+        return;
+    }
     show_voice_window(app, true);
     emit_state(app, "error", Some(mode), Some(err));
 }
@@ -518,8 +619,9 @@ impl Recorder {
         })
     }
 
-    fn finish(self) -> Result<AudioClip, String> {
+    fn finish_after_signal(self, after_signal: impl FnOnce()) -> Result<AudioClip, String> {
         let _ = self.control_tx.send(RecorderCommand::Finish);
+        after_signal();
         match self.done_rx.recv_timeout(Duration::from_secs(10)) {
             Ok(result) => result,
             Err(_) => Err("録音停止処理がタイムアウトしました。".to_string()),
@@ -1645,12 +1747,14 @@ fn emit_state_once(
     mode: Option<VoiceMode>,
     message: Option<String>,
 ) {
+    let seq = next_voice_state_seq();
     let _ = app.emit(
         "voice-state",
         VoiceStateEvent {
             state,
             mode,
             message,
+            seq,
         },
     );
 }
@@ -1661,10 +1765,12 @@ fn emit_state(
     mode: Option<VoiceMode>,
     message: Option<String>,
 ) {
+    let seq = next_voice_state_seq();
     let event = VoiceStateEvent {
         state,
         mode,
         message,
+        seq,
     };
     let _ = app.emit("voice-state", event.clone());
     let app = app.clone();
@@ -1685,6 +1791,10 @@ fn emit_result(app: &tauri::AppHandle, event: VoiceResultEvent) {
             let _ = app.emit("voice-result", event.clone());
         }
     });
+}
+
+fn next_voice_state_seq() -> u64 {
+    VOICE_STATE_SEQ.fetch_add(1, Ordering::SeqCst)
 }
 
 fn show_voice_window(app: &tauri::AppHandle, expanded: bool) {

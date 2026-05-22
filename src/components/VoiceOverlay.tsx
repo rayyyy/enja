@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import type { VoiceLevelEvent, VoiceResultEvent, VoiceStateEvent } from "../types";
 import { cancelVoiceSession } from "../lib/commands";
@@ -19,6 +19,7 @@ export function VoiceOverlay() {
   const [result, setResult] = useState<VoiceResultEvent | null>(null);
   const [copied, setCopied] = useState(false);
   const [tick, setTick] = useState(0);
+  const latestStateSeq = useRef(0);
 
   useLayoutEffect(() => {
     document.body.classList.add("voice-window");
@@ -27,8 +28,15 @@ export function VoiceOverlay() {
 
   useEffect(() => {
     const stateListener = listen<VoiceStateEvent>("voice-state", (event) => {
-      setState(event.payload);
-      if (event.payload.state === "recording" || event.payload.state === "processing") {
+      const next = event.payload;
+      if (typeof next.seq === "number") {
+        if (next.seq < latestStateSeq.current) {
+          return;
+        }
+        latestStateSeq.current = next.seq;
+      }
+      setState(next);
+      if (next.state === "recording" || next.state === "processing") {
         setResult(null);
       }
     });

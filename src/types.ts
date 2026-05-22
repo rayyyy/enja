@@ -138,6 +138,7 @@ export type VoiceStateEvent = {
   state: "idle" | "recording" | "processing" | "inserted" | "fallback" | "error";
   mode: VoiceMode | null;
   message: string | null;
+  seq?: number;
 };
 
 export type VoiceLevelEvent = {
