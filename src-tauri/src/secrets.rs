@@ -103,9 +103,7 @@ fn update_cache(account: &str, value: Option<String>) {
 
 fn account_name(provider: &str) -> Result<String, String> {
     match provider {
-        "gemini" | "openai" | "googleServiceAccount" => {
-            Ok(format!("{SERVICE}.{provider}"))
-        }
+        "gemini" | "openai" | "googleServiceAccount" => Ok(format!("{SERVICE}.{provider}")),
         _ => Err("未知のプロバイダーです。".to_string()),
     }
 }

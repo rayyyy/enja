@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Channel } from "@tauri-apps/api/core";
 import type {
   AppSettings,
+  ApiUsageEvent,
   AudioInputDevice,
   DictionaryEntry,
   DictionaryEntryInput,
@@ -95,6 +96,10 @@ export async function saveProviderSecret(
 
 export async function getProviderStatus(): Promise<ProviderStatus> {
   return invoke<ProviderStatus>("get_provider_status");
+}
+
+export async function getApiUsageEvents(): Promise<ApiUsageEvent[]> {
+  return invoke<ApiUsageEvent[]>("get_api_usage_events");
 }
 
 export async function checkSpeechSetup(

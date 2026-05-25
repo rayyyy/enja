@@ -10,6 +10,7 @@ use crate::settings::{
     save_settings_to_disk, AppSettings, SettingsStore, SpeechProfile, SystemAudioHandling,
     VoiceModeProfile,
 };
+use crate::usage::{self, UsageService};
 
 use aec::Aec;
 use base64::Engine;
@@ -1011,6 +1012,7 @@ fn samples_to_wav(samples: &[i16], sample_rate: u32, channels: u16) -> Result<Ve
     Ok(wav)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_input_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -1462,14 +1464,14 @@ async fn transcribe(
             if clip.duration_secs > 60.0 || clip.wav.len() > 10 * 1024 * 1024 {
                 transcribe_long_audio_fallback(app, settings, entries, clip).await
             } else {
-                transcribe_google_chirp3(settings, entries, clip).await
+                transcribe_google_chirp3(app, settings, entries, clip).await
             }
         }
         SpeechProfile::OpenAiGpt4oTranscribe => {
-            transcribe_openai("gpt-4o-transcribe", settings, entries, clip).await
+            transcribe_openai(app, "gpt-4o-transcribe", settings, entries, clip).await
         }
         SpeechProfile::OpenAiGpt4oMiniTranscribe => {
-            transcribe_openai("gpt-4o-mini-transcribe", settings, entries, clip).await
+            transcribe_openai(app, "gpt-4o-mini-transcribe", settings, entries, clip).await
         }
         SpeechProfile::GeminiAudio => transcribe_gemini_audio(app, settings, entries, clip).await,
     }
@@ -1482,7 +1484,7 @@ async fn transcribe_long_audio_fallback(
     clip: &AudioClip,
 ) -> Result<String, String> {
     if secrets::get_secret("openai").is_ok_and(|key| !key.trim().is_empty()) {
-        return transcribe_openai("gpt-4o-transcribe", settings, entries, clip).await;
+        return transcribe_openai(app, "gpt-4o-transcribe", settings, entries, clip).await;
     }
     transcribe_gemini_audio(app, settings, entries, clip).await
 }
@@ -1500,6 +1502,7 @@ fn speech_request_error(provider: &str, err: reqwest::Error) -> String {
 }
 
 async fn transcribe_google_chirp3(
+    app: &tauri::AppHandle,
     settings: &AppSettings,
     entries: &[DictionaryEntry],
     clip: &AudioClip,
@@ -1557,6 +1560,9 @@ async fn transcribe_google_chirp3(
     let text = response.text().await.map_err(|e| e.to_string())?;
     if !status.is_success() {
         return Err(format!("Google Speech-to-Text HTTP {status}: {text}"));
+    }
+    if let Err(err) = usage::record_google_speech_to_text(app, clip.duration_secs) {
+        eprintln!("[enja] usage tracking failed: {err}");
     }
     let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     let out = v
@@ -1777,6 +1783,7 @@ fn resolve_gcloud_path() -> Result<PathBuf, String> {
 }
 
 async fn transcribe_openai(
+    app: &tauri::AppHandle,
     model: &str,
     settings: &AppSettings,
     entries: &[DictionaryEntry],
@@ -1809,6 +1816,9 @@ async fn transcribe_openai(
     if !status.is_success() {
         return Err(format!("OpenAI HTTP {status}: {text}"));
     }
+    if let Err(err) = usage::record_openai_transcription(app, model, clip.duration_secs) {
+        eprintln!("[enja] usage tracking failed: {err}");
+    }
     let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     let out = v
         .get("text")
@@ -1833,16 +1843,23 @@ async fn transcribe_gemini_audio(
     let dictionary_context = dictionary::prompt_lines(entries);
     let prompt = prompts::gemini_audio_user(&settings.prompts.overrides, &dictionary_context);
     let system = prompts::gemini_audio_system(&settings.prompts.overrides);
-    gemini::generate_from_audio(
+    let model = settings.voice.finalization_model.model_id();
+    let output = gemini::generate_from_audio_with_usage(
         &key,
-        settings.voice.finalization_model.model_id(),
+        model,
         settings.voice.finalization_model.thinking_level(),
         system.as_ref(),
         &prompt,
         &clip.wav,
         0.1,
     )
-    .await
+    .await?;
+    if let Err(err) =
+        usage::record_gemini_usage(app, UsageService::GeminiAudioInput, model, output.usage)
+    {
+        eprintln!("[enja] usage tracking failed: {err}");
+    }
+    Ok(output.text)
 }
 
 async fn finalize_text(
@@ -1901,16 +1918,22 @@ async fn finalize_text(
             ),
         ),
     };
-    gemini::generate_text(
+    let model = settings.voice.finalization_model.model_id();
+    let output = gemini::generate_text_with_usage(
         &key,
-        settings.voice.finalization_model.model_id(),
+        model,
         settings.voice.finalization_model.thinking_level(),
         &system,
         &user,
         0.2,
     )
-    .await
-    .map(|s| s.trim().to_string())
+    .await?;
+    if let Err(err) =
+        usage::record_gemini_usage(app, UsageService::GeminiFinalization, model, output.usage)
+    {
+        eprintln!("[enja] usage tracking failed: {err}");
+    }
+    Ok(output.text.trim().to_string())
 }
 
 fn gemini_api_key(_app: &tauri::AppHandle) -> Result<String, String> {

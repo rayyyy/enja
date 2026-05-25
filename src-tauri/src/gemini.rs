@@ -8,7 +8,7 @@ use tauri::ipc::Channel;
 use crate::prompts;
 use crate::settings::{PromptOverrides, UiLanguage};
 
-const MODEL: &str = "gemini-3.1-flash-lite-preview";
+pub const TRANSLATION_MODEL: &str = "gemini-3.1-flash-lite-preview";
 const GEMINI_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 static GEMINI_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
@@ -28,6 +28,7 @@ pub enum TranslateEvent {
 struct GenerateContentResponse {
     #[serde(default)]
     candidates: Vec<GenerateCandidate>,
+    usage_metadata: Option<UsageMetadata>,
     error: Option<GeminiError>,
 }
 
@@ -56,6 +57,76 @@ struct GeminiError {
     message: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct GeminiUsage {
+    pub prompt_token_count: Option<u64>,
+    pub candidates_token_count: Option<u64>,
+    pub thoughts_token_count: Option<u64>,
+    pub total_token_count: Option<u64>,
+    pub audio_input_token_count: Option<u64>,
+}
+
+impl GeminiUsage {
+    pub fn output_token_count(self) -> Option<u64> {
+        match (self.candidates_token_count, self.thoughts_token_count) {
+            (Some(candidates), Some(thoughts)) => Some(candidates.saturating_add(thoughts)),
+            (Some(candidates), None) => Some(candidates),
+            (None, Some(thoughts)) => Some(thoughts),
+            (None, None) => self
+                .prompt_token_count
+                .zip(self.total_token_count)
+                .map(|(prompt, total)| total.saturating_sub(prompt)),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageMetadata {
+    prompt_token_count: Option<u64>,
+    candidates_token_count: Option<u64>,
+    thoughts_token_count: Option<u64>,
+    total_token_count: Option<u64>,
+    #[serde(default)]
+    prompt_tokens_details: Vec<TokenCountDetail>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenCountDetail {
+    modality: Option<String>,
+    token_count: Option<u64>,
+}
+
+impl From<UsageMetadata> for GeminiUsage {
+    fn from(value: UsageMetadata) -> Self {
+        let audio_input_token_count = value
+            .prompt_tokens_details
+            .iter()
+            .filter(|detail| {
+                detail
+                    .modality
+                    .as_deref()
+                    .is_some_and(|modality| modality.eq_ignore_ascii_case("AUDIO"))
+            })
+            .filter_map(|detail| detail.token_count)
+            .reduce(|acc, count| acc.saturating_add(count));
+
+        Self {
+            prompt_token_count: value.prompt_token_count,
+            candidates_token_count: value.candidates_token_count,
+            thoughts_token_count: value.thoughts_token_count,
+            total_token_count: value.total_token_count,
+            audio_input_token_count,
+        }
+    }
+}
+
+pub struct GeminiOutput {
+    pub text: String,
+    pub usage: Option<GeminiUsage>,
+}
+
 pub async fn stream_translate(
     api_key: &str,
     user_text: &str,
@@ -63,10 +134,10 @@ pub async fn stream_translate(
     source: UiLanguage,
     target: UiLanguage,
     prompt_overrides: &PromptOverrides,
-) -> Result<(), String> {
+) -> Result<Option<GeminiUsage>, String> {
     let prompt = prompts::translation_system_prompt(prompt_overrides, source, target);
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:streamGenerateContent?alt=sse&key={}",
+        "https://generativelanguage.googleapis.com/v1beta/models/{TRANSLATION_MODEL}:streamGenerateContent?alt=sse&key={}",
         encode_query_component(api_key)
     );
 
@@ -98,11 +169,12 @@ pub async fn stream_translate(
         let _ = channel.send(TranslateEvent::Error {
             message: format!("HTTP {status}: {err_text}"),
         });
-        return Ok(());
+        return Ok(None);
     }
 
     let mut stream = response.bytes_stream();
     let mut acc = String::new();
+    let mut usage = None;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| e.to_string())?;
@@ -112,24 +184,24 @@ pub async fn stream_translate(
         while let Some(idx) = acc.find("\n\n") {
             let event_block: String = acc[..idx].to_string();
             acc.drain(..idx + 2);
-            if process_sse_block(&event_block, &channel)? {
-                return Ok(());
+            if process_sse_block(&event_block, &channel, &mut usage)? {
+                return Ok(usage);
             }
         }
     }
 
     let _ = channel.send(TranslateEvent::Done);
-    Ok(())
+    Ok(usage)
 }
 
-pub async fn generate_text(
+pub async fn generate_text_with_usage(
     api_key: &str,
     model: &str,
     thinking_level: &str,
     system_prompt: &str,
     user_text: &str,
     temperature: f32,
-) -> Result<String, String> {
+) -> Result<GeminiOutput, String> {
     generate_content(
         api_key,
         model,
@@ -144,7 +216,7 @@ pub async fn generate_text(
     .await
 }
 
-pub async fn generate_from_audio(
+pub async fn generate_from_audio_with_usage(
     api_key: &str,
     model: &str,
     thinking_level: &str,
@@ -152,7 +224,7 @@ pub async fn generate_from_audio(
     user_text: &str,
     audio_wav: &[u8],
     temperature: f32,
-) -> Result<String, String> {
+) -> Result<GeminiOutput, String> {
     use base64::Engine;
     let audio = base64::engine::general_purpose::STANDARD.encode(audio_wav);
     generate_content(
@@ -184,7 +256,7 @@ async fn generate_content(
     system_prompt: &str,
     contents: serde_json::Value,
     temperature: f32,
-) -> Result<String, String> {
+) -> Result<GeminiOutput, String> {
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
         encode_query_component(model),
@@ -224,6 +296,7 @@ async fn generate_content(
             .message
             .unwrap_or_else(|| "Gemini API error".to_string()));
     }
+    let usage = parsed.usage_metadata.map(GeminiUsage::from);
     let out = parsed
         .candidates
         .into_iter()
@@ -235,7 +308,7 @@ async fn generate_content(
     if out.trim().is_empty() {
         Err("Geminiから空の応答が返りました。".to_string())
     } else {
-        Ok(out)
+        Ok(GeminiOutput { text: out, usage })
     }
 }
 
@@ -260,7 +333,11 @@ fn http_client() -> Result<reqwest::Client, String> {
 }
 
 /// Returns `true` if the stream should stop (done or fatal error).
-fn process_sse_block(block: &str, channel: &Channel<TranslateEvent>) -> Result<bool, String> {
+fn process_sse_block(
+    block: &str,
+    channel: &Channel<TranslateEvent>,
+    usage: &mut Option<GeminiUsage>,
+) -> Result<bool, String> {
     for raw in block.lines() {
         let raw = raw.trim();
         if raw.is_empty() || raw.starts_with(':') {
@@ -278,6 +355,9 @@ fn process_sse_block(block: &str, channel: &Channel<TranslateEvent>) -> Result<b
             Ok(v) => v,
             Err(_) => continue,
         };
+        if let Some(next_usage) = extract_usage_from_chunk(&v) {
+            *usage = Some(next_usage);
+        }
         if let Some(err) = v.get("error") {
             let msg = err
                 .get("message")
@@ -295,6 +375,12 @@ fn process_sse_block(block: &str, channel: &Channel<TranslateEvent>) -> Result<b
         }
     }
     Ok(false)
+}
+
+fn extract_usage_from_chunk(v: &Value) -> Option<GeminiUsage> {
+    serde_json::from_value::<UsageMetadata>(v.get("usageMetadata")?.clone())
+        .ok()
+        .map(GeminiUsage::from)
 }
 
 fn extract_text_from_chunk(v: &Value) -> Option<String> {

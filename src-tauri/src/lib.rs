@@ -6,6 +6,7 @@ mod macos_show_on_activate;
 mod prompts;
 mod secrets;
 mod settings;
+mod usage;
 mod voice;
 
 use dictionary::{DictionaryEntry, DictionaryEntryInput};
@@ -92,7 +93,7 @@ async fn translate(
         });
         return Ok(());
     }
-    stream_translate(
+    let usage_metadata = stream_translate(
         &api_key,
         &text,
         channel,
@@ -100,7 +101,16 @@ async fn translate(
         settings.translation.target_language,
         &settings.prompts.overrides,
     )
-    .await
+    .await?;
+    if let Err(err) = usage::record_gemini_usage(
+        &app,
+        usage::UsageService::GeminiTranslation,
+        gemini::TRANSLATION_MODEL,
+        usage_metadata,
+    ) {
+        eprintln!("[enja] usage tracking failed: {err}");
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -176,6 +186,11 @@ fn save_provider_secret(provider: String, secret: String) -> Result<(), String> 
 #[tauri::command]
 fn get_provider_status() -> Result<secrets::ProviderStatus, String> {
     Ok(secrets::provider_status())
+}
+
+#[tauri::command]
+fn get_api_usage_events(app: tauri::AppHandle) -> Result<Vec<usage::ApiUsageEvent>, String> {
+    usage::get_usage_events(&app)
 }
 
 #[tauri::command]
@@ -256,6 +271,7 @@ pub fn run() {
             delete_dictionary_entry,
             save_provider_secret,
             get_provider_status,
+            get_api_usage_events,
             check_speech_setup,
             get_prompt_catalog,
             start_shortcut_capture,

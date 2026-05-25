@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 import type {
   AppSettings,
+  ApiUsageEvent,
   AudioInputDevice,
   FinalizationModel,
   PromptOverrides,
@@ -32,10 +33,12 @@ import {
   VoiceModeSettingsSection,
   type ProviderSecretsDraft,
 } from "./settings/SettingsSections";
+import { UsageCostsSection } from "./settings/UsageCostsSection";
 import { remapSelectedMicrophoneId } from "../lib/audioInputDevices";
 import {
   checkSpeechSetup,
   cancelShortcutCapture,
+  getApiUsageEvents,
   getPromptCatalog,
   getProviderStatus,
   getSettings,
@@ -227,7 +230,14 @@ const FINALIZATION_MODELS: { value: FinalizationModel; label: string }[] = [
   { value: "gemini31ProPreview", label: "Gemini 3.1 Pro Preview（精度優先）" },
 ];
 
-type SettingsSection = "voice" | "voiceModes" | "shortcuts" | "prompts" | "auth" | "app";
+type SettingsSection =
+  | "voice"
+  | "voiceModes"
+  | "shortcuts"
+  | "prompts"
+  | "auth"
+  | "usage"
+  | "app";
 
 const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "voice", label: "音声入力" },
@@ -235,6 +245,7 @@ const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "shortcuts", label: "ショートカット" },
   { id: "prompts", label: "プロンプト" },
   { id: "auth", label: "API / 認証" },
+  { id: "usage", label: "利用料金" },
   { id: "app", label: "アプリ" },
 ];
 
@@ -248,6 +259,8 @@ export function SettingsView() {
     null,
   );
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
+  const [usageEvents, setUsageEvents] = useState<ApiUsageEvent[]>([]);
+  const [refreshingUsage, setRefreshingUsage] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSection>("voice");
@@ -263,14 +276,16 @@ export function SettingsView() {
 
   useEffect(() => {
     void (async () => {
-      const [s, status, catalog] = await Promise.all([
+      const [s, status, catalog, usage] = await Promise.all([
         getSettings(),
         getProviderStatus().catch(() => null),
         getPromptCatalog(),
+        getApiUsageEvents().catch(() => []),
       ]);
       setSettings(s);
       setProviderStatus(status);
       setPromptCatalog(catalog);
+      setUsageEvents(usage);
     })();
   }, []);
 
@@ -470,6 +485,17 @@ export function SettingsView() {
       setMsg(String(e));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function refreshUsageEvents() {
+    setRefreshingUsage(true);
+    try {
+      setUsageEvents(await getApiUsageEvents());
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setRefreshingUsage(false);
     }
   }
 
@@ -719,6 +745,14 @@ export function SettingsView() {
               onSecretsChange={setSecrets}
               onVoiceChange={patchVoice}
               onOpenGeminiDocs={() => void openUrl("https://aistudio.google.com/apikey")}
+            />
+          ) : null}
+
+          {activeSection === "usage" ? (
+            <UsageCostsSection
+              events={usageEvents}
+              refreshing={refreshingUsage}
+              onRefresh={() => void refreshUsageEvents()}
             />
           ) : null}
 

@@ -51,6 +51,8 @@ impl From<&AppSettings> for KeyboardRuntimeSettings {
 
 #[cfg(target_os = "macos")]
 mod macos {
+    #![allow(clippy::items_after_test_module)]
+
     use super::{KeyboardRuntimeSettings, KeyboardTrigger};
     use crate::settings::{ShortcutAction, ShortcutBinding, ShortcutModifiers};
     use std::os::raw::c_void;

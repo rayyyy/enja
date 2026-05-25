@@ -155,6 +155,30 @@ export type SpeechSetupCheck = {
 
 export type VoiceMode = "dictation" | "ask";
 
+export type ApiUsageService =
+  | "geminiTranslation"
+  | "geminiFinalization"
+  | "geminiAudioInput"
+  | "openAiTranscription"
+  | "googleSpeechToText";
+
+export type ApiUsageEvent = {
+  id: string;
+  timestampMs: number;
+  service: ApiUsageService;
+  provider: string;
+  model: string;
+  operation: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  audioInputTokens: number | null;
+  durationSecs: number | null;
+  requestCount: number;
+  estimatedCostUsd: number | null;
+  pricingNote: string;
+  note: string | null;
+};
+
 export type VoiceStateEvent = {
   state: "idle" | "recording" | "processing" | "inserted" | "fallback" | "error";
   mode: VoiceMode | null;

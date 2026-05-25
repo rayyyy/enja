@@ -385,6 +385,7 @@ impl Default for VoiceModeProfile {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn voice_mode_profile(
     id: &str,
     name: &str,
