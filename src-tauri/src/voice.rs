@@ -35,6 +35,12 @@ const AUDIO_INPUT_DEVICES_CHANGED_EVENT: &str = "audio-input-devices-changed";
 const VOICE_WINDOW_EDGE_MARGIN: f64 = 16.0;
 const VOICE_WINDOW_BOTTOM_MARGIN: f64 = 42.0;
 const VOICE_WINDOW_FOLLOW_INTERVAL_MS: u64 = 180;
+const MIN_API_RECORDING_SECS: f32 = 0.7;
+const VOICE_FRAME_MS: u32 = 20;
+const ACTIVE_AUDIO_RMS_THRESHOLD: f32 = 0.006;
+const MIN_ACTIVE_AUDIO_SECS: f32 = 0.08;
+const EDGE_SILENCE_PADDING_MS: u32 = 160;
+const MAX_INTERNAL_SILENCE_MS: u32 = 320;
 static VOICE_STATE_SEQ: AtomicU64 = AtomicU64::new(1);
 static VOICE_WINDOW_FOLLOW_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -163,6 +169,18 @@ enum RecorderCommand {
 struct AudioClip {
     wav: Vec<u8>,
     duration_secs: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PreparedAudioAnalysis {
+    duration_secs: f32,
+    active_audio_secs: f32,
+}
+
+#[derive(Debug)]
+struct PreparedAudio {
+    samples: Vec<i16>,
+    analysis: PreparedAudioAnalysis,
 }
 
 #[cfg(target_os = "macos")]
@@ -837,7 +855,6 @@ fn run_recording_thread(
     init_tx: std::sync::mpsc::Sender<Result<(), String>>,
     pipeline: PipelineMode,
 ) -> Result<AudioClip, String> {
-    let started_at = Instant::now();
     let setup: Result<RecorderSetup, String> = (|| {
         let host = cpal::default_host();
         let device = input_device_by_id(&host, selected_device_id.as_deref())?
@@ -936,9 +953,12 @@ fn run_recording_thread(
     if samples.is_empty() {
         return Err("音声が録音されていません。".to_string());
     }
-    let duration_secs = started_at.elapsed().as_secs_f32();
-    let wav = samples_to_wav(&samples, sample_rate, channels)?;
-    Ok(AudioClip { wav, duration_secs })
+    let prepared = prepare_recorded_audio_for_api(&samples, sample_rate, channels)?;
+    let wav = samples_to_wav(&prepared.samples, sample_rate, channels)?;
+    Ok(AudioClip {
+        wav,
+        duration_secs: prepared.analysis.duration_secs,
+    })
 }
 
 struct AecPipeline {
@@ -1010,6 +1030,116 @@ fn samples_to_wav(samples: &[i16], sample_rate: u32, channels: u16) -> Result<Ve
         writer.finalize().map_err(|e| e.to_string())?;
     }
     Ok(wav)
+}
+
+fn prepare_recorded_audio_for_api(
+    samples: &[i16],
+    sample_rate: u32,
+    channels: u16,
+) -> Result<PreparedAudio, String> {
+    let prepared = trim_recorded_audio(samples, sample_rate, channels);
+    let analysis = prepared.analysis;
+    if analysis.active_audio_secs < MIN_ACTIVE_AUDIO_SECS {
+        return Err(
+            "音声が検出できなかったため、API送信をスキップしました。マイク入力を確認してください。"
+                .to_string(),
+        );
+    }
+    if analysis.duration_secs < MIN_API_RECORDING_SECS {
+        return Err(
+            "録音が短すぎるため、API送信をスキップしました。もう少し長く話してください。"
+                .to_string(),
+        );
+    }
+    Ok(prepared)
+}
+
+fn trim_recorded_audio(samples: &[i16], sample_rate: u32, channels: u16) -> PreparedAudio {
+    let channels = channels.max(1) as usize;
+    let frame_len = voice_frame_len(sample_rate, channels);
+    let frames = samples
+        .chunks(frame_len)
+        .map(|frame| frame_rms(frame) >= ACTIVE_AUDIO_RMS_THRESHOLD)
+        .collect::<Vec<_>>();
+    let active_frames = frames.iter().filter(|active| **active).count();
+    let Some(first_active) = frames.iter().position(|active| *active) else {
+        return PreparedAudio {
+            samples: Vec::new(),
+            analysis: PreparedAudioAnalysis {
+                duration_secs: 0.0,
+                active_audio_secs: 0.0,
+            },
+        };
+    };
+    let last_active = frames
+        .iter()
+        .rposition(|active| *active)
+        .unwrap_or(first_active);
+    let edge_padding_frames = ms_to_frame_count(EDGE_SILENCE_PADDING_MS);
+    let max_internal_silence_frames = ms_to_frame_count(MAX_INTERNAL_SILENCE_MS);
+    let start_frame = first_active.saturating_sub(edge_padding_frames);
+    let end_frame = (last_active + 1 + edge_padding_frames).min(frames.len());
+    let mut trimmed = Vec::with_capacity(samples.len());
+    let mut internal_silence_frames = 0usize;
+
+    for frame_index in start_frame..end_frame {
+        let active = frames[frame_index];
+        let is_edge_padding = frame_index < first_active || frame_index > last_active;
+        let should_keep = if active || is_edge_padding {
+            internal_silence_frames = 0;
+            true
+        } else if internal_silence_frames < max_internal_silence_frames {
+            internal_silence_frames += 1;
+            true
+        } else {
+            false
+        };
+
+        if should_keep {
+            let start = frame_index * frame_len;
+            let end = (start + frame_len).min(samples.len());
+            trimmed.extend_from_slice(&samples[start..end]);
+        }
+    }
+
+    PreparedAudio {
+        analysis: PreparedAudioAnalysis {
+            duration_secs: audio_duration_secs(trimmed.len(), sample_rate, channels),
+            active_audio_secs: active_frames as f32 * VOICE_FRAME_MS as f32 / 1000.0,
+        },
+        samples: trimmed,
+    }
+}
+
+fn voice_frame_len(sample_rate: u32, channels: usize) -> usize {
+    ((sample_rate as usize * channels * VOICE_FRAME_MS as usize) / 1000).max(1)
+}
+
+fn ms_to_frame_count(ms: u32) -> usize {
+    ms.div_ceil(VOICE_FRAME_MS) as usize
+}
+
+fn audio_duration_secs(sample_count: usize, sample_rate: u32, channels: usize) -> f32 {
+    let samples_per_second = sample_rate as usize * channels.max(1);
+    if samples_per_second == 0 {
+        0.0
+    } else {
+        sample_count as f32 / samples_per_second as f32
+    }
+}
+
+fn frame_rms(samples: &[i16]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum = samples
+        .iter()
+        .map(|sample| {
+            let value = (*sample as f32 / i16::MAX as f32).clamp(-1.0, 1.0);
+            value * value
+        })
+        .sum::<f32>();
+    (sum / samples.len() as f32).sqrt()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2617,6 +2747,60 @@ mod tests {
         assert_eq!(reader.spec().sample_rate, 16_000);
         assert_eq!(reader.spec().channels, 1);
         assert_eq!(reader.into_samples::<i16>().count(), samples.len());
+    }
+
+    #[test]
+    fn prepare_recorded_audio_rejects_short_clip() {
+        let samples = vec![2_000_i16; 8_000];
+
+        let err = prepare_recorded_audio_for_api(&samples, 16_000, 1).expect_err("too short");
+
+        assert!(err.contains("短すぎる"));
+    }
+
+    #[test]
+    fn prepare_recorded_audio_rejects_silent_clip() {
+        let samples = vec![0_i16; 16_000];
+
+        let err = prepare_recorded_audio_for_api(&samples, 16_000, 1).expect_err("silent");
+
+        assert!(err.contains("音声が検出"));
+    }
+
+    #[test]
+    fn prepare_recorded_audio_accepts_audible_clip() {
+        let samples = vec![2_000_i16; 16_000];
+
+        let prepared = prepare_recorded_audio_for_api(&samples, 16_000, 1).expect("audible");
+
+        assert!((prepared.analysis.duration_secs - 1.0).abs() < 0.001);
+        assert!(prepared.analysis.active_audio_secs >= MIN_ACTIVE_AUDIO_SECS);
+    }
+
+    #[test]
+    fn prepare_recorded_audio_trims_edge_silence() {
+        let mut samples = Vec::new();
+        samples.extend(vec![0_i16; 500]);
+        samples.extend(vec![2_000_i16; 1_000]);
+        samples.extend(vec![0_i16; 500]);
+
+        let prepared = prepare_recorded_audio_for_api(&samples, 1_000, 1).expect("trimmed");
+
+        assert!(prepared.samples.len() < samples.len());
+        assert!((prepared.analysis.duration_secs - 1.32).abs() < 0.001);
+    }
+
+    #[test]
+    fn prepare_recorded_audio_compresses_internal_silence() {
+        let mut samples = Vec::new();
+        samples.extend(vec![2_000_i16; 1_000]);
+        samples.extend(vec![0_i16; 2_000]);
+        samples.extend(vec![2_000_i16; 1_000]);
+
+        let prepared = prepare_recorded_audio_for_api(&samples, 1_000, 1).expect("trimmed");
+
+        assert!(prepared.samples.len() < samples.len());
+        assert!((prepared.analysis.duration_secs - 2.32).abs() < 0.001);
     }
 
     #[test]
