@@ -2205,27 +2205,27 @@ fn configure_voice_window(
     }
     let _ = window.set_focusable(expanded);
     let _ = window.set_shadow(expanded);
-    let physical_width = logical_to_physical(width, scale);
-    let physical_height = logical_to_physical(height, scale);
-    let _ = window.set_size(tauri::PhysicalSize::new(physical_width, physical_height));
+    let _ = window.set_size(tauri::LogicalSize::new(width, height));
     if let Some(monitor) = target_monitor.as_ref() {
         let pos = monitor.position();
         let size = monitor.size();
-        let screen_x = pos.x as f64;
-        let screen_y = pos.y as f64;
-        let screen_width = size.width as f64;
-        let screen_height = size.height as f64;
-        let edge_margin = logical_to_physical_f64(VOICE_WINDOW_EDGE_MARGIN, scale);
-        let bottom_margin = logical_to_physical_f64(VOICE_WINDOW_BOTTOM_MARGIN, scale);
-        let window_width = physical_width as f64;
-        let window_height = physical_height as f64;
+        let screen_pos = pos.to_logical::<f64>(scale);
+        let screen_size = size.to_logical::<f64>(scale);
+        let screen_x = screen_pos.x;
+        let screen_y = screen_pos.y;
+        let screen_width = screen_size.width;
+        let screen_height = screen_size.height;
+        let edge_margin = VOICE_WINDOW_EDGE_MARGIN;
+        let bottom_margin = VOICE_WINDOW_BOTTOM_MARGIN;
+        let window_width = width;
+        let window_height = height;
         let min_x = screen_x + edge_margin;
         let max_x = (screen_x + screen_width - window_width - edge_margin).max(min_x);
         let x = (screen_x + (screen_width - window_width) / 2.0).clamp(min_x, max_x);
         let min_y = screen_y + edge_margin;
         let max_y = (screen_y + screen_height - window_height - edge_margin).max(min_y);
         let y = (screen_y + screen_height - window_height - bottom_margin).clamp(min_y, max_y);
-        let _ = window.set_position(tauri::PhysicalPosition::new(f64_to_i32(x), f64_to_i32(y)));
+        let _ = window.set_position(tauri::LogicalPosition::new(x, y));
     }
 
     monitor_key
@@ -2304,20 +2304,6 @@ fn monitor_contains_physical_point(monitor: &tauri::window::Monitor, x: f64, y: 
     let left = pos.x as f64;
     let top = pos.y as f64;
     x >= left && x < left + size.width as f64 && y >= top && y < top + size.height as f64
-}
-
-fn logical_to_physical(value: f64, scale: f64) -> u32 {
-    logical_to_physical_f64(value, scale)
-        .clamp(1.0, u32::MAX as f64)
-        .round() as u32
-}
-
-fn logical_to_physical_f64(value: f64, scale: f64) -> f64 {
-    (value * scale).round()
-}
-
-fn f64_to_i32(value: f64) -> i32 {
-    value.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
 }
 
 fn hide_voice_window(app: &tauri::AppHandle) {
