@@ -17,6 +17,8 @@ use base64::Engine;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::fs;
 use std::io::{Cursor, Write};
 #[cfg(target_os = "macos")]
 use std::os::raw::c_void;
@@ -30,6 +32,8 @@ use system_tap::SystemTap;
 use tauri::{Emitter, Manager};
 
 const SPEECH_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
+const APPLE_SPEECH_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const APPLE_SPEECH_INSTALL_TIMEOUT: Duration = Duration::from_secs(900);
 const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const AUDIO_INPUT_DEVICES_CHANGED_EVENT: &str = "audio-input-devices-changed";
 const VOICE_WINDOW_EDGE_MARGIN: f64 = 16.0;
@@ -74,6 +78,30 @@ pub struct SpeechSetupCheck {
     pub ok: bool,
     pub message: String,
     pub details: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppleSpeechStatus {
+    pub helper_available: bool,
+    pub supported: bool,
+    pub status: String,
+    pub authorization: String,
+    pub message: String,
+    pub details: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppleSpeechHelperResponse {
+    ok: bool,
+    status: Option<String>,
+    supported: Option<bool>,
+    authorization: Option<String>,
+    reason: Option<String>,
+    error: Option<String>,
+    details: Option<Vec<String>>,
+    transcript: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1474,7 +1502,7 @@ mod audio_input_device_watcher {
 }
 
 pub async fn check_speech_profile_setup(
-    _app: &tauri::AppHandle,
+    app: &tauri::AppHandle,
     profile: SpeechProfile,
     settings: AppSettings,
 ) -> Result<SpeechSetupCheck, String> {
@@ -1494,6 +1522,10 @@ pub async fn check_speech_profile_setup(
             "Gemini APIキーが保存されています。",
             "Gemini APIキーを保存してください。",
         )),
+        SpeechProfile::AppleSpeechAnalyzer => {
+            let status = apple_speech_status(app, true)?;
+            Ok(apple_speech_setup_check(&status))
+        }
     }
 }
 
@@ -1604,6 +1636,7 @@ async fn transcribe(
             transcribe_openai(app, "gpt-4o-mini-transcribe", settings, entries, clip).await
         }
         SpeechProfile::GeminiAudio => transcribe_gemini_audio(app, settings, entries, clip).await,
+        SpeechProfile::AppleSpeechAnalyzer => transcribe_apple_speech(app, entries, clip).await,
     }
 }
 
@@ -1629,6 +1662,257 @@ fn speech_request_error(provider: &str, err: reqwest::Error) -> String {
     } else {
         err.to_string()
     }
+}
+
+pub fn apple_speech_status(
+    app: &tauri::AppHandle,
+    request_authorization: bool,
+) -> Result<AppleSpeechStatus, String> {
+    match run_apple_speech_helper(
+        app,
+        &[
+            "status".to_string(),
+            "ja-JP".to_string(),
+            if request_authorization {
+                "--request-authorization".to_string()
+            } else {
+                "--no-request-authorization".to_string()
+            },
+        ],
+        APPLE_SPEECH_REQUEST_TIMEOUT,
+    ) {
+        Ok(response) => Ok(apple_status_from_helper(response)),
+        Err(err) => Ok(AppleSpeechStatus {
+            helper_available: false,
+            supported: false,
+            status: "unknown".to_string(),
+            authorization: "unknown".to_string(),
+            message: "Apple SpeechAnalyzer helperを利用できません。".to_string(),
+            details: vec![err],
+        }),
+    }
+}
+
+pub fn install_apple_speech_model(app: &tauri::AppHandle) -> Result<AppleSpeechStatus, String> {
+    let response = run_apple_speech_helper(
+        app,
+        &["install".to_string(), "ja-JP".to_string()],
+        APPLE_SPEECH_INSTALL_TIMEOUT,
+    )?;
+    Ok(apple_status_from_helper(response))
+}
+
+fn apple_status_from_helper(response: AppleSpeechHelperResponse) -> AppleSpeechStatus {
+    let status = response.status.unwrap_or_else(|| "unknown".to_string());
+    let authorization = response
+        .authorization
+        .unwrap_or_else(|| "unknown".to_string());
+    let supported = response.supported.unwrap_or(status != "unsupported");
+    let reason = response.reason.or(response.error);
+    let mut details = response.details.unwrap_or_default();
+    if let Some(reason) = reason.as_ref() {
+        if !reason.trim().is_empty() {
+            details.insert(0, reason.clone());
+        }
+    }
+    let message = if response.ok {
+        match (supported, status.as_str(), authorization.as_str()) {
+            (false, _, _) => "このMacではApple SpeechAnalyzerを利用できません。".to_string(),
+            (_, "installed", "authorized") => {
+                "Apple SpeechAnalyzer日本語モデルは利用可能です。".to_string()
+            }
+            (_, "installed", "notDetermined") => {
+                "Apple SpeechAnalyzer日本語モデルはインストール済みです。音声認識権限の確認が必要です。"
+                    .to_string()
+            }
+            (_, "installed", "denied" | "restricted") => {
+                "音声認識権限が許可されていません。macOSの設定で許可してください。".to_string()
+            }
+            (_, "downloading", _) => {
+                "Apple SpeechAnalyzer日本語モデルをインストール中です。".to_string()
+            }
+            (_, "supported", _) => {
+                "Apple SpeechAnalyzer日本語モデルは未インストールです。".to_string()
+            }
+            _ => "Apple SpeechAnalyzerの状態を確認しました。".to_string(),
+        }
+    } else {
+        "Apple SpeechAnalyzerの状態確認に失敗しました。".to_string()
+    };
+
+    AppleSpeechStatus {
+        helper_available: true,
+        supported,
+        status,
+        authorization,
+        message,
+        details,
+    }
+}
+
+fn apple_speech_setup_check(status: &AppleSpeechStatus) -> SpeechSetupCheck {
+    let ok = status.helper_available
+        && status.supported
+        && status.status == "installed"
+        && status.authorization == "authorized";
+    let mut details = vec![
+        format!("モデル状態: {}", status.status),
+        format!("音声認識権限: {}", status.authorization),
+    ];
+    details.extend(status.details.clone());
+    SpeechSetupCheck {
+        ok,
+        message: status.message.clone(),
+        details,
+    }
+}
+
+fn run_apple_speech_helper(
+    app: &tauri::AppHandle,
+    args: &[String],
+    timeout: Duration,
+) -> Result<AppleSpeechHelperResponse, String> {
+    let helper = resolve_apple_speech_helper(app)?;
+    let mut command = std::process::Command::new(&helper);
+    command.args(args);
+    let output = command_output_with_timeout(
+        command,
+        timeout,
+        &format!("Apple SpeechAnalyzer helper（path: {}）", helper.display()),
+    )?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let response = if stdout.is_empty() {
+        None
+    } else {
+        serde_json::from_str::<AppleSpeechHelperResponse>(&stdout).ok()
+    };
+    if let Some(response) = response {
+        if response.ok || response.status.is_some() {
+            return Ok(response);
+        }
+        return Err(response
+            .error
+            .or(response.reason)
+            .unwrap_or_else(|| "Apple SpeechAnalyzer helperが失敗しました。".to_string()));
+    }
+    let detail = if stderr.is_empty() {
+        stdout
+    } else if stdout.is_empty() {
+        stderr
+    } else {
+        format!("{stdout}\n{stderr}")
+    };
+    Err(if detail.trim().is_empty() {
+        "Apple SpeechAnalyzer helperからJSON応答が返りませんでした。".to_string()
+    } else {
+        detail
+    })
+}
+
+fn resolve_apple_speech_helper(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let executable_name = "enja-speech-helper";
+    let target_name = format!("enja-speech-helper-{}", env!("ENJA_TARGET_TRIPLE"));
+    let mut candidates = Vec::<PathBuf>::new();
+    if let Ok(path) = std::env::var("ENJA_SPEECH_HELPER_PATH") {
+        candidates.push(PathBuf::from(path));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join(executable_name));
+        }
+    }
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join(executable_name));
+    }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("bin")
+            .join(target_name),
+    );
+
+    for path in &candidates {
+        if path.is_file() {
+            return Ok(path.clone());
+        }
+    }
+    Err(format!(
+        "Apple SpeechAnalyzer helperが見つかりません。探した場所: {}",
+        candidates
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+async fn transcribe_apple_speech(
+    app: &tauri::AppHandle,
+    entries: &[DictionaryEntry],
+    clip: &AudioClip,
+) -> Result<String, String> {
+    let wav_path = temp_voice_file_path("apple-speech", "wav");
+    let context_path = temp_voice_file_path("apple-speech-context", "json");
+    fs::write(&wav_path, &clip.wav).map_err(|e| e.to_string())?;
+    let context = serde_json::json!({
+        "contextualStrings": apple_speech_contextual_strings(entries),
+    });
+    fs::write(&context_path, context.to_string()).map_err(|e| e.to_string())?;
+
+    let args = vec![
+        "transcribe".to_string(),
+        wav_path.display().to_string(),
+        "ja-JP".to_string(),
+        context_path.display().to_string(),
+    ];
+    let result =
+        run_apple_speech_helper(app, &args, APPLE_SPEECH_REQUEST_TIMEOUT).and_then(|response| {
+            response
+                .transcript
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    response.error.or(response.reason).unwrap_or_else(|| {
+                        "Apple SpeechAnalyzerの文字起こし結果が空でした。".to_string()
+                    })
+                })
+        });
+
+    let _ = fs::remove_file(&wav_path);
+    let _ = fs::remove_file(&context_path);
+    result
+}
+
+fn apple_speech_contextual_strings(entries: &[DictionaryEntry]) -> Vec<String> {
+    let mut seen = HashSet::<String>::new();
+    let mut values = Vec::<String>::new();
+    for entry in entries.iter().filter(|entry| entry.enabled) {
+        for candidate in std::iter::once(&entry.preferred).chain(entry.aliases.iter()) {
+            let value = candidate.trim();
+            if value.is_empty() || value.chars().count() > 40 {
+                continue;
+            }
+            let key = value.to_lowercase();
+            if seen.insert(key) {
+                values.push(value.to_string());
+                if values.len() >= 100 {
+                    return values;
+                }
+            }
+        }
+    }
+    values
+}
+
+fn temp_voice_file_path(label: &str, extension: &str) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "enja-{label}-{}-{nonce}.{extension}",
+        std::process::id()
+    ))
 }
 
 async fn transcribe_google_chirp3(

@@ -20,7 +20,7 @@ use settings::{
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager, Runtime, State};
 use tauri_plugin_autostart::ManagerExt;
-use voice::{AudioInputDevice, SpeechSetupCheck, VoiceManager, VoiceMode};
+use voice::{AppleSpeechStatus, AudioInputDevice, SpeechSetupCheck, VoiceManager, VoiceMode};
 
 fn show_main_window<R: Runtime>(app: &impl Manager<R>) {
     if let Some(w) = app.get_webview_window("main") {
@@ -202,6 +202,19 @@ async fn check_speech_setup(
     voice::check_speech_profile_setup(&app, profile, settings).await
 }
 
+#[tauri::command]
+fn get_apple_speech_status(
+    app: tauri::AppHandle,
+    request_authorization: bool,
+) -> Result<AppleSpeechStatus, String> {
+    voice::apple_speech_status(&app, request_authorization)
+}
+
+#[tauri::command]
+fn install_apple_speech_model(app: tauri::AppHandle) -> Result<AppleSpeechStatus, String> {
+    voice::install_apple_speech_model(&app)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let (trigger_tx, trigger_rx) = std::sync::mpsc::channel::<KeyboardTrigger>();
@@ -273,6 +286,8 @@ pub fn run() {
             get_provider_status,
             get_api_usage_events,
             check_speech_setup,
+            get_apple_speech_status,
+            install_apple_speech_model,
             get_prompt_catalog,
             start_shortcut_capture,
             cancel_shortcut_capture

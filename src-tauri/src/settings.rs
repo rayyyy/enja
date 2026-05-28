@@ -30,6 +30,7 @@ pub enum SpeechProfile {
     OpenAiGpt4oTranscribe,
     OpenAiGpt4oMiniTranscribe,
     GeminiAudio,
+    AppleSpeechAnalyzer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

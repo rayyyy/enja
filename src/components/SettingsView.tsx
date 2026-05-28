@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type {
   AppSettings,
   ApiUsageEvent,
+  AppleSpeechStatus,
   AudioInputDevice,
   FinalizationModel,
   PromptOverrides,
@@ -39,9 +40,11 @@ import {
   checkSpeechSetup,
   cancelShortcutCapture,
   getApiUsageEvents,
+  getAppleSpeechStatus,
   getPromptCatalog,
   getProviderStatus,
   getSettings,
+  installAppleSpeechModel,
   listAudioInputDevices,
   saveProviderSecret,
   saveSettings,
@@ -222,6 +225,45 @@ const SPEECH_PROFILES: SpeechProfileOption[] = [
       },
     ],
   },
+  {
+    value: "appleSpeechAnalyzer",
+    label: "Apple SpeechAnalyzer",
+    badge: "オンデバイス",
+    note: "対応Mac上で日本語モデルを端末にインストールし、録音WAVをローカルで文字起こしします。",
+    price: "無料",
+    priceNote: "STTはオンデバイス",
+    speed: "高",
+    accuracy: "検証中",
+    accuracyNote: "日本語/辞書ヒント",
+    setupSummary:
+      "macOS 26以降の対応端末で、日本語モデルと音声認識権限を設定します。",
+    setupSteps: [
+      "このセットアップ画面で状態確認を実行し、音声認識権限を許可します。",
+      "日本語モデルが未インストールの場合は、モデルをインストールします。",
+      "状態が利用可能になったら、音声認識モデルでApple SpeechAnalyzerを選択します。",
+      "録音停止後、Enjaは録音WAVを端末内のApple SpeechAnalyzerへ渡します。",
+    ],
+    enjaDataFlow: [
+      "Enjaは録音WAVを外部APIへ送らず、Swift helper経由でApple SpeechAnalyzerへ渡します。",
+      "辞書に登録した短い優先表記/別名は最大100件までcontextualStringsとして渡します。",
+      "整形が有効な音声モードでは、文字起こし結果をGeminiの整形モデルへ渡します。",
+      "失敗時にGoogle/OpenAI/Geminiへ自動フォールバックしません。",
+    ],
+    docs: [
+      {
+        label: "SpeechAnalyzer",
+        url: "https://developer.apple.com/documentation/speech/speechanalyzer",
+      },
+      {
+        label: "DictationTranscriber",
+        url: "https://developer.apple.com/documentation/speech/dictationtranscriber",
+      },
+      {
+        label: "AssetInventory",
+        url: "https://developer.apple.com/documentation/speech/assetinventory",
+      },
+    ],
+  },
 ];
 
 const FINALIZATION_MODELS: { value: FinalizationModel; label: string }[] = [
@@ -259,8 +301,11 @@ export function SettingsView() {
     null,
   );
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
+  const [appleSpeechStatus, setAppleSpeechStatus] =
+    useState<AppleSpeechStatus | null>(null);
   const [usageEvents, setUsageEvents] = useState<ApiUsageEvent[]>([]);
   const [refreshingUsage, setRefreshingUsage] = useState(false);
+  const [installingAppleSpeech, setInstallingAppleSpeech] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSection>("voice");
@@ -276,16 +321,18 @@ export function SettingsView() {
 
   useEffect(() => {
     void (async () => {
-      const [s, status, catalog, usage] = await Promise.all([
+      const [s, status, catalog, usage, appleStatus] = await Promise.all([
         getSettings(),
         getProviderStatus().catch(() => null),
         getPromptCatalog(),
         getApiUsageEvents().catch(() => []),
+        getAppleSpeechStatus(false).catch(() => null),
       ]);
       setSettings(s);
       setProviderStatus(status);
       setPromptCatalog(catalog);
       setUsageEvents(usage);
+      setAppleSpeechStatus(appleStatus);
     })();
   }, []);
 
@@ -439,11 +486,22 @@ export function SettingsView() {
     setSetupCheck(null);
   }
 
+  async function refreshAppleSpeechStatus(requestAuthorization: boolean) {
+    const status = await getAppleSpeechStatus(requestAuthorization);
+    setAppleSpeechStatus(status);
+    return status;
+  }
+
   async function handleSetupCheck(profile: SpeechProfile) {
     if (!settings) return;
     setCheckingSetup(true);
     setSetupCheck(null);
     try {
+      if (profile === "appleSpeechAnalyzer") {
+        const status = await refreshAppleSpeechStatus(true);
+        setSetupCheck(appleSpeechStatusToCheck(status));
+        return;
+      }
       setSetupCheck(await checkSpeechSetup(profile, settings));
     } catch (e) {
       setSetupCheck({
@@ -453,6 +511,24 @@ export function SettingsView() {
       });
     } finally {
       setCheckingSetup(false);
+    }
+  }
+
+  async function handleAppleSpeechInstall() {
+    setInstallingAppleSpeech(true);
+    setSetupCheck(null);
+    try {
+      const status = await installAppleSpeechModel();
+      setAppleSpeechStatus(status);
+      setSetupCheck(appleSpeechStatusToCheck(status));
+    } catch (e) {
+      setSetupCheck({
+        ok: false,
+        message: String(e),
+        details: [],
+      });
+    } finally {
+      setInstallingAppleSpeech(false);
     }
   }
 
@@ -587,21 +663,38 @@ export function SettingsView() {
                   </p>
                 </div>
                 <div className="flex flex-col gap-2">
-                  {SPEECH_PROFILES.map((profile) => (
-                    <SpeechProfileRow
-                      key={profile.value}
-                      profile={profile}
-                      selected={settings.voice.speechProfile === profile.value}
-                      requirements={profileRequirements(
-                        profile.value,
-                        settings,
-                        providerStatus,
-                        secrets,
-                      )}
-                      onSelect={() => patchVoice({ speechProfile: profile.value })}
-                      onSetup={() => openSetup(profile.value)}
-                    />
-                  ))}
+                  {SPEECH_PROFILES.map((profile) => {
+                    const requirements = profileRequirements(
+                      profile.value,
+                      settings,
+                      providerStatus,
+                      secrets,
+                      appleSpeechStatus,
+                    );
+                    const configured = requirements.every((item) => item.ok);
+                    const disabled =
+                      profile.value === "appleSpeechAnalyzer" && !configured;
+                    return (
+                      <SpeechProfileRow
+                        key={profile.value}
+                        profile={profile}
+                        selected={settings.voice.speechProfile === profile.value}
+                        requirements={requirements}
+                        disabled={disabled}
+                        onSelect={() => {
+                          if (disabled) {
+                            setMsg(
+                              "Apple SpeechAnalyzerは、設定画面で日本語モデルと音声認識権限を準備してから選択できます。",
+                            );
+                            openSetup(profile.value);
+                            return;
+                          }
+                          patchVoice({ speechProfile: profile.value });
+                        }}
+                        onSetup={() => openSetup(profile.value)}
+                      />
+                    );
+                  })}
                 </div>
               </div>
 
@@ -789,11 +882,18 @@ export function SettingsView() {
             settings,
             providerStatus,
             secrets,
+            appleSpeechStatus,
           )}
           onClose={() => setSetupProfile(null)}
           checking={checkingSetup}
           checkResult={setupCheck}
           onCheck={() => void handleSetupCheck(activeSetupProfile.value)}
+          installingAppleSpeech={installingAppleSpeech}
+          onInstallAppleSpeech={
+            activeSetupProfile.value === "appleSpeechAnalyzer"
+              ? () => void handleAppleSpeechInstall()
+              : undefined
+          }
         />
       ) : null}
     </div>
@@ -809,6 +909,7 @@ function profileRequirements(
     openai: string;
     googleServiceAccount: string;
   },
+  appleSpeechStatus: AppleSpeechStatus | null,
 ) {
   switch (profile) {
     case "googleChirp3":
@@ -863,6 +964,81 @@ function profileRequirements(
               : "未保存",
         },
       ];
+    case "appleSpeechAnalyzer":
+      return [
+        {
+          label: "対応",
+          ok: Boolean(appleSpeechStatus?.helperAvailable && appleSpeechStatus.supported),
+          value: appleSpeechStatus
+            ? appleSpeechStatus.supported
+              ? "対応"
+              : "未対応"
+            : "未確認",
+        },
+        {
+          label: "日本語モデル",
+          ok: appleSpeechStatus?.status === "installed",
+          value: appleSpeechStatus
+            ? appleSpeechModelStatusLabel(appleSpeechStatus.status)
+            : "未確認",
+        },
+        {
+          label: "音声認識権限",
+          ok: appleSpeechStatus?.authorization === "authorized",
+          value: appleSpeechAuthorizationLabel(
+            appleSpeechStatus?.authorization ?? "unknown",
+          ),
+        },
+      ];
+  }
+}
+
+function appleSpeechStatusToCheck(status: AppleSpeechStatus): SpeechSetupCheck {
+  const ok =
+    status.helperAvailable &&
+    status.supported &&
+    status.status === "installed" &&
+    status.authorization === "authorized";
+  return {
+    ok,
+    message: status.message,
+    details: [
+      `モデル状態: ${appleSpeechModelStatusLabel(status.status)}`,
+      `音声認識権限: ${appleSpeechAuthorizationLabel(status.authorization)}`,
+      ...status.details,
+    ],
+  };
+}
+
+function appleSpeechModelStatusLabel(status: AppleSpeechStatus["status"]) {
+  switch (status) {
+    case "installed":
+      return "利用可能";
+    case "supported":
+      return "未インストール";
+    case "downloading":
+      return "インストール中";
+    case "unsupported":
+      return "未対応";
+    case "unknown":
+      return "不明";
+  }
+}
+
+function appleSpeechAuthorizationLabel(
+  authorization: AppleSpeechStatus["authorization"],
+) {
+  switch (authorization) {
+    case "authorized":
+      return "許可済み";
+    case "notDetermined":
+      return "未確認";
+    case "denied":
+      return "拒否";
+    case "restricted":
+      return "制限";
+    case "unknown":
+      return "不明";
   }
 }
 
@@ -870,12 +1046,14 @@ function SpeechProfileRow({
   profile,
   selected,
   requirements,
+  disabled,
   onSelect,
   onSetup,
 }: {
   profile: SpeechProfileOption;
   selected: boolean;
   requirements: ReturnType<typeof profileRequirements>;
+  disabled?: boolean;
   onSelect: () => void;
   onSetup: () => void;
 }) {
@@ -885,6 +1063,7 @@ function SpeechProfileRow({
     <div
       role="button"
       aria-pressed={selected}
+      aria-disabled={disabled}
       tabIndex={0}
       onClick={onSelect}
       onKeyDown={(event) => {
@@ -896,7 +1075,7 @@ function SpeechProfileRow({
       }}
       className={`grid w-full gap-4 rounded-xl px-4 py-4 text-left transition lg:grid-cols-[minmax(0,1fr)_auto] ${
         selected ? "bg-blue-50" : "bg-neutral-100/70 hover:bg-neutral-100"
-      }`}
+      } ${disabled ? "cursor-not-allowed opacity-75" : ""}`}
     >
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
@@ -980,6 +1159,8 @@ function SetupDialog({
   checking,
   checkResult,
   onCheck,
+  installingAppleSpeech,
+  onInstallAppleSpeech,
 }: {
   profile: SpeechProfileOption;
   requirements: ReturnType<typeof profileRequirements>;
@@ -987,6 +1168,8 @@ function SetupDialog({
   checking: boolean;
   checkResult: SpeechSetupCheck | null;
   onCheck: () => void;
+  installingAppleSpeech: boolean;
+  onInstallAppleSpeech?: () => void;
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-[2px]">
@@ -1010,8 +1193,18 @@ function SetupDialog({
               disabled={checking}
               className="rounded-lg bg-blue-100 px-2.5 py-1 text-xs font-medium text-blue-700 transition hover:bg-blue-200/70 disabled:opacity-50"
             >
-              {checking ? "確認中…" : "疎通確認"}
+              {checking ? "確認中…" : profile.value === "appleSpeechAnalyzer" ? "状態確認" : "疎通確認"}
             </button>
+            {onInstallAppleSpeech ? (
+              <button
+                type="button"
+                onClick={onInstallAppleSpeech}
+                disabled={installingAppleSpeech}
+                className="rounded-lg bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-700 transition hover:bg-emerald-200/70 disabled:opacity-50"
+              >
+                {installingAppleSpeech ? "インストール中…" : "モデルをインストール"}
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={onClose}

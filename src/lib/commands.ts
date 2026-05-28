@@ -3,6 +3,7 @@ import { Channel } from "@tauri-apps/api/core";
 import type {
   AppSettings,
   ApiUsageEvent,
+  AppleSpeechStatus,
   AudioInputDevice,
   DictionaryEntry,
   DictionaryEntryInput,
@@ -107,4 +108,16 @@ export async function checkSpeechSetup(
   settings: AppSettings,
 ): Promise<SpeechSetupCheck> {
   return invoke<SpeechSetupCheck>("check_speech_setup", { profile, settings });
+}
+
+export async function getAppleSpeechStatus(
+  requestAuthorization: boolean,
+): Promise<AppleSpeechStatus> {
+  return invoke<AppleSpeechStatus>("get_apple_speech_status", {
+    requestAuthorization,
+  });
+}
+
+export async function installAppleSpeechModel(): Promise<AppleSpeechStatus> {
+  return invoke<AppleSpeechStatus>("install_apple_speech_model");
 }

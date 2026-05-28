@@ -26,7 +26,7 @@
 | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | **Default translation model**   | `gemini-3.1-flash-lite-preview`（[`src-tauri/src/gemini.rs`](src-tauri/src/gemini.rs) 内の定数。Google の提供状況により変更の可能性あり） |
 | **Default voice finalizer**     | `gemini-3.5-flash`（音声認識結果の整形・音声指示の最終出力に使用）                                                                         |
-| **Speech recognition options**  | Google Speech-to-Text Chirp 3 / OpenAI gpt-4o transcribe / Gemini 音声入力                                                                 |
+| **Speech recognition options**  | Google Speech-to-Text Chirp 3 / OpenAI gpt-4o transcribe / Gemini 音声入力 / Apple SpeechAnalyzer                                          |
 | **License**                     | [MIT](LICENSE)                                                                                                                            |
 | **Contributing**                | [CONTRIBUTING.md](CONTRIBUTING.md)                                                                                                        |
 | **Security**                    | [SECURITY.md](SECURITY.md) · [Code of Conduct](CODE_OF_CONDUCT.md)                                                                        |
@@ -34,7 +34,7 @@
 ## プライバシーとデータの取り扱い
 
 - **クリップボード / 選択テキスト**: Cmd+C 連打の翻訳ではクリップボードのテキストが、音声指示では選択テキストが **Google Gemini API**（`generativelanguage.googleapis.com`）へ送信されることがあります。Google の利用規約・プライバシーポリシーが適用されます。
-- **音声データ**: 音声入力では録音した音声が、設定した音声認識プロバイダ（Google Speech-to-Text / OpenAI / Gemini）へ送信されます。認識結果は Gemini で自然な文章に整形され、音声指示では選択テキストと指示内容をもとに最終テキストを生成します。
+- **音声データ**: 音声入力では録音した音声が、設定した音声認識プロバイダ（Google Speech-to-Text / OpenAI / Gemini）へ送信されます。Apple SpeechAnalyzerを選択した場合、音声認識は対応Mac上のオンデバイス処理です。認識結果は Gemini で自然な文章に整形され、音声指示では選択テキストと指示内容をもとに最終テキストを生成します（整形しない音声モードでは認識結果をそのまま使います）。
 - **API キー / 認証情報**: アプリの設定で保存した Gemini / OpenAI API キーや Google Service Account は macOS Keychain（実装は [`src-tauri/src/secrets.rs`](src-tauri/src/secrets.rs)）に保存され、`settings.json` にはモデル・ショートカット・プロンプトなどの非秘密情報だけを書き込みます。リポジトリや Issue にキーを載せないでください。
 - **常駐と権限**: グローバルなショートカット検出、マイク録音、現在の入力先への貼り付けには macOS の権限が必要です（下記「macOS の権限」）。
 
@@ -45,6 +45,7 @@
 | [mise](https://mise.jdx.dev/)（推奨）                 | Bun / Rust のバージョン管理                        |
 | [Gemini API キー](https://aistudio.google.com/apikey) | 翻訳、音声入力結果の整形、音声指示の最終生成       |
 | 音声認識プロバイダの認証情報                          | Google Chirp 3 / OpenAI / Gemini 音声入力を使う場合          |
+| Apple SpeechAnalyzer対応SDK                           | Apple SpeechAnalyzer helperをビルドする場合（未対応SDKではアプリ本体のみビルド可能） |
 | Xcode Command Line Tools（macOS）                     | リンカ・SDK（未導入なら `xcode-select --install`） |
 
 このリポジトリでは **[mise.toml](mise.toml)** で **Bun** と **Rust** のバージョンを固定しています。mise を使わない場合は、同等以上のバージョンを手動で入れてください。
@@ -149,7 +150,7 @@ macOS でアプリを `/Applications` に置いて常用する場合、コード
 
 - **フロント**: React + TypeScript + Vite + Tailwind CSS v4 + Zustand
 - **ネイティブ**: Tauri 2（Rust）。macOS では **CGEventTap** によるパッシブなキー監視（[`src-tauri/src/keyboard.rs`](src-tauri/src/keyboard.rs)）、**arboard** でクリップボード読み取り / 貼り付け、**cpal** でマイク録音。
-- **Gemini / 音声**: フロントから `translate` や音声セッションを `invoke` し、Rust の **reqwest** で Gemini の SSE ストリーム、音声認識プロバイダ、最終整形を処理して UI に渡す（[`src-tauri/src/lib.rs`](src-tauri/src/lib.rs)、[`src-tauri/src/gemini.rs`](src-tauri/src/gemini.rs)、[`src-tauri/src/voice.rs`](src-tauri/src/voice.rs)）
+- **Gemini / 音声**: フロントから `translate` や音声セッションを `invoke` し、Rust の **reqwest** で Gemini の SSE ストリーム、クラウド音声認識プロバイダ、最終整形を処理して UI に渡す。Apple SpeechAnalyzerはSwift helperでオンデバイス認識します（[`src-tauri/src/lib.rs`](src-tauri/src/lib.rs)、[`src-tauri/src/gemini.rs`](src-tauri/src/gemini.rs)、[`src-tauri/src/voice.rs`](src-tauri/src/voice.rs)、[`docs/apple-speechanalyzer.md`](docs/apple-speechanalyzer.md)）
 
 詳細は [docs/architecture.md](docs/architecture.md) を参照してください。
 

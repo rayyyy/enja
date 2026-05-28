@@ -9,7 +9,8 @@ export type SpeechProfile =
   | "googleChirp3"
   | "openAiGpt4oTranscribe"
   | "openAiGpt4oMiniTranscribe"
-  | "geminiAudio";
+  | "geminiAudio"
+  | "appleSpeechAnalyzer";
 
 export type FinalizationModel =
   | "gemini31ProPreview"
@@ -149,6 +150,29 @@ export type ProviderStatus = {
 
 export type SpeechSetupCheck = {
   ok: boolean;
+  message: string;
+  details: string[];
+};
+
+export type AppleSpeechStatusValue =
+  | "unknown"
+  | "unsupported"
+  | "supported"
+  | "downloading"
+  | "installed";
+
+export type AppleSpeechAuthorization =
+  | "unknown"
+  | "notDetermined"
+  | "denied"
+  | "restricted"
+  | "authorized";
+
+export type AppleSpeechStatus = {
+  helperAvailable: boolean;
+  supported: boolean;
+  status: AppleSpeechStatusValue;
+  authorization: AppleSpeechAuthorization;
   message: string;
   details: string[];
 };
