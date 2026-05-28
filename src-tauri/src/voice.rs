@@ -2171,11 +2171,14 @@ fn next_voice_state_seq() -> u64 {
 
 fn show_voice_window(app: &tauri::AppHandle, expanded: bool) {
     let Some(window) = app.get_webview_window("voice") else {
+        crate::keyboard::set_voice_overlay_visible(false);
         return;
     };
     let monitor_key = configure_voice_window(app, &window, expanded);
     let _ = window.set_always_on_top(true);
-    let _ = window.show();
+    if window.show().is_ok() {
+        crate::keyboard::set_voice_overlay_visible(true);
+    }
     start_voice_window_follow(app, expanded, monitor_key);
 }
 
@@ -2308,6 +2311,7 @@ fn monitor_contains_physical_point(monitor: &tauri::window::Monitor, x: f64, y: 
 
 fn hide_voice_window(app: &tauri::AppHandle) {
     stop_voice_window_follow();
+    crate::keyboard::set_voice_overlay_visible(false);
     if let Some(window) = app.get_webview_window("voice") {
         let _ = window.hide();
     }

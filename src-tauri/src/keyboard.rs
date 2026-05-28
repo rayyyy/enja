@@ -164,6 +164,7 @@ mod macos {
         /// window. A Space arriving during this window upgrades the gesture
         /// from "Fn tap" to "Fn+Space".
         fn_recent_release: bool,
+        voice_overlay_visible: bool,
         /// Monotonically bumped whenever a pending FunctionTap must be
         /// invalidated (Fn re-press, Space chord in grace window, Escape,
         /// etc.). A scheduled tap only fires if its captured token still
@@ -258,8 +259,12 @@ mod macos {
                 if keycode == KEYCODE_ESCAPE {
                     // Any pending FunctionTap should be dropped — the user is
                     // explicitly cancelling.
+                    let should_swallow = state.voice_overlay_visible;
                     invalidate_pending_fn_tap(state);
                     let _ = state.tx.send(KeyboardTrigger::Escape);
+                    if should_swallow {
+                        return std::ptr::null_mut();
+                    }
                     return event;
                 }
                 if keycode == KEYCODE_SPACE && (state.fn_down || state.fn_recent_release) {
@@ -599,6 +604,7 @@ mod macos {
                 fn_chord_used: false,
                 fn_space_down: false,
                 fn_recent_release: false,
+                voice_overlay_visible: false,
                 fn_release_generation: 0,
                 capture_action: None,
                 capture_fn_down: false,
@@ -720,6 +726,7 @@ mod macos {
                     fn_chord_used: false,
                     fn_space_down: false,
                     fn_recent_release: false,
+                    voice_overlay_visible: false,
                     fn_release_generation: 0,
                     capture_action: None,
                     capture_fn_down: false,
@@ -774,11 +781,20 @@ mod macos {
         }
         Ok(())
     }
+
+    pub fn set_voice_overlay_visible(visible: bool) {
+        if let Ok(mut guard) = LISTENER_STATE.lock() {
+            if let Some(state) = guard.as_mut() {
+                state.voice_overlay_visible = visible;
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
 pub use macos::{
-    begin_shortcut_capture, cancel_shortcut_capture, spawn_listener, update_runtime_settings,
+    begin_shortcut_capture, cancel_shortcut_capture, set_voice_overlay_visible, spawn_listener,
+    update_runtime_settings,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -800,3 +816,6 @@ pub fn begin_shortcut_capture(_action: ShortcutAction) -> Result<(), String> {
 pub fn cancel_shortcut_capture() -> Result<(), String> {
     Ok(())
 }
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_voice_overlay_visible(_visible: bool) {}
