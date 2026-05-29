@@ -17,6 +17,8 @@ use base64::Engine;
 #[cfg(target_os = "macos")]
 use core_foundation::base::TCFType;
 #[cfg(target_os = "macos")]
+use core_foundation::boolean::CFBoolean;
+#[cfg(target_os = "macos")]
 use core_foundation::string::{CFString, CFStringRef};
 #[cfg(target_os = "macos")]
 use core_foundation_sys::base::{CFGetTypeID, CFTypeRef};
@@ -25,7 +27,7 @@ use core_foundation_sys::string::CFStringGetTypeID;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Cursor, Write};
 #[cfg(target_os = "macos")]
@@ -35,7 +37,7 @@ use std::os::raw::c_void;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use system_tap::SystemTap;
@@ -61,8 +63,16 @@ const DICTIONARY_UNDO_NOTICE_MS: u64 = 900;
 const MIN_LEARNED_CORRECTION_CHARS: usize = 2;
 const MAX_LEARNED_CORRECTION_CHARS: usize = 40;
 const MIN_FULL_INSERT_REWRITE_CHARS: usize = 12;
+#[cfg(target_os = "macos")]
+const MANUAL_ACCESSIBILITY_POLL_ATTEMPTS: usize = 10;
+#[cfg(target_os = "macos")]
+const MANUAL_ACCESSIBILITY_POLL_INTERVAL: Duration = Duration::from_millis(30);
+#[cfg(target_os = "macos")]
+const MANUAL_ACCESSIBILITY_FAILURE_TTL: Duration = Duration::from_secs(2);
 static VOICE_STATE_SEQ: AtomicU64 = AtomicU64::new(1);
 static VOICE_WINDOW_FOLLOW_SEQ: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "macos")]
+static MANUAL_ACCESSIBILITY_CACHE: OnceLock<Mutex<ManualAccessibilityCache>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct VoiceWindowMonitorKey {
@@ -185,6 +195,7 @@ impl VoiceWindowLayout {
 
 #[derive(Debug, Clone)]
 struct PasteTargetInfo {
+    pid: Option<i32>,
     role: String,
     subrole: String,
     attributes: HashSet<String>,
@@ -196,24 +207,52 @@ impl PasteTargetInfo {
             return None;
         }
 
-        let mut lines = output.lines();
-        let role = lines.next().unwrap_or_default().trim().to_string();
-        let subrole = lines.next().unwrap_or_default().trim().to_string();
+        let lines = output.lines().collect::<Vec<_>>();
+        let first = lines.first().copied().unwrap_or_default().trim();
+        let (pid, role_index) = match first.parse::<i32>() {
+            Ok(pid) if pid > 0 => (Some(pid), 1),
+            _ => (None, 0),
+        };
+        let role = lines
+            .get(role_index)
+            .copied()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let subrole = lines
+            .get(role_index + 1)
+            .copied()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         let attributes = lines
-            .next()
+            .get(role_index + 2)
+            .copied()
             .unwrap_or_default()
             .split(',')
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned)
-            .collect();
+            .collect::<HashSet<_>>();
+
+        if pid.is_none() && role.is_empty() && subrole.is_empty() && attributes.is_empty() {
+            return None;
+        }
 
         Some(Self {
+            pid,
             role,
             subrole,
             attributes,
         })
     }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Default)]
+struct ManualAccessibilityCache {
+    enabled_pids: HashSet<i32>,
+    failed_until_by_pid: HashMap<i32, Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2988,6 +3027,7 @@ struct AxCfRange {
 #[cfg(target_os = "macos")]
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
+    fn AXUIElementCreateApplication(pid: c_int) -> AXUIElementRef;
     fn AXUIElementCreateSystemWide() -> AXUIElementRef;
     fn AXUIElementCopyAttributeValue(
         element: AXUIElementRef,
@@ -2995,6 +3035,11 @@ extern "C" {
         value: *mut CFTypeRef,
     ) -> AXError;
     fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut c_int) -> AXError;
+    fn AXUIElementSetAttributeValue(
+        element: AXUIElementRef,
+        attribute: CFStringRef,
+        value: CFTypeRef,
+    ) -> AXError;
     fn AXValueGetType(value: AXValueRef) -> c_int;
     fn AXValueGetValue(value: AXValueRef, value_type: c_int, value_ptr: *mut c_void) -> Boolean;
 }
@@ -3510,7 +3555,30 @@ fn post_command_key(keycode: u16) -> bool {
 
 #[cfg(target_os = "macos")]
 fn should_attempt_paste() -> bool {
-    current_paste_target_info().is_some_and(|target| is_pasteable_target(&target))
+    resolve_paste_target_info().is_some()
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_paste_target_info() -> Option<PasteTargetInfo> {
+    let target = current_paste_target_info();
+    if target.as_ref().is_some_and(is_pasteable_target) {
+        return target;
+    }
+
+    let pid = manual_accessibility_retry_pid(target.as_ref(), std::process::id() as i32)?;
+    if !ensure_manual_accessibility_for_pid(pid) {
+        return None;
+    }
+
+    for _ in 0..MANUAL_ACCESSIBILITY_POLL_ATTEMPTS {
+        std::thread::sleep(MANUAL_ACCESSIBILITY_POLL_INTERVAL);
+        let target = current_paste_target_info();
+        if target.as_ref().is_some_and(is_pasteable_target) {
+            return target;
+        }
+    }
+
+    None
 }
 
 #[cfg(target_os = "macos")]
@@ -3519,24 +3587,27 @@ fn current_paste_target_info() -> Option<PasteTargetInfo> {
 tell application "System Events"
   try
     set frontApp to first application process whose frontmost is true
-    set focusedElement to value of attribute "AXFocusedUIElement" of frontApp
+    set pidValue to unix id of frontApp as text
     set roleValue to ""
     set subroleValue to ""
     set attributeNames to {}
     try
-      set roleValue to value of attribute "AXRole" of focusedElement as text
-    end try
-    try
-      set subroleValue to value of attribute "AXSubrole" of focusedElement as text
-    end try
-    try
-      set attributeNames to name of every attribute of focusedElement
+      set focusedElement to value of attribute "AXFocusedUIElement" of frontApp
+      try
+        set roleValue to value of attribute "AXRole" of focusedElement as text
+      end try
+      try
+        set subroleValue to value of attribute "AXSubrole" of focusedElement as text
+      end try
+      try
+        set attributeNames to name of every attribute of focusedElement
+      end try
     end try
     set oldDelimiters to AppleScript's text item delimiters
     set AppleScript's text item delimiters to ","
     set attributeNamesText to attributeNames as text
     set AppleScript's text item delimiters to oldDelimiters
-    return roleValue & linefeed & subroleValue & linefeed & attributeNamesText
+    return pidValue & linefeed & roleValue & linefeed & subroleValue & linefeed & attributeNamesText
   on error
     return ""
   end try
@@ -3548,6 +3619,100 @@ end tell
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| PasteTargetInfo::from_osascript_output(&String::from_utf8_lossy(&o.stdout)))
+}
+
+fn manual_accessibility_retry_pid(target: Option<&PasteTargetInfo>, own_pid: i32) -> Option<i32> {
+    let target = target?;
+    if is_pasteable_target(target) {
+        return None;
+    }
+    let pid = target.pid?;
+    if pid == own_pid {
+        return None;
+    }
+    Some(pid)
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_manual_accessibility_for_pid(pid: i32) -> bool {
+    if recently_failed_manual_accessibility(pid) {
+        return false;
+    }
+    if manual_accessibility_is_enabled(pid) {
+        return true;
+    }
+
+    if enable_manual_accessibility_for_pid(pid) {
+        remember_manual_accessibility_enabled(pid);
+        true
+    } else {
+        remember_manual_accessibility_failure(pid);
+        false
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn enable_manual_accessibility_for_pid(pid: i32) -> bool {
+    unsafe {
+        let app = AXUIElementCreateApplication(pid as c_int);
+        if app.is_null() {
+            return false;
+        }
+
+        let attribute = CFString::new("AXManualAccessibility");
+        let enabled = CFBoolean::true_value();
+        let status = AXUIElementSetAttributeValue(
+            app,
+            attribute.as_concrete_TypeRef(),
+            enabled.as_CFTypeRef(),
+        );
+        CFRelease(app.cast());
+        status == KAX_ERROR_SUCCESS
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn manual_accessibility_cache() -> &'static Mutex<ManualAccessibilityCache> {
+    MANUAL_ACCESSIBILITY_CACHE.get_or_init(|| Mutex::new(ManualAccessibilityCache::default()))
+}
+
+#[cfg(target_os = "macos")]
+fn manual_accessibility_is_enabled(pid: i32) -> bool {
+    manual_accessibility_cache()
+        .lock()
+        .is_ok_and(|cache| cache.enabled_pids.contains(&pid))
+}
+
+#[cfg(target_os = "macos")]
+fn remember_manual_accessibility_enabled(pid: i32) {
+    if let Ok(mut cache) = manual_accessibility_cache().lock() {
+        cache.enabled_pids.insert(pid);
+        cache.failed_until_by_pid.remove(&pid);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn recently_failed_manual_accessibility(pid: i32) -> bool {
+    let Ok(mut cache) = manual_accessibility_cache().lock() else {
+        return false;
+    };
+    let Some(until) = cache.failed_until_by_pid.get(&pid).copied() else {
+        return false;
+    };
+    if Instant::now() < until {
+        return true;
+    }
+    cache.failed_until_by_pid.remove(&pid);
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn remember_manual_accessibility_failure(pid: i32) {
+    if let Ok(mut cache) = manual_accessibility_cache().lock() {
+        cache
+            .failed_until_by_pid
+            .insert(pid, Instant::now() + MANUAL_ACCESSIBILITY_FAILURE_TTL);
+    }
 }
 
 fn is_pasteable_target(target: &PasteTargetInfo) -> bool {
@@ -3726,15 +3891,73 @@ mod tests {
         )
         .expect("target");
 
+        assert_eq!(target.pid, None);
         assert_eq!(target.role, "AXGroup");
         assert_eq!(target.subrole, "AXTextArea");
         assert!(target.attributes.contains("AXSelectedTextRange"));
     }
 
     #[test]
+    fn paste_target_info_parses_pid_osascript_output() {
+        let target = PasteTargetInfo::from_osascript_output(
+            "4242\nAXGroup\nAXTextArea\nAXRole, AXSelectedTextRange\n",
+        )
+        .expect("target");
+
+        assert_eq!(target.pid, Some(4242));
+        assert_eq!(target.role, "AXGroup");
+        assert_eq!(target.subrole, "AXTextArea");
+        assert!(target.attributes.contains("AXSelectedTextRange"));
+    }
+
+    #[test]
+    fn paste_target_info_keeps_pid_when_focus_is_unavailable() {
+        let target = PasteTargetInfo::from_osascript_output("4242\n\n\n\n").expect("target");
+
+        assert_eq!(target.pid, Some(4242));
+        assert_eq!(target.role, "");
+        assert_eq!(target.subrole, "");
+        assert!(target.attributes.is_empty());
+    }
+
+    #[test]
     fn paste_target_info_rejects_empty_osascript_output() {
         assert!(PasteTargetInfo::from_osascript_output("").is_none());
         assert!(PasteTargetInfo::from_osascript_output("\n\n").is_none());
+    }
+
+    #[test]
+    fn manual_accessibility_retry_uses_pid_for_unclear_target() {
+        let target = PasteTargetInfo {
+            pid: Some(4242),
+            role: String::new(),
+            subrole: String::new(),
+            attributes: HashSet::new(),
+        };
+
+        assert_eq!(
+            manual_accessibility_retry_pid(Some(&target), 100),
+            Some(4242)
+        );
+    }
+
+    #[test]
+    fn manual_accessibility_retry_skips_existing_pasteable_target() {
+        let target = paste_target("AXTextArea", "", &[]);
+
+        assert_eq!(manual_accessibility_retry_pid(Some(&target), 100), None);
+    }
+
+    #[test]
+    fn manual_accessibility_retry_skips_own_process() {
+        let target = PasteTargetInfo {
+            pid: Some(4242),
+            role: String::new(),
+            subrole: String::new(),
+            attributes: HashSet::new(),
+        };
+
+        assert_eq!(manual_accessibility_retry_pid(Some(&target), 4242), None);
     }
 
     #[test]
@@ -3892,6 +4115,7 @@ mod tests {
 
     fn paste_target(role: &str, subrole: &str, attributes: &[&str]) -> PasteTargetInfo {
         PasteTargetInfo {
+            pid: None,
             role: role.to_string(),
             subrole: subrole.to_string(),
             attributes: attributes.iter().map(|value| value.to_string()).collect(),
