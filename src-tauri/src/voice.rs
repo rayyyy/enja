@@ -130,6 +130,39 @@ struct VoiceResultEvent {
     reason: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct PasteTargetInfo {
+    role: String,
+    subrole: String,
+    attributes: HashSet<String>,
+}
+
+impl PasteTargetInfo {
+    fn from_osascript_output(output: &str) -> Option<Self> {
+        if output.trim().is_empty() {
+            return None;
+        }
+
+        let mut lines = output.lines();
+        let role = lines.next().unwrap_or_default().trim().to_string();
+        let subrole = lines.next().unwrap_or_default().trim().to_string();
+        let attributes = lines
+            .next()
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
+
+        Some(Self {
+            role,
+            subrole,
+            attributes,
+        })
+    }
+}
+
 pub struct VoiceManager {
     active: Mutex<Option<SessionState>>,
 }
@@ -2912,6 +2945,11 @@ fn post_command_key(keycode: u16) -> bool {
 
 #[cfg(target_os = "macos")]
 fn should_attempt_paste() -> bool {
+    current_paste_target_info().is_some_and(|target| is_pasteable_target(&target))
+}
+
+#[cfg(target_os = "macos")]
+fn current_paste_target_info() -> Option<PasteTargetInfo> {
     let script = r#"
 tell application "System Events"
   try
@@ -2929,40 +2967,13 @@ tell application "System Events"
     try
       set attributeNames to name of every attribute of focusedElement
     end try
-    if roleValue is "AXTextArea" then return "1"
-    if roleValue is "AXTextField" then return "1"
-    if roleValue is "AXComboBox" then return "1"
-    if roleValue is "AXSearchField" then return "1"
-    if subroleValue is "AXTextArea" then return "1"
-    if subroleValue is "AXTextField" then return "1"
-    if attributeNames contains "AXSelectedTextRange" then return "1"
-    if attributeNames contains "AXInsertionPointLineNumber" then return "1"
-    if roleValue is "AXButton" then return "0"
-    if roleValue is "AXCheckBox" then return "0"
-    if roleValue is "AXRadioButton" then return "0"
-    if roleValue is "AXMenuItem" then return "0"
-    if roleValue is "AXMenuButton" then return "0"
-    if roleValue is "AXPopUpButton" then return "0"
-    if roleValue is "AXSlider" then return "0"
-    if roleValue is "AXScrollBar" then return "0"
-    if roleValue is "AXToolbar" then return "0"
-    if roleValue is "AXTabGroup" then return "0"
-    if roleValue is "AXWindow" then return "0"
-    if roleValue is "AXSheet" then return "0"
-    if roleValue is "AXMenuBar" then return "0"
-    if roleValue is "AXMenu" then return "0"
-    if roleValue is "AXList" then return "0"
-    if roleValue is "AXOutline" then return "0"
-    if roleValue is "AXTable" then return "0"
-    if roleValue is "AXRow" then return "0"
-    if roleValue is "AXCell" then return "0"
-    -- Electron/WebKit editors often expose the focused editor as AXGroup,
-    -- AXWebArea, AXScrollArea, or AXUnknown. Treat unclear roles as pasteable
-    -- and let the actual Cmd+V decide whether insertion is possible.
-    if roleValue is "AXStaticText" then return "0"
-    return "1"
+    set oldDelimiters to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to ","
+    set attributeNamesText to attributeNames as text
+    set AppleScript's text item delimiters to oldDelimiters
+    return roleValue & linefeed & subroleValue & linefeed & attributeNamesText
   on error
-    return "1"
+    return ""
   end try
 end tell
 "#;
@@ -2971,8 +2982,25 @@ end tell
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
-        .unwrap_or(true)
+        .and_then(|o| PasteTargetInfo::from_osascript_output(&String::from_utf8_lossy(&o.stdout)))
+}
+
+fn is_pasteable_target(target: &PasteTargetInfo) -> bool {
+    if is_text_input_role(&target.role) || is_text_input_role(&target.subrole) {
+        return true;
+    }
+
+    // CGEventPost only tells us the shortcut was emitted, not that any app inserted
+    // text. Unknown accessibility roles must fall back unless they expose a cursor.
+    target.attributes.contains("AXSelectedTextRange")
+        || target.attributes.contains("AXInsertionPointLineNumber")
+}
+
+fn is_text_input_role(role: &str) -> bool {
+    matches!(
+        role,
+        "AXTextArea" | "AXTextField" | "AXComboBox" | "AXSearchField" | "AXTextView"
+    )
 }
 
 fn read_clipboard_text() -> Option<String> {
@@ -3089,5 +3117,66 @@ mod tests {
         );
         assert_eq!(parse_audio_input_device_id("invalid"), None);
         assert_eq!(parse_audio_input_device_id("Mic#abc"), None);
+    }
+
+    #[test]
+    fn paste_target_accepts_text_input_roles() {
+        assert!(is_pasteable_target(&paste_target("AXTextArea", "", &[])));
+        assert!(is_pasteable_target(&paste_target("", "AXTextField", &[])));
+    }
+
+    #[test]
+    fn paste_target_accepts_editor_cursor_attributes() {
+        assert!(is_pasteable_target(&paste_target(
+            "AXGroup",
+            "",
+            &["AXRole", "AXSelectedTextRange"]
+        )));
+        assert!(is_pasteable_target(&paste_target(
+            "AXWebArea",
+            "",
+            &["AXInsertionPointLineNumber"]
+        )));
+    }
+
+    #[test]
+    fn paste_target_rejects_unclear_roles_without_cursor_attributes() {
+        assert!(!is_pasteable_target(&paste_target(
+            "AXGroup",
+            "",
+            &["AXRole", "AXValue"]
+        )));
+        assert!(!is_pasteable_target(&paste_target(
+            "AXWebArea",
+            "",
+            &["AXRole"]
+        )));
+        assert!(!is_pasteable_target(&paste_target("AXUnknown", "", &[])));
+    }
+
+    #[test]
+    fn paste_target_info_parses_osascript_output() {
+        let target = PasteTargetInfo::from_osascript_output(
+            "AXGroup\nAXTextArea\nAXRole, AXSelectedTextRange\n",
+        )
+        .expect("target");
+
+        assert_eq!(target.role, "AXGroup");
+        assert_eq!(target.subrole, "AXTextArea");
+        assert!(target.attributes.contains("AXSelectedTextRange"));
+    }
+
+    #[test]
+    fn paste_target_info_rejects_empty_osascript_output() {
+        assert!(PasteTargetInfo::from_osascript_output("").is_none());
+        assert!(PasteTargetInfo::from_osascript_output("\n\n").is_none());
+    }
+
+    fn paste_target(role: &str, subrole: &str, attributes: &[&str]) -> PasteTargetInfo {
+        PasteTargetInfo {
+            role: role.to_string(),
+            subrole: subrole.to_string(),
+            attributes: attributes.iter().map(|value| value.to_string()).collect(),
+        }
     }
 }
