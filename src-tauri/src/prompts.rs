@@ -174,21 +174,31 @@ pub fn translation_system_prompt(
     }
 }
 
+/// 文字起こしモデルへ渡す辞書ブロック。固有名詞を音写・翻訳せず、辞書の表記の
+/// まま出力するよう明示して STT のバイアスを強める。辞書が空なら空文字を返す。
+fn dictionary_context_block(dictionary_context: &str) -> String {
+    if dictionary_context.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\n次の固有名詞・専門用語は、必ず以下の表記のまま出力してください（カタカナへの音写や日本語訳をしない）:\n{dictionary_context}"
+        )
+    }
+}
+
 pub fn openai_transcription_prompt(
     overrides: &PromptOverrides,
     dictionary_context: &str,
 ) -> String {
-    let dictionary_context_block = if dictionary_context.trim().is_empty() {
-        String::new()
-    } else {
-        format!("\n優先表記:\n{dictionary_context}")
-    };
     render(
         &template_or_default(
             overrides.openai_transcription.as_deref(),
             OPENAI_TRANSCRIPTION,
         ),
-        &[("{{dictionary_context_block}}", &dictionary_context_block)],
+        &[(
+            "{{dictionary_context_block}}",
+            &dictionary_context_block(dictionary_context),
+        )],
     )
 }
 
@@ -200,14 +210,12 @@ pub fn gemini_audio_system(overrides: &PromptOverrides) -> Cow<'_, str> {
 }
 
 pub fn gemini_audio_user(overrides: &PromptOverrides, dictionary_context: &str) -> String {
-    let dictionary_context_block = if dictionary_context.trim().is_empty() {
-        String::new()
-    } else {
-        format!("\n優先表記:\n{dictionary_context}")
-    };
     render(
         &template_or_default(overrides.gemini_audio_user.as_deref(), GEMINI_AUDIO_USER),
-        &[("{{dictionary_context_block}}", &dictionary_context_block)],
+        &[(
+            "{{dictionary_context_block}}",
+            &dictionary_context_block(dictionary_context),
+        )],
     )
 }
 
@@ -300,5 +308,25 @@ mod tests {
             ..PromptOverrides::default()
         };
         assert!(validate_overrides(&overrides).is_err());
+    }
+
+    #[test]
+    fn dictionary_context_block_is_empty_without_terms() {
+        assert_eq!(dictionary_context_block("   "), "");
+    }
+
+    #[test]
+    fn dictionary_context_block_instructs_exact_spelling() {
+        let block = dictionary_context_block("- Typeless\n- AquaVoice");
+        assert!(block.contains("Typeless"));
+        assert!(block.contains("AquaVoice"));
+        assert!(block.contains("音写"));
+    }
+
+    #[test]
+    fn openai_prompt_embeds_dictionary_terms() {
+        let prompt = openai_transcription_prompt(&PromptOverrides::default(), "- Typeless");
+        assert!(prompt.contains("Typeless"));
+        assert!(prompt.contains("音写"));
     }
 }

@@ -1,10 +1,21 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import type { VoiceLevelEvent, VoiceResultEvent, VoiceStateEvent } from "../types";
-import { cancelVoiceSession } from "../lib/commands";
+import type {
+  VoiceDictionaryLearningEvent,
+  VoiceLevelEvent,
+  VoiceResultEvent,
+  VoiceStateEvent,
+} from "../types";
+import { cancelVoiceSession, undoDictionaryLearning } from "../lib/commands";
 import { useAppStore } from "../stores/useAppStore";
 
 const BARS = 12;
+const DICTIONARY_NOTICE_MS = 6000;
+const DICTIONARY_UNDONE_NOTICE_MS = 1200;
+
+type DictionaryNotice = VoiceDictionaryLearningEvent & {
+  status: "added" | "undone";
+};
 
 export function VoiceOverlay() {
   const voiceDictationShortcut = useAppStore((s) => s.voiceDictationShortcut);
@@ -19,14 +30,29 @@ export function VoiceOverlay() {
   const [level, setLevel] = useState<VoiceLevelEvent>({ rms: 0, peak: 0 });
   const [energy, setEnergy] = useState(0);
   const [result, setResult] = useState<VoiceResultEvent | null>(null);
+  const [dictionaryNotice, setDictionaryNotice] =
+    useState<DictionaryNotice | null>(null);
+  const [undoingDictionaryNotice, setUndoingDictionaryNotice] = useState(false);
   const [copied, setCopied] = useState(false);
   const [tick, setTick] = useState(0);
   const latestStateSeq = useRef(0);
+  const dictionaryNoticeTimer = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     document.body.classList.add("voice-window");
     return () => document.body.classList.remove("voice-window");
   }, []);
+
+  function scheduleDictionaryNoticeClear(delayMs: number) {
+    if (dictionaryNoticeTimer.current !== null) {
+      window.clearTimeout(dictionaryNoticeTimer.current);
+    }
+    dictionaryNoticeTimer.current = window.setTimeout(() => {
+      setDictionaryNotice(null);
+      setUndoingDictionaryNotice(false);
+      dictionaryNoticeTimer.current = null;
+    }, delayMs);
+  }
 
   useEffect(() => {
     const stateListener = listen<VoiceStateEvent>("voice-state", (event) => {
@@ -54,10 +80,22 @@ export function VoiceOverlay() {
     const resultListener = listen<VoiceResultEvent>("voice-result", (event) => {
       setResult(event.payload);
     });
+    const dictionaryListener = listen<VoiceDictionaryLearningEvent>(
+      "voice-dictionary-learning",
+      (event) => {
+        setDictionaryNotice({ ...event.payload, status: "added" });
+        setUndoingDictionaryNotice(false);
+        scheduleDictionaryNoticeClear(DICTIONARY_NOTICE_MS);
+      },
+    );
     return () => {
+      if (dictionaryNoticeTimer.current !== null) {
+        window.clearTimeout(dictionaryNoticeTimer.current);
+      }
       void stateListener.then((fn) => fn());
       void levelListener.then((fn) => fn());
       void resultListener.then((fn) => fn());
+      void dictionaryListener.then((fn) => fn());
     };
   }, []);
 
@@ -104,6 +142,24 @@ export function VoiceOverlay() {
     });
   }
 
+  function undoDictionaryNotice() {
+    if (!dictionaryNotice || dictionaryNotice.status !== "added") return;
+    const notice = dictionaryNotice;
+    setUndoingDictionaryNotice(true);
+    void undoDictionaryLearning(notice.entryId, notice.from, notice.to)
+      .then((undone) => {
+        if (undone) {
+          setDictionaryNotice({ ...notice, status: "undone" });
+          scheduleDictionaryNoticeClear(DICTIONARY_UNDONE_NOTICE_MS);
+        } else {
+          setDictionaryNotice(null);
+        }
+      })
+      .catch(() => {
+        setUndoingDictionaryNotice(false);
+      });
+  }
+
   const expanded = state.state === "fallback" || state.state === "error";
   const isAskMode = state.mode === "ask";
   const modeName = isAskMode ? "Ask" : (state.modeProfileName ?? "デフォルト");
@@ -129,6 +185,35 @@ export function VoiceOverlay() {
           : isAskMode
             ? "sky"
             : "emerald";
+
+  if (dictionaryNotice) {
+    const undone = dictionaryNotice.status === "undone";
+    return (
+      <div className="flex h-full w-full items-end justify-center bg-transparent p-0">
+        <div className="flex h-full w-full items-center gap-2 overflow-hidden rounded-full bg-neutral-950/[0.94] px-4 text-white shadow-none backdrop-blur-xl">
+          <span className="size-2.5 shrink-0 rounded-full bg-emerald-300 text-emerald-300 shadow-[0_0_18px_currentColor]" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[12px] font-semibold text-white">
+              {undone ? "辞書追加を取り消しました" : "辞書に追加しました"}
+            </p>
+            <p className="truncate text-[10px] text-white/58">
+              {dictionaryNotice.from} → {dictionaryNotice.to}
+            </p>
+          </div>
+          {!undone ? (
+            <button
+              type="button"
+              onClick={undoDictionaryNotice}
+              disabled={undoingDictionaryNotice}
+              className="h-8 shrink-0 rounded-full bg-white px-3 text-[11px] font-semibold text-neutral-950 hover:bg-white/90 disabled:opacity-45"
+            >
+              Undo
+            </button>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
 
   if (!isActive && !expanded) {
     return null;

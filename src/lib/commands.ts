@@ -5,6 +5,7 @@ import type {
   ApiUsageEvent,
   AppleSpeechStatus,
   AudioInputDevice,
+  DictionaryBulkCreateResult,
   DictionaryEntry,
   DictionaryEntryInput,
   PromptCatalogItem,
@@ -77,6 +78,14 @@ export async function createDictionaryEntry(
   return invoke<DictionaryEntry>("create_dictionary_entry", { entry });
 }
 
+export async function createDictionaryEntries(
+  entries: DictionaryEntryInput[],
+): Promise<DictionaryBulkCreateResult> {
+  return invoke<DictionaryBulkCreateResult>("create_dictionary_entries", {
+    entries,
+  });
+}
+
 export async function updateDictionaryEntry(
   id: string,
   entry: DictionaryEntryInput,
@@ -86,6 +95,14 @@ export async function updateDictionaryEntry(
 
 export async function deleteDictionaryEntry(id: string): Promise<void> {
   return invoke("delete_dictionary_entry", { id });
+}
+
+export async function undoDictionaryLearning(
+  entryId: string,
+  from: string,
+  to: string,
+): Promise<boolean> {
+  return invoke<boolean>("undo_dictionary_learning", { entryId, from, to });
 }
 
 export async function saveProviderSecret(

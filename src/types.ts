@@ -127,19 +127,29 @@ export type AudioInputDevice = {
 export type DictionaryEntry = {
   id: string;
   preferred: string;
-  readings: string[];
   aliases: string[];
+  corrections: DictionaryCorrection[];
   enabled: boolean;
-  source: "manual";
+  source: "manual" | "learned";
   createdAt: number;
   updatedAt: number;
 };
 
+export type DictionaryCorrection = {
+  from: string;
+  to: string;
+};
+
 export type DictionaryEntryInput = {
   preferred: string;
-  readings: string[];
-  aliases: string[];
+  aliases?: string[];
+  corrections?: DictionaryCorrection[];
   enabled: boolean;
+};
+
+export type DictionaryBulkCreateResult = {
+  added: DictionaryEntry[];
+  skipped: number;
 };
 
 export type ProviderStatus = {
@@ -221,6 +231,12 @@ export type VoiceResultEvent = {
   text: string;
   inserted: boolean;
   reason: string | null;
+};
+
+export type VoiceDictionaryLearningEvent = {
+  entryId: string;
+  from: string;
+  to: string;
 };
 
 export type ShortcutCapturedEvent = {

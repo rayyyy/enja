@@ -1,25 +1,29 @@
 import { useEffect, useMemo, useState } from "react";
-import type { DictionaryEntry, DictionaryEntryInput } from "../types";
+import type { DictionaryCorrection, DictionaryEntry } from "../types";
 import {
-  createDictionaryEntry,
+  createDictionaryEntries,
   deleteDictionaryEntry,
   getDictionary,
   updateDictionaryEntry,
 } from "../lib/commands";
 import { useAppStore } from "../stores/useAppStore";
 
-const EMPTY_INPUT: DictionaryEntryInput = {
-  preferred: "",
-  readings: [],
-  aliases: [],
-  enabled: true,
+// バックエンド validate_entry の上限（dictionary.rs）と一致させる。
+const MAX_WORD_LENGTH = 100;
+
+type EditingEntry = {
+  id: string;
+  preferred: string;
+  aliasesText: string;
+  correctionsText: string;
+  enabled: boolean;
 };
 
 export function DictionaryView() {
   const setView = useAppStore((s) => s.setView);
   const [entries, setEntries] = useState<DictionaryEntry[]>([]);
-  const [input, setInput] = useState<DictionaryEntryInput>(EMPTY_INPUT);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [editing, setEditing] = useState<EditingEntry | null>(null);
   const [query, setQuery] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -36,35 +40,41 @@ export function DictionaryView() {
     const q = query.trim().toLowerCase();
     if (!q) return entries;
     return entries.filter((entry) =>
-      [entry.preferred, ...entry.readings, ...entry.aliases].some((value) =>
-        value.toLowerCase().includes(q),
-      ),
+      [
+        entry.preferred,
+        ...entry.aliases,
+        ...entry.corrections.flatMap((correction) => [
+          correction.from,
+          correction.to,
+        ]),
+      ].some((value) => value.toLowerCase().includes(q)),
     );
   }, [entries, query]);
 
-  function setListField(field: "readings" | "aliases", value: string) {
-    setInput((prev) => ({
-      ...prev,
-      [field]: value
-        .split(/[,\n]/)
-        .map((v) => v.trim())
-        .filter(Boolean),
-    }));
-  }
-
-  async function saveEntry() {
+  async function addWords() {
+    const words = draft
+      .split("\n")
+      .map((w) => w.trim())
+      .filter(Boolean);
+    if (words.length === 0) return;
+    // 文字数超過はバックエンドでも弾かれるが、理由を区別して伝えるため事前に分ける。
+    const tooLong = words.filter((w) => [...w].length > MAX_WORD_LENGTH);
+    const valid = words.filter((w) => [...w].length <= MAX_WORD_LENGTH);
     setSaving(true);
     setMessage(null);
     try {
-      if (editingId) {
-        await updateDictionaryEntry(editingId, input);
-        setMessage("更新しました。");
-      } else {
-        await createDictionaryEntry(input);
-        setMessage("追加しました。");
-      }
-      setInput(EMPTY_INPUT);
-      setEditingId(null);
+      const result = valid.length
+        ? await createDictionaryEntries(
+            valid.map((preferred) => ({ preferred, enabled: true })),
+          )
+        : { added: [], skipped: 0 };
+      const reasons: string[] = [];
+      if (result.skipped) reasons.push(`重複${result.skipped}件`);
+      if (tooLong.length) reasons.push(`文字数超過${tooLong.length}件`);
+      const suffix = reasons.length ? `（${reasons.join("・")}はスキップ）` : "";
+      setMessage(`${result.added.length}件追加しました${suffix}`);
+      // 追加済み・重複分は入力欄から消し、修正が必要な文字数超過行だけ残す。
+      setDraft(tooLong.join("\n"));
       await refresh();
     } catch (e) {
       setMessage(String(e));
@@ -73,23 +83,82 @@ export function DictionaryView() {
     }
   }
 
-  function editEntry(entry: DictionaryEntry) {
-    setEditingId(entry.id);
-    setInput({
+  async function toggleEntry(entry: DictionaryEntry) {
+    setMessage(null);
+    try {
+      await updateDictionaryEntry(entry.id, {
+        preferred: entry.preferred,
+        enabled: !entry.enabled,
+      });
+      await refresh();
+    } catch (e) {
+      setMessage(String(e));
+    }
+  }
+
+  function startEditing(entry: DictionaryEntry) {
+    setMessage(null);
+    setEditing({
+      id: entry.id,
       preferred: entry.preferred,
-      readings: entry.readings,
-      aliases: entry.aliases,
+      aliasesText: entry.aliases.join("\n"),
+      correctionsText: formatCorrections(entry.corrections),
       enabled: entry.enabled,
     });
+  }
+
+  async function saveEditing() {
+    if (!editing) return;
+    const preferred = editing.preferred.trim();
+    const aliases = parseList(editing.aliasesText);
+    const parsedCorrections = parseCorrections(editing.correctionsText);
+    const tooLong =
+      [...preferred].length > MAX_WORD_LENGTH ||
+      aliases.some((alias) => [...alias].length > MAX_WORD_LENGTH) ||
+      parsedCorrections.corrections.some(
+        (correction) =>
+          [...correction.from].length > MAX_WORD_LENGTH ||
+          [...correction.to].length > MAX_WORD_LENGTH,
+      );
+
+    if (!preferred) {
+      setMessage("単語を入力してください。");
+      return;
+    }
+    if (tooLong) {
+      setMessage("単語・誤認識した表記・補正ルールは100文字以内にしてください。");
+      return;
+    }
+    if (parsedCorrections.invalid.length) {
+      setMessage("補正ルールは「誤認識 -> 正しい表記」の形で入力してください。");
+      return;
+    }
+
+    setSaving(true);
+    setMessage(null);
+    try {
+      await updateDictionaryEntry(editing.id, {
+        preferred,
+        aliases,
+        corrections: parsedCorrections.corrections,
+        enabled: editing.enabled,
+      });
+      setEditing(null);
+      setMessage("更新しました。");
+      await refresh();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function removeEntry(id: string) {
     setMessage(null);
     try {
       await deleteDictionaryEntry(id);
-      if (editingId === id) {
-        setEditingId(null);
-        setInput(EMPTY_INPUT);
+      if (editing?.id === id) {
+        setEditing(null);
       }
       await refresh();
     } catch (e) {
@@ -103,7 +172,7 @@ export function DictionaryView() {
         <div>
           <h1 className="text-2xl font-semibold text-neutral-900">辞書</h1>
           <p className="mt-1 text-sm text-neutral-500">
-            音声認識と整形で優先する表記を登録します。
+            音声認識と整形で優先する単語を登録します。各モデルに自動で連携されます。
           </p>
         </div>
         <button
@@ -115,64 +184,32 @@ export function DictionaryView() {
         </button>
       </header>
 
-      <section className="grid gap-3 rounded-lg border border-neutral-200 bg-white p-4 md:grid-cols-[1.2fr_1fr]">
+      <section className="flex flex-col gap-2 rounded-lg border border-neutral-200 bg-white p-4">
         <label className="flex flex-col gap-1 text-sm">
-          <span className="font-medium text-neutral-700">優先表記</span>
-          <input
-            value={input.preferred}
-            onChange={(e) => setInput((prev) => ({ ...prev, preferred: e.target.value }))}
-            placeholder="例: 岩佐"
-            className="rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+          <span className="font-medium text-neutral-700">単語を追加</span>
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                e.preventDefault();
+                void addWords();
+              }
+            }}
+            rows={4}
+            placeholder={"1行に1単語（改行で一括登録）\n例:\nTypeless\nAquaVoice"}
+            className="resize-none rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
           />
         </label>
-        <label className="flex items-end gap-2 text-sm text-neutral-700">
-          <input
-            type="checkbox"
-            checked={input.enabled}
-            onChange={(e) => setInput((prev) => ({ ...prev, enabled: e.target.checked }))}
-            className="mb-2 size-4 rounded border-neutral-300"
-          />
-          <span className="mb-1.5">有効</span>
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="font-medium text-neutral-700">読み・候補</span>
-          <input
-            value={input.readings.join(", ")}
-            onChange={(e) => setListField("readings", e.target.value)}
-            placeholder="例: いわさ, イワサ"
-            className="rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="font-medium text-neutral-700">別名・誤変換候補</span>
-          <input
-            value={input.aliases.join(", ")}
-            onChange={(e) => setListField("aliases", e.target.value)}
-            placeholder="例: iwasa"
-            className="rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-          />
-        </label>
-        <div className="flex items-center gap-2 md:col-span-2">
+        <div className="flex items-center gap-3">
           <button
             type="button"
-            disabled={saving || !input.preferred.trim()}
-            onClick={() => void saveEntry()}
+            disabled={saving || !draft.trim()}
+            onClick={() => void addWords()}
             className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-40"
           >
-            {saving ? "保存中…" : editingId ? "更新" : "追加"}
+            {saving ? "追加中…" : "追加"}
           </button>
-          {editingId ? (
-            <button
-              type="button"
-              onClick={() => {
-                setEditingId(null);
-                setInput(EMPTY_INPUT);
-              }}
-              className="rounded-md border border-neutral-200 px-4 py-2 text-sm text-neutral-600 hover:bg-neutral-50"
-            >
-              キャンセル
-            </button>
-          ) : null}
           {message ? <p className="text-sm text-neutral-500">{message}</p> : null}
         </div>
       </section>
@@ -192,39 +229,174 @@ export function DictionaryView() {
           <p className="p-5 text-sm text-neutral-400">登録された単語はありません。</p>
         ) : (
           <ul className="divide-y divide-neutral-100">
-            {filtered.map((entry) => (
-              <li key={entry.id} className="flex items-center gap-3 px-4 py-3">
-                <span
-                  className={`size-2 rounded-full ${entry.enabled ? "bg-blue-500" : "bg-neutral-300"}`}
-                  aria-hidden
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-neutral-900">
-                    {entry.preferred}
-                  </p>
-                  <p className="mt-0.5 truncate text-xs text-neutral-400">
-                    {[...entry.readings, ...entry.aliases].join(" / ") || "候補なし"}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => editEntry(entry)}
-                  className="rounded-md border border-neutral-200 px-2.5 py-1 text-xs text-neutral-600 hover:bg-neutral-50"
-                >
-                  編集
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void removeEntry(entry.id)}
-                  className="rounded-md border border-red-100 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50"
-                >
-                  削除
-                </button>
-              </li>
-            ))}
+            {filtered.map((entry) => {
+              const details = entryDetails(entry);
+              const isEditing = editing?.id === entry.id;
+              return (
+                <li key={entry.id} className="px-3 py-2.5">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void toggleEntry(entry)}
+                      disabled={saving}
+                      title={entry.enabled ? "有効（クリックで無効化）" : "無効（クリックで有効化）"}
+                      className="flex size-6 shrink-0 items-center justify-center rounded-full hover:bg-neutral-100 disabled:opacity-50"
+                      aria-label={entry.enabled ? "無効化" : "有効化"}
+                    >
+                      <span
+                        className={`size-2.5 rounded-full ${entry.enabled ? "bg-blue-500" : "bg-neutral-300"}`}
+                        aria-hidden
+                      />
+                    </button>
+                    <div className="min-w-0 flex-1">
+                      <p
+                        className={`truncate text-sm ${entry.enabled ? "text-neutral-900" : "text-neutral-400"}`}
+                      >
+                        {entry.preferred}
+                      </p>
+                      {details ? (
+                        <p className="mt-0.5 truncate text-xs text-neutral-400">{details}</p>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => (isEditing ? setEditing(null) : startEditing(entry))}
+                      disabled={saving}
+                      className="rounded-md border border-neutral-200 px-2.5 py-1 text-xs text-neutral-600 hover:bg-neutral-50 disabled:opacity-50"
+                    >
+                      {isEditing ? "閉じる" : "詳細"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void removeEntry(entry.id)}
+                      disabled={saving}
+                      className="rounded-md border border-red-100 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+                    >
+                      削除
+                    </button>
+                  </div>
+                  {isEditing && editing ? (
+                    <div className="mt-3 grid gap-3 border-t border-neutral-100 pt-3">
+                      <label className="flex flex-col gap-1 text-sm">
+                        <span className="font-medium text-neutral-700">優先表記</span>
+                        <input
+                          value={editing.preferred}
+                          onChange={(e) =>
+                            setEditing({ ...editing, preferred: e.target.value })
+                          }
+                          className="rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1 text-sm">
+                        <span className="font-medium text-neutral-700">誤認識した表記</span>
+                        <textarea
+                          value={editing.aliasesText}
+                          onChange={(e) =>
+                            setEditing({ ...editing, aliasesText: e.target.value })
+                          }
+                          rows={3}
+                          placeholder={"1行に1つ\n例:\nタイプレス\nタイプです"}
+                          className="resize-none rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1 text-sm">
+                        <span className="font-medium text-neutral-700">高度な補正</span>
+                        <textarea
+                          value={editing.correctionsText}
+                          onChange={(e) =>
+                            setEditing({ ...editing, correctionsText: e.target.value })
+                          }
+                          rows={3}
+                          placeholder={"1行に1つ\n例:\nタイプですか？アクアボイス -> TypelessかAquaVoice"}
+                          className="resize-none rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                        />
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <label className="flex items-center gap-2 text-sm text-neutral-700">
+                          <input
+                            type="checkbox"
+                            checked={editing.enabled}
+                            onChange={(e) =>
+                              setEditing({ ...editing, enabled: e.target.checked })
+                            }
+                            className="size-4 rounded border-neutral-300"
+                          />
+                          有効
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => void saveEditing()}
+                          disabled={saving}
+                          className="ml-auto rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-40"
+                        >
+                          {saving ? "保存中…" : "保存"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
     </div>
   );
+}
+
+function parseList(value: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of value.split(/[,\n]/)) {
+    const item = raw.trim();
+    if (!item || seen.has(item)) continue;
+    seen.add(item);
+    out.push(item);
+  }
+  return out;
+}
+
+function parseCorrections(value: string): {
+  corrections: DictionaryCorrection[];
+  invalid: string[];
+} {
+  const corrections: DictionaryCorrection[] = [];
+  const invalid: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of value.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const match = line.match(/^(.*?)\s*(?:->|=>|→)\s*(.*?)$/);
+    if (!match) {
+      invalid.push(line);
+      continue;
+    }
+    const from = match[1].trim();
+    const to = match[2].trim();
+    if (!from || !to) {
+      invalid.push(line);
+      continue;
+    }
+    if (from === to || seen.has(from)) continue;
+    seen.add(from);
+    corrections.push({ from, to });
+  }
+  return { corrections, invalid };
+}
+
+function formatCorrections(corrections: DictionaryCorrection[]): string {
+  return corrections
+    .map((correction) => `${correction.from} -> ${correction.to}`)
+    .join("\n");
+}
+
+function entryDetails(entry: DictionaryEntry): string {
+  const parts: string[] = [];
+  if (entry.aliases.length) {
+    parts.push(`誤認識: ${entry.aliases.join(" / ")}`);
+  }
+  if (entry.corrections.length) {
+    parts.push(`補正${entry.corrections.length}件`);
+  }
+  return parts.join(" ・ ");
 }

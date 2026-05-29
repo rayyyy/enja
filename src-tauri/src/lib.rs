@@ -9,7 +9,7 @@ mod settings;
 mod usage;
 mod voice;
 
-use dictionary::{DictionaryEntry, DictionaryEntryInput};
+use dictionary::{BulkCreateResult, DictionaryEntry, DictionaryEntryInput};
 use gemini::{stream_translate, TranslateEvent};
 use keyboard::KeyboardTrigger;
 use serde::Serialize;
@@ -165,6 +165,14 @@ fn create_dictionary_entry(
 }
 
 #[tauri::command]
+fn create_dictionary_entries(
+    app: tauri::AppHandle,
+    entries: Vec<DictionaryEntryInput>,
+) -> Result<BulkCreateResult, String> {
+    dictionary::create_entries(&app, entries)
+}
+
+#[tauri::command]
 fn update_dictionary_entry(
     app: tauri::AppHandle,
     id: String,
@@ -176,6 +184,20 @@ fn update_dictionary_entry(
 #[tauri::command]
 fn delete_dictionary_entry(app: tauri::AppHandle, id: String) -> Result<(), String> {
     dictionary::delete_entry(&app, &id)
+}
+
+#[tauri::command]
+fn undo_dictionary_learning(
+    app: tauri::AppHandle,
+    entry_id: String,
+    from: String,
+    to: String,
+) -> Result<bool, String> {
+    let undone = dictionary::undo_learned_correction(&app, &entry_id, &from, &to)?;
+    if undone {
+        voice::hide_voice_notice_after_undo(&app);
+    }
+    Ok(undone)
 }
 
 #[tauri::command]
@@ -280,8 +302,10 @@ pub fn run() {
             cancel_voice_session,
             get_dictionary,
             create_dictionary_entry,
+            create_dictionary_entries,
             update_dictionary_entry,
             delete_dictionary_entry,
+            undo_dictionary_learning,
             save_provider_secret,
             get_provider_status,
             get_api_usage_events,

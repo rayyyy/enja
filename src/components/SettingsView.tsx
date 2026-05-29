@@ -245,7 +245,7 @@ const SPEECH_PROFILES: SpeechProfileOption[] = [
     ],
     enjaDataFlow: [
       "Enjaは録音WAVを外部APIへ送らず、Swift helper経由でApple SpeechAnalyzerへ渡します。",
-      "辞書に登録した短い優先表記/別名は最大100件までcontextualStringsとして渡します。",
+      "辞書に登録した短い単語は最大100件までcontextualStringsとして渡します。",
       "整形が有効な音声モードでは、文字起こし結果をGeminiの整形モデルへ渡します。",
       "失敗時にGoogle/OpenAI/Geminiへ自動フォールバックしません。",
     ],

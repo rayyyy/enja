@@ -14,12 +14,22 @@ use crate::usage::{self, UsageService};
 
 use aec::Aec;
 use base64::Engine;
+#[cfg(target_os = "macos")]
+use core_foundation::base::TCFType;
+#[cfg(target_os = "macos")]
+use core_foundation::string::{CFString, CFStringRef};
+#[cfg(target_os = "macos")]
+use core_foundation_sys::base::{CFGetTypeID, CFTypeRef};
+#[cfg(target_os = "macos")]
+use core_foundation_sys::string::CFStringGetTypeID;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::io::{Cursor, Write};
+#[cfg(target_os = "macos")]
+use std::os::raw::c_int;
 #[cfg(target_os = "macos")]
 use std::os::raw::c_void;
 use std::path::PathBuf;
@@ -45,6 +55,12 @@ const ACTIVE_AUDIO_RMS_THRESHOLD: f32 = 0.006;
 const MIN_ACTIVE_AUDIO_SECS: f32 = 0.08;
 const EDGE_SILENCE_PADDING_MS: u32 = 160;
 const MAX_INTERNAL_SILENCE_MS: u32 = 320;
+const DICTIONARY_LEARNING_DELAYS_MS: [u64; 3] = [1_500, 3_500, 7_000];
+const DICTIONARY_NOTICE_VISIBLE_MS: u64 = 6_500;
+const DICTIONARY_UNDO_NOTICE_MS: u64 = 900;
+const MIN_LEARNED_CORRECTION_CHARS: usize = 2;
+const MAX_LEARNED_CORRECTION_CHARS: usize = 40;
+const MIN_FULL_INSERT_REWRITE_CHARS: usize = 12;
 static VOICE_STATE_SEQ: AtomicU64 = AtomicU64::new(1);
 static VOICE_WINDOW_FOLLOW_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -130,6 +146,43 @@ struct VoiceResultEvent {
     reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VoiceDictionaryLearningEvent {
+    entry_id: String,
+    from: String,
+    to: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VoiceWindowLayout {
+    Compact,
+    Expanded,
+    Notice,
+}
+
+impl VoiceWindowLayout {
+    fn dimensions(self) -> (f64, f64) {
+        match self {
+            Self::Compact => (292.0, 42.0),
+            Self::Expanded => (840.0, 420.0),
+            Self::Notice => (460.0, 64.0),
+        }
+    }
+
+    fn min_height(self) -> f64 {
+        match self {
+            Self::Expanded => 260.0,
+            Self::Notice => 58.0,
+            Self::Compact => 40.0,
+        }
+    }
+
+    fn focusable(self) -> bool {
+        self != Self::Compact
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PasteTargetInfo {
     role: String,
@@ -161,6 +214,30 @@ impl PasteTargetInfo {
             attributes,
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TextRange {
+    location: usize,
+    length: usize,
+}
+
+impl TextRange {
+    fn end(self) -> usize {
+        self.location.saturating_add(self.length)
+    }
+
+    fn overlaps(self, other: TextRange) -> bool {
+        self.location < other.end() && other.location < self.end()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChangedSpan {
+    old_range: TextRange,
+    new_range: TextRange,
+    from: String,
+    to: String,
 }
 
 pub struct VoiceManager {
@@ -433,7 +510,11 @@ impl VoiceManager {
 
         match result {
             Ok(text) => {
-                let inserted = paste_text(&text);
+                let inserted = if mode == VoiceMode::Dictation {
+                    paste_text_with_dictionary_learning(&app, &text)
+                } else {
+                    paste_text(&text)
+                };
                 if inserted {
                     emit_result(
                         &app,
@@ -1920,17 +2001,15 @@ fn apple_speech_contextual_strings(entries: &[DictionaryEntry]) -> Vec<String> {
     let mut seen = HashSet::<String>::new();
     let mut values = Vec::<String>::new();
     for entry in entries.iter().filter(|entry| entry.enabled) {
-        for candidate in std::iter::once(&entry.preferred).chain(entry.aliases.iter()) {
-            let value = candidate.trim();
-            if value.is_empty() || value.chars().count() > 40 {
-                continue;
-            }
-            let key = value.to_lowercase();
-            if seen.insert(key) {
-                values.push(value.to_string());
-                if values.len() >= 100 {
-                    return values;
-                }
+        let value = entry.preferred.trim();
+        if value.is_empty() || value.chars().count() > 40 {
+            continue;
+        }
+        let key = value.to_lowercase();
+        if seen.insert(key) {
+            values.push(value.to_string());
+            if values.len() >= 100 {
+                return values;
             }
         }
     }
@@ -1966,10 +2045,12 @@ async fn transcribe_google_chirp3(
     }
     let token = google_access_token(settings).await?;
     let phrases = dictionary::enabled_phrases(entries);
+    // chirp_3 は最大1,000フレーズの適応辞書に対応。固有名詞を確実に拾うため
+    // boost は推奨レンジ上限(20.0)に設定する。
     let phrase_values = phrases
         .iter()
-        .take(500)
-        .map(|value| serde_json::json!({ "value": value, "boost": 12.0 }))
+        .take(1000)
+        .map(|value| serde_json::json!({ "value": value, "boost": 20.0 }))
         .collect::<Vec<_>>();
     let mut config = serde_json::json!({
         "autoDecodingConfig": {},
@@ -2329,7 +2410,10 @@ async fn finalize_text(
         None
     };
     if dictation_profile.is_some_and(|profile| !profile.formatting_enabled) {
-        return Ok(transcript.trim().to_string());
+        return Ok(dictionary::apply_transcript_corrections(
+            transcript.trim(),
+            entries,
+        ));
     }
 
     let key = gemini_api_key(app)?;
@@ -2482,27 +2566,73 @@ fn emit_result(app: &tauri::AppHandle, event: VoiceResultEvent) {
     });
 }
 
+fn show_dictionary_learning_notice(app: &tauri::AppHandle, learned: dictionary::LearnedCorrection) {
+    show_voice_notice_window(app);
+    let event = VoiceDictionaryLearningEvent {
+        entry_id: learned.entry_id,
+        from: learned.from,
+        to: learned.to,
+    };
+    let _ = app.emit("voice-dictionary-learning", event.clone());
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(DICTIONARY_NOTICE_VISIBLE_MS)).await;
+        if !app
+            .try_state::<VoiceManager>()
+            .is_some_and(|manager| manager.is_active())
+        {
+            hide_voice_window(&app);
+        }
+    });
+}
+
+pub fn hide_voice_notice_after_undo(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(DICTIONARY_UNDO_NOTICE_MS)).await;
+        if !app
+            .try_state::<VoiceManager>()
+            .is_some_and(|manager| manager.is_active())
+        {
+            hide_voice_window(&app);
+        }
+    });
+}
+
 fn next_voice_state_seq() -> u64 {
     VOICE_STATE_SEQ.fetch_add(1, Ordering::SeqCst)
 }
 
 fn show_voice_window(app: &tauri::AppHandle, expanded: bool) {
+    let layout = if expanded {
+        VoiceWindowLayout::Expanded
+    } else {
+        VoiceWindowLayout::Compact
+    };
+    show_voice_window_with_layout(app, layout);
+}
+
+fn show_voice_notice_window(app: &tauri::AppHandle) {
+    show_voice_window_with_layout(app, VoiceWindowLayout::Notice);
+}
+
+fn show_voice_window_with_layout(app: &tauri::AppHandle, layout: VoiceWindowLayout) {
     let Some(window) = app.get_webview_window("voice") else {
         crate::keyboard::set_voice_overlay_visible(false);
         return;
     };
-    let monitor_key = configure_voice_window(app, &window, expanded);
+    let monitor_key = configure_voice_window(app, &window, layout);
     let _ = window.set_always_on_top(true);
     if window.show().is_ok() {
         crate::keyboard::set_voice_overlay_visible(true);
     }
-    start_voice_window_follow(app, expanded, monitor_key);
+    start_voice_window_follow(app, layout, monitor_key);
 }
 
 fn configure_voice_window(
     app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
-    expanded: bool,
+    layout: VoiceWindowLayout,
 ) -> Option<VoiceWindowMonitorKey> {
     let target_monitor = voice_window_target_monitor(app);
     let monitor_key = target_monitor.as_ref().map(voice_window_monitor_key);
@@ -2511,20 +2641,16 @@ fn configure_voice_window(
         .map(|monitor| monitor.scale_factor())
         .unwrap_or_else(|| window.scale_factor().unwrap_or(1.0))
         .max(1.0);
-    let (mut width, mut height) = if expanded {
-        (840.0_f64, 420.0_f64)
-    } else {
-        (292.0_f64, 42.0_f64)
-    };
+    let (mut width, mut height) = layout.dimensions();
     if let Some(monitor) = target_monitor.as_ref() {
         let size = monitor.size();
         let logical_width = size.width as f64 / scale;
         let logical_height = size.height as f64 / scale;
         width = width.min((logical_width - 40.0).max(260.0));
-        height = height.min((logical_height - 88.0).max(if expanded { 260.0 } else { 40.0 }));
+        height = height.min((logical_height - 88.0).max(layout.min_height()));
     }
-    let _ = window.set_focusable(expanded);
-    let _ = window.set_shadow(expanded);
+    let _ = window.set_focusable(layout.focusable());
+    let _ = window.set_shadow(layout.focusable());
     let _ = window.set_size(tauri::LogicalSize::new(width, height));
     if let Some(monitor) = target_monitor.as_ref() {
         let pos = monitor.position();
@@ -2553,7 +2679,7 @@ fn configure_voice_window(
 
 fn start_voice_window_follow(
     app: &tauri::AppHandle,
-    expanded: bool,
+    layout: VoiceWindowLayout,
     monitor_key: Option<VoiceWindowMonitorKey>,
 ) {
     let token = VOICE_WINDOW_FOLLOW_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
@@ -2577,7 +2703,7 @@ fn start_voice_window_follow(
                 .as_ref()
                 .map(voice_window_monitor_key);
             if next_monitor != current_monitor {
-                current_monitor = configure_voice_window(&app, &window, expanded);
+                current_monitor = configure_voice_window(&app, &window, layout);
             }
         }
     });
@@ -2835,6 +2961,445 @@ fn wait_for_copied_selection(sentinel: &str, timeout: Duration) -> Option<String
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[cfg(target_os = "macos")]
+type AXUIElementRef = *const c_void;
+#[cfg(target_os = "macos")]
+type AXValueRef = *const c_void;
+#[cfg(target_os = "macos")]
+type AXError = c_int;
+#[cfg(target_os = "macos")]
+type Boolean = u8;
+
+#[cfg(target_os = "macos")]
+const KAX_ERROR_SUCCESS: AXError = 0;
+#[cfg(target_os = "macos")]
+const KAX_VALUE_CF_RANGE_TYPE: c_int = 4;
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct AxCfRange {
+    location: isize,
+    length: isize,
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    fn AXUIElementCreateSystemWide() -> AXUIElementRef;
+    fn AXUIElementCopyAttributeValue(
+        element: AXUIElementRef,
+        attribute: CFStringRef,
+        value: *mut CFTypeRef,
+    ) -> AXError;
+    fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut c_int) -> AXError;
+    fn AXValueGetType(value: AXValueRef) -> c_int;
+    fn AXValueGetValue(value: AXValueRef, value_type: c_int, value_ptr: *mut c_void) -> Boolean;
+}
+
+#[cfg(target_os = "macos")]
+struct AxElementRef {
+    raw: AXUIElementRef,
+}
+
+#[cfg(target_os = "macos")]
+unsafe impl Send for AxElementRef {}
+
+#[cfg(target_os = "macos")]
+impl Drop for AxElementRef {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.raw.is_null() {
+                CFRelease(self.raw.cast());
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone)]
+struct AxTextSnapshot {
+    pid: c_int,
+    value: String,
+    selected_range: TextRange,
+}
+
+#[cfg(target_os = "macos")]
+struct AxFocusedText {
+    element: AxElementRef,
+    snapshot: AxTextSnapshot,
+}
+
+#[cfg(target_os = "macos")]
+impl AxFocusedText {
+    fn capture() -> Option<Self> {
+        unsafe {
+            let system = AXUIElementCreateSystemWide();
+            if system.is_null() {
+                return None;
+            }
+            let focused =
+                copy_ax_attribute_raw(system, "AXFocusedUIElement").map(|raw| AxElementRef {
+                    raw: raw as AXUIElementRef,
+                });
+            CFRelease(system.cast());
+
+            let element = focused?;
+            let snapshot = element.read_text_snapshot()?;
+            Some(Self { element, snapshot })
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl AxElementRef {
+    fn read_text_snapshot(&self) -> Option<AxTextSnapshot> {
+        if self.raw.is_null() {
+            return None;
+        }
+        let mut pid: c_int = 0;
+        unsafe {
+            if AXUIElementGetPid(self.raw, &mut pid) != KAX_ERROR_SUCCESS {
+                return None;
+            }
+        }
+        let raw_value = copy_ax_string_attribute(self.raw, "AXValue")?;
+        let placeholder = copy_ax_string_attribute(self.raw, "AXPlaceholderValue");
+        let value = value_without_placeholder(raw_value, placeholder.as_deref());
+        let selected_range = copy_ax_range_attribute(self.raw, "AXSelectedTextRange")?;
+        Some(AxTextSnapshot {
+            pid,
+            value,
+            selected_range,
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn copy_ax_attribute_raw(element: AXUIElementRef, attribute: &str) -> Option<CFTypeRef> {
+    let attribute = CFString::new(attribute);
+    let mut value: CFTypeRef = std::ptr::null();
+    let status = unsafe {
+        AXUIElementCopyAttributeValue(element, attribute.as_concrete_TypeRef(), &mut value)
+    };
+    if status == KAX_ERROR_SUCCESS && !value.is_null() {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn copy_ax_string_attribute(element: AXUIElementRef, attribute: &str) -> Option<String> {
+    let value = copy_ax_attribute_raw(element, attribute)?;
+    unsafe {
+        if CFGetTypeID(value) != CFStringGetTypeID() {
+            CFRelease(value);
+            return None;
+        }
+        let text = CFString::wrap_under_create_rule(value as CFStringRef).to_string();
+        Some(text)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn copy_ax_range_attribute(element: AXUIElementRef, attribute: &str) -> Option<TextRange> {
+    let value = copy_ax_attribute_raw(element, attribute)?;
+    unsafe {
+        if AXValueGetType(value as AXValueRef) != KAX_VALUE_CF_RANGE_TYPE {
+            CFRelease(value);
+            return None;
+        }
+        let mut range = AxCfRange {
+            location: 0,
+            length: 0,
+        };
+        let ok = AXValueGetValue(
+            value as AXValueRef,
+            KAX_VALUE_CF_RANGE_TYPE,
+            &mut range as *mut _ as *mut c_void,
+        ) != 0;
+        CFRelease(value);
+        if !ok || range.location < 0 || range.length < 0 {
+            return None;
+        }
+        Some(TextRange {
+            location: range.location as usize,
+            length: range.length as usize,
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn paste_text_with_dictionary_learning(app: &tauri::AppHandle, text: &str) -> bool {
+    if !should_attempt_paste() {
+        return false;
+    }
+
+    let learning_target = AxFocusedText::capture();
+    let original = read_clipboard_text();
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        if clipboard.set_text(text.to_string()).is_err() {
+            return false;
+        }
+    } else {
+        return false;
+    }
+    let ok = run_keystroke("v");
+    std::thread::sleep(Duration::from_millis(180));
+    restore_clipboard(original);
+
+    if ok {
+        if let Some(target) = learning_target {
+            start_dictionary_learning_watch(app.clone(), target);
+        }
+    }
+    ok
+}
+
+#[cfg(not(target_os = "macos"))]
+fn paste_text_with_dictionary_learning(_app: &tauri::AppHandle, text: &str) -> bool {
+    paste_text(text)
+}
+
+#[cfg(target_os = "macos")]
+fn start_dictionary_learning_watch(app: tauri::AppHandle, target: AxFocusedText) {
+    let Some(after_paste) = target.element.read_text_snapshot() else {
+        return;
+    };
+    if after_paste.pid != target.snapshot.pid {
+        return;
+    }
+    let Some(inserted_range) = inserted_range_from_snapshots(&target.snapshot, &after_paste) else {
+        return;
+    };
+
+    std::thread::spawn(move || {
+        let baseline = after_paste;
+        for delay_ms in DICTIONARY_LEARNING_DELAYS_MS {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            let Some(current) = target.element.read_text_snapshot() else {
+                return;
+            };
+            if current.pid != baseline.pid {
+                return;
+            }
+            if current.value == baseline.value {
+                continue;
+            }
+            let Some((from, to)) =
+                learned_correction_from_values(&baseline.value, &current.value, inserted_range)
+            else {
+                return;
+            };
+            match dictionary::upsert_learned_correction(&app, &from, &to) {
+                Ok(Some(learned)) => {
+                    show_dictionary_learning_notice(&app, learned);
+                }
+                Ok(None) => {}
+                Err(err) => eprintln!("[enja] dictionary learning failed: {err}"),
+            }
+            return;
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn inserted_range_from_snapshots(
+    before: &AxTextSnapshot,
+    after: &AxTextSnapshot,
+) -> Option<TextRange> {
+    let span = changed_span(&before.value, &after.value)?;
+    if span.to.is_empty() {
+        return None;
+    }
+    let selection = before.selected_range;
+    let changed_replaced_selection =
+        span.old_range.overlaps(selection) || span.old_range.location == selection.location;
+    if !changed_replaced_selection {
+        return None;
+    }
+    Some(span.new_range)
+}
+
+fn learned_correction_from_values(
+    baseline: &str,
+    current: &str,
+    inserted_range: TextRange,
+) -> Option<(String, String)> {
+    let span = changed_span(baseline, current)?;
+    if !span.old_range.overlaps(inserted_range) {
+        return None;
+    }
+    let from = span.from.trim().to_string();
+    let to = span.to.trim().to_string();
+    if from.is_empty() || to.is_empty() || from == to {
+        return None;
+    }
+    if !is_learnable_correction(&from, &to, span.old_range, inserted_range) {
+        return None;
+    }
+    Some((from, to))
+}
+
+fn value_without_placeholder(value: String, placeholder: Option<&str>) -> String {
+    let Some(placeholder) = placeholder else {
+        return value;
+    };
+    if !placeholder.trim().is_empty() && value.trim() == placeholder.trim() {
+        String::new()
+    } else {
+        value
+    }
+}
+
+fn is_learnable_correction(
+    from: &str,
+    to: &str,
+    changed_range: TextRange,
+    inserted_range: TextRange,
+) -> bool {
+    let from_chars = from.chars().count();
+    let to_chars = to.chars().count();
+    if from_chars < MIN_LEARNED_CORRECTION_CHARS || to_chars < MIN_LEARNED_CORRECTION_CHARS {
+        return false;
+    }
+    if from_chars > MAX_LEARNED_CORRECTION_CHARS || to_chars > MAX_LEARNED_CORRECTION_CHARS {
+        return false;
+    }
+    if from.is_ascii() && to.is_ascii() && from.eq_ignore_ascii_case(to) {
+        return false;
+    }
+    if is_sentence_like_correction_value(from) || is_sentence_like_correction_value(to) {
+        return false;
+    }
+    if covers_most_inserted_range(changed_range, inserted_range)
+        && (from_chars >= MIN_FULL_INSERT_REWRITE_CHARS
+            || to_chars >= MIN_FULL_INSERT_REWRITE_CHARS)
+    {
+        return false;
+    }
+    true
+}
+
+fn is_sentence_like_correction_value(value: &str) -> bool {
+    let value = value.trim();
+    let char_count = value.chars().count();
+    if value.chars().any(is_sentence_punctuation) {
+        return true;
+    }
+    if value.split_whitespace().count() > 3 {
+        return true;
+    }
+    if char_count >= 6
+        && [
+            "です",
+            "ます",
+            "でした",
+            "ました",
+            "ですね",
+            "ですよ",
+            "でしょう",
+            "ください",
+            "ません",
+            "だよ",
+            "だね",
+        ]
+        .iter()
+        .any(|ending| value.ends_with(ending))
+    {
+        return true;
+    }
+    if char_count >= 6
+        && value.chars().any(|ch| matches!(ch, 'を' | 'が' | 'は'))
+        && value
+            .chars()
+            .last()
+            .is_some_and(is_japanese_predicate_ending)
+    {
+        return true;
+    }
+    false
+}
+
+fn is_sentence_punctuation(ch: char) -> bool {
+    matches!(
+        ch,
+        '。' | '、' | '，' | ',' | '！' | '!' | '？' | '?' | '；' | ';' | '：' | ':' | '\n' | '\r'
+    )
+}
+
+fn is_japanese_predicate_ending(ch: char) -> bool {
+    matches!(
+        ch,
+        'う' | 'く' | 'ぐ' | 'す' | 'つ' | 'ぬ' | 'ぶ' | 'む' | 'る' | 'た' | 'だ' | 'い'
+    )
+}
+
+fn covers_most_inserted_range(changed_range: TextRange, inserted_range: TextRange) -> bool {
+    if inserted_range.length == 0 {
+        return false;
+    }
+    let overlap_start = changed_range.location.max(inserted_range.location);
+    let overlap_end = changed_range.end().min(inserted_range.end());
+    if overlap_end <= overlap_start {
+        return false;
+    }
+    let overlap = overlap_end - overlap_start;
+    overlap * 100 >= inserted_range.length * 80
+}
+
+fn changed_span(before: &str, after: &str) -> Option<ChangedSpan> {
+    if before == after {
+        return None;
+    }
+
+    let before_chars = before.chars().collect::<Vec<_>>();
+    let after_chars = after.chars().collect::<Vec<_>>();
+    let mut prefix = 0usize;
+    while prefix < before_chars.len()
+        && prefix < after_chars.len()
+        && before_chars[prefix] == after_chars[prefix]
+    {
+        prefix += 1;
+    }
+
+    let mut suffix = 0usize;
+    while suffix + prefix < before_chars.len()
+        && suffix + prefix < after_chars.len()
+        && before_chars[before_chars.len() - 1 - suffix]
+            == after_chars[after_chars.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    let before_end = before_chars.len().saturating_sub(suffix);
+    let after_end = after_chars.len().saturating_sub(suffix);
+    let from = before_chars[prefix..before_end].iter().collect::<String>();
+    let to = after_chars[prefix..after_end].iter().collect::<String>();
+    let prefix_utf16 = utf16_len_chars(&before_chars[..prefix]);
+    Some(ChangedSpan {
+        old_range: TextRange {
+            location: prefix_utf16,
+            length: utf16_len(&from),
+        },
+        new_range: TextRange {
+            location: prefix_utf16,
+            length: utf16_len(&to),
+        },
+        from,
+        to,
+    })
+}
+
+fn utf16_len(value: &str) -> usize {
+    value.encode_utf16().count()
+}
+
+fn utf16_len_chars(chars: &[char]) -> usize {
+    chars.iter().map(|ch| ch.len_utf16()).sum()
 }
 
 #[cfg(target_os = "macos")]
@@ -3170,6 +3735,159 @@ mod tests {
     fn paste_target_info_rejects_empty_osascript_output() {
         assert!(PasteTargetInfo::from_osascript_output("").is_none());
         assert!(PasteTargetInfo::from_osascript_output("\n\n").is_none());
+    }
+
+    #[test]
+    fn changed_span_tracks_utf16_ranges() {
+        let span = changed_span("絵文字🙂タイプレスです", "絵文字🙂Typelessです").expect("span");
+
+        assert_eq!(span.from, "タイプレス");
+        assert_eq!(span.to, "Typeless");
+        assert_eq!(span.old_range.location, "絵文字🙂".encode_utf16().count());
+        assert_eq!(span.old_range.length, "タイプレス".encode_utf16().count());
+    }
+
+    #[test]
+    fn learned_correction_uses_changes_inside_inserted_range() {
+        let inserted_range = TextRange {
+            location: 3,
+            length: "タイプレスを使う".encode_utf16().count(),
+        };
+
+        let correction = learned_correction_from_values(
+            "今日はタイプレスを使う",
+            "今日はTypelessを使う",
+            inserted_range,
+        )
+        .expect("correction");
+
+        assert_eq!(
+            correction,
+            ("タイプレス".to_string(), "Typeless".to_string())
+        );
+    }
+
+    #[test]
+    fn learned_correction_ignores_changes_outside_inserted_range() {
+        let inserted_range = TextRange {
+            location: 3,
+            length: "タイプレス".encode_utf16().count(),
+        };
+
+        let correction = learned_correction_from_values(
+            "今日はタイプレス。明日も。",
+            "今日はタイプレス。昨日も。",
+            inserted_range,
+        );
+
+        assert!(correction.is_none());
+    }
+
+    #[test]
+    fn learned_correction_ignores_single_character_edits() {
+        let inserted_range = TextRange {
+            location: 0,
+            length: "hello".encode_utf16().count(),
+        };
+
+        let correction = learned_correction_from_values("hello", "Hello", inserted_range);
+
+        assert!(correction.is_none());
+    }
+
+    #[test]
+    fn learned_correction_accepts_multi_character_terms() {
+        let inserted_range = TextRange {
+            location: 0,
+            length: "タイプレス".encode_utf16().count(),
+        };
+
+        let correction = learned_correction_from_values("タイプレス", "Typeless", inserted_range)
+            .expect("correction");
+
+        assert_eq!(
+            correction,
+            ("タイプレス".to_string(), "Typeless".to_string())
+        );
+    }
+
+    #[test]
+    fn learned_correction_ignores_sentence_like_values() {
+        let inserted = "皆さん、ご飯が美味しいですね！";
+        let inserted_range = TextRange {
+            location: 0,
+            length: inserted.encode_utf16().count(),
+        };
+
+        let correction = learned_correction_from_values(
+            inserted,
+            "フォローアップの変更を求める",
+            inserted_range,
+        );
+
+        assert!(correction.is_none());
+    }
+
+    #[test]
+    fn placeholder_value_is_treated_as_empty_text() {
+        assert_eq!(
+            value_without_placeholder(
+                "フォローアップの変更を求める".to_string(),
+                Some("フォローアップの変更を求める"),
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn learned_correction_ignores_deleted_text_when_placeholder_is_exposed() {
+        let inserted = "皆さん、ご飯が美味しいですね！";
+        let inserted_range = TextRange {
+            location: 0,
+            length: inserted.encode_utf16().count(),
+        };
+        let current = value_without_placeholder(
+            "フォローアップの変更を求める".to_string(),
+            Some("フォローアップの変更を求める"),
+        );
+
+        let correction = learned_correction_from_values(inserted, &current, inserted_range);
+
+        assert!(correction.is_none());
+    }
+
+    #[test]
+    fn learned_correction_ignores_long_full_insert_rewrites() {
+        let inserted = "ご飯が美味しいですね";
+        let inserted_range = TextRange {
+            location: 0,
+            length: inserted.encode_utf16().count(),
+        };
+
+        let correction =
+            learned_correction_from_values(inserted, "ランチが最高ですね", inserted_range);
+
+        assert!(correction.is_none());
+    }
+
+    #[test]
+    fn learned_correction_allows_sentence_local_term_change() {
+        let inserted_range = TextRange {
+            location: 0,
+            length: "今日はタイプレスを使います".encode_utf16().count(),
+        };
+
+        let correction = learned_correction_from_values(
+            "今日はタイプレスを使います",
+            "今日はTypelessを使います",
+            inserted_range,
+        )
+        .expect("correction");
+
+        assert_eq!(
+            correction,
+            ("タイプレス".to_string(), "Typeless".to_string())
+        );
     }
 
     fn paste_target(role: &str, subrole: &str, attributes: &[&str]) -> PasteTargetInfo {
