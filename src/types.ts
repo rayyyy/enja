@@ -214,7 +214,15 @@ export type ApiUsageEvent = {
 };
 
 export type VoiceStateEvent = {
-  state: "idle" | "recording" | "processing" | "inserted" | "fallback" | "error";
+  state:
+    | "idle"
+    | "preparing"
+    | "recording"
+    | "stopping"
+    | "processing"
+    | "inserted"
+    | "fallback"
+    | "error";
   mode: VoiceMode | null;
   modeProfileId: string | null;
   modeProfileName: string | null;

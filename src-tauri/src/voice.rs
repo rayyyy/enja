@@ -63,6 +63,7 @@ const DICTIONARY_UNDO_NOTICE_MS: u64 = 900;
 const MIN_LEARNED_CORRECTION_CHARS: usize = 2;
 const MAX_LEARNED_CORRECTION_CHARS: usize = 40;
 const MIN_FULL_INSERT_REWRITE_CHARS: usize = 12;
+const STOP_RECORDING_BUFFER: Duration = Duration::from_millis(500);
 #[cfg(target_os = "macos")]
 const MANUAL_ACCESSIBILITY_POLL_ATTEMPTS: usize = 10;
 #[cfg(target_os = "macos")]
@@ -339,7 +340,7 @@ struct Recorder {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecorderCommand {
-    Finish,
+    Finish { include_stop_buffer: bool },
     Cancel,
 }
 
@@ -378,6 +379,7 @@ struct SystemAudioMuteGuard {
 }
 
 type RecorderSetup = (Arc<Mutex<Vec<i16>>>, u32, u16, cpal::Stream);
+type RecorderInitSignal = Arc<Mutex<Option<std::sync::mpsc::Sender<Result<(), String>>>>>;
 
 impl VoiceManager {
     pub fn new() -> Self {
@@ -409,10 +411,14 @@ impl VoiceManager {
             return Ok(());
         }
 
-        if mode == VoiceMode::Dictation {
-            show_voice_window(&app, false);
-            emit_state_once(&app, "recording", Some(mode), mode_profile.clone(), None);
-        }
+        show_voice_window(&app, false);
+        emit_state(
+            &app,
+            "preparing",
+            Some(mode),
+            mode_profile.clone(),
+            Some("録音を準備しています…".to_string()),
+        );
 
         let cancelled = Arc::new(Mutex::new(false));
         *guard = Some(SessionState::Starting {
@@ -478,7 +484,7 @@ impl VoiceManager {
             recorder,
             audio_aux,
         } = session;
-        let mode_profile = profile_snapshot_for_id(&app, &mode_profile_id);
+        let mode_profile = profile_snapshot_for_mode(&app, mode, &mode_profile_id);
         let processing_message = if mode == VoiceMode::Dictation
             && mode_profile
                 .as_ref()
@@ -491,13 +497,13 @@ impl VoiceManager {
         show_voice_window(&app, false);
         emit_state(
             &app,
-            "processing",
+            "stopping",
             Some(mode),
             mode_profile.clone(),
-            Some(processing_message.to_string()),
+            Some("録音を終了しています…".to_string()),
         );
 
-        let clip = recorder.finish_after_signal(move || {
+        let clip = recorder.finish_with_stop_buffer(move || {
             if let Some(aux) = audio_aux {
                 aux.stop();
             }
@@ -534,6 +540,14 @@ impl VoiceManager {
                 return Err(message);
             }
         };
+
+        emit_state(
+            &app,
+            "processing",
+            Some(mode),
+            mode_profile.clone(),
+            Some(processing_message.to_string()),
+        );
 
         let result = tokio::select! {
             result = process_clip(&app, mode, &mode_profile_id, &selected_text, clip) => result,
@@ -665,24 +679,26 @@ impl VoiceManager {
         store.replace(settings);
 
         let mut guard = self.active.lock().map_err(|e| e.to_string())?;
-        match guard.as_mut() {
+        let next_state = match guard.as_mut() {
             Some(SessionState::Starting {
                 mode,
                 mode_profile_id,
                 ..
             }) if *mode == VoiceMode::Dictation => {
                 *mode_profile_id = next_id;
+                "preparing"
             }
             Some(SessionState::Active(session)) if session.mode == VoiceMode::Dictation => {
                 session.mode_profile_id = next_id;
+                "recording"
             }
             _ => return Ok(()),
-        }
+        };
         drop(guard);
 
         emit_state(
             &app,
-            "recording",
+            next_state,
             Some(VoiceMode::Dictation),
             next_profile,
             None,
@@ -735,11 +751,6 @@ async fn finish_start_session(
 
     if is_start_cancelled(&cancelled) {
         return Ok(());
-    }
-
-    if mode == VoiceMode::Ask {
-        show_voice_window(&app, false);
-        emit_state_once(&app, "recording", Some(mode), None, None);
     }
 
     let (audio_aux, pipeline_mode) = prepare_audio_pipeline(&settings);
@@ -829,11 +840,15 @@ async fn finish_start_session(
     }));
     drop(guard);
 
+    if settings.voice.interaction_sounds_enabled {
+        play_interaction_sound("start");
+    }
+
     emit_state(
         &app,
         "recording",
         Some(mode),
-        profile_snapshot_for_id(&app, &starting_mode_profile_id),
+        profile_snapshot_for_mode(&app, mode, &starting_mode_profile_id),
         None,
     );
     Ok(())
@@ -902,9 +917,6 @@ fn fail_start_session(
 }
 
 fn prepare_audio_pipeline(settings: &AppSettings) -> (Option<AudioAux>, PipelineMode) {
-    if settings.voice.interaction_sounds_enabled {
-        play_interaction_sound("start");
-    }
     match settings.voice.system_audio_handling {
         SystemAudioHandling::Mute => (
             Some(AudioAux::Mute(SystemAudioMuteGuard::start())),
@@ -972,13 +984,19 @@ impl Recorder {
         })
     }
 
-    fn finish_after_signal(self, after_signal: impl FnOnce()) -> Result<AudioClip, String> {
-        let _ = self.control_tx.send(RecorderCommand::Finish);
-        after_signal();
-        match self.done_rx.recv_timeout(Duration::from_secs(10)) {
+    fn finish_with_stop_buffer(
+        self,
+        after_recording_stopped: impl FnOnce(),
+    ) -> Result<AudioClip, String> {
+        let _ = self.control_tx.send(RecorderCommand::Finish {
+            include_stop_buffer: true,
+        });
+        let result = match self.done_rx.recv_timeout(Duration::from_secs(10)) {
             Ok(result) => result,
             Err(_) => Err("録音停止処理がタイムアウトしました。".to_string()),
-        }
+        };
+        after_recording_stopped();
+        result
     }
 
     fn cancel(self) {
@@ -1036,6 +1054,7 @@ fn run_recording_thread(
     init_tx: std::sync::mpsc::Sender<Result<(), String>>,
     pipeline: PipelineMode,
 ) -> Result<AudioClip, String> {
+    let init_signal: RecorderInitSignal = Arc::new(Mutex::new(Some(init_tx)));
     let setup: Result<RecorderSetup, String> = (|| {
         let host = cpal::default_host();
         let device = input_device_by_id(&host, selected_device_id.as_deref())?
@@ -1075,6 +1094,7 @@ fn run_recording_thread(
                 app,
                 device_channels,
                 aec_pipeline,
+                init_signal.clone(),
                 err_fn,
             ),
             cpal::SampleFormat::I16 => build_input_stream::<i16>(
@@ -1086,6 +1106,7 @@ fn run_recording_thread(
                 app,
                 device_channels,
                 aec_pipeline,
+                init_signal.clone(),
                 err_fn,
             ),
             cpal::SampleFormat::U16 => build_input_stream::<u16>(
@@ -1097,6 +1118,7 @@ fn run_recording_thread(
                 app,
                 device_channels,
                 aec_pipeline,
+                init_signal.clone(),
                 err_fn,
             ),
             _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
@@ -1108,12 +1130,9 @@ fn run_recording_thread(
     })();
 
     let (samples, sample_rate, channels, stream) = match setup {
-        Ok(values) => {
-            let _ = init_tx.send(Ok(()));
-            values
-        }
+        Ok(values) => values,
         Err(err) => {
-            let _ = init_tx.send(Err(err.clone()));
+            send_recorder_init(&init_signal, Err(err.clone()));
             return Err(err);
         }
     };
@@ -1121,9 +1140,17 @@ fn run_recording_thread(
     let max_wait = Duration::from_secs(max_recording_seconds.clamp(5, 600));
     let command = match control_rx.recv_timeout(max_wait) {
         Ok(command) => command,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => RecorderCommand::Finish,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => RecorderCommand::Finish {
+            include_stop_buffer: false,
+        },
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => RecorderCommand::Cancel,
     };
+    if let RecorderCommand::Finish {
+        include_stop_buffer: true,
+    } = command
+    {
+        std::thread::sleep(STOP_RECORDING_BUFFER);
+    }
     drop(stream);
 
     if command == RecorderCommand::Cancel {
@@ -1140,6 +1167,14 @@ fn run_recording_thread(
         wav,
         duration_secs: prepared.analysis.duration_secs,
     })
+}
+
+fn send_recorder_init(signal: &RecorderInitSignal, result: Result<(), String>) {
+    if let Ok(mut guard) = signal.lock() {
+        if let Some(tx) = guard.take() {
+            let _ = tx.send(result);
+        }
+    }
 }
 
 struct AecPipeline {
@@ -1333,6 +1368,7 @@ fn build_input_stream<T>(
     app: tauri::AppHandle,
     device_channels: u16,
     mut aec_pipeline: Option<AecPipeline>,
+    init_signal: RecorderInitSignal,
     err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
 ) -> Result<cpal::Stream, cpal::BuildStreamError>
 where
@@ -1343,6 +1379,7 @@ where
     device.build_input_stream(
         config,
         move |data: &[T], _| {
+            send_recorder_init(&init_signal, Ok(()));
             let mut peak = 0.0f32;
             let mut sum = 0.0f32;
             let mut count = 0usize;
@@ -2536,26 +2573,16 @@ fn profile_snapshot_for_id(
     })
 }
 
-fn emit_state_once(
+fn profile_snapshot_for_mode(
     app: &tauri::AppHandle,
-    state: &'static str,
-    mode: Option<VoiceMode>,
-    mode_profile: Option<VoiceModeProfileSnapshot>,
-    message: Option<String>,
-) {
-    let seq = next_voice_state_seq();
-    let (mode_profile_id, mode_profile_name) = state_profile_fields(mode_profile);
-    let _ = app.emit(
-        "voice-state",
-        VoiceStateEvent {
-            state,
-            mode,
-            mode_profile_id,
-            mode_profile_name,
-            message,
-            seq,
-        },
-    );
+    mode: VoiceMode,
+    mode_profile_id: &str,
+) -> Option<VoiceModeProfileSnapshot> {
+    if mode == VoiceMode::Dictation {
+        profile_snapshot_for_id(app, mode_profile_id)
+    } else {
+        None
+    }
 }
 
 fn emit_state(

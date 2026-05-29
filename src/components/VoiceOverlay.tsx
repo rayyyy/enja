@@ -21,7 +21,7 @@ export function VoiceOverlay() {
   const voiceDictationShortcut = useAppStore((s) => s.voiceDictationShortcut);
   const voiceAskShortcut = useAppStore((s) => s.voiceAskShortcut);
   const [state, setState] = useState<VoiceStateEvent>({
-    state: "recording",
+    state: "preparing",
     mode: "dictation",
     modeProfileId: "default",
     modeProfileName: "デフォルト",
@@ -64,7 +64,12 @@ export function VoiceOverlay() {
         latestStateSeq.current = next.seq;
       }
       setState(next);
-      if (next.state === "recording" || next.state === "processing") {
+      if (
+        next.state === "preparing" ||
+        next.state === "recording" ||
+        next.state === "stopping" ||
+        next.state === "processing"
+      ) {
         setResult(null);
       }
     });
@@ -100,7 +105,12 @@ export function VoiceOverlay() {
   }, []);
 
   useEffect(() => {
-    if (state.state !== "recording" && state.state !== "processing") {
+    if (
+      state.state !== "preparing" &&
+      state.state !== "recording" &&
+      state.state !== "stopping" &&
+      state.state !== "processing"
+    ) {
       return;
     }
     const id = window.setInterval(() => {
@@ -121,15 +131,27 @@ export function VoiceOverlay() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const isActive = state.state === "recording" || state.state === "processing";
+  const isActive =
+    state.state === "preparing" ||
+    state.state === "recording" ||
+    state.state === "stopping" ||
+    state.state === "processing";
 
   const bars = Array.from({ length: BARS }, (_, i) => {
     const wave =
-      state.state === "processing"
+      state.state === "processing" || state.state === "stopping"
         ? Math.sin(i * 0.5 + tick * 1.12) * 0.34 + 0.72
         : Math.sin(i * 0.78 + tick * 0.76) * 0.28 + 0.78;
     const idleMotion =
-      state.state === "processing" ? 0.58 : state.state === "recording" ? 0.1 : 0.04;
+      state.state === "processing"
+        ? 0.58
+        : state.state === "stopping"
+          ? 0.34
+          : state.state === "preparing"
+            ? 0.18
+            : state.state === "recording"
+              ? 0.1
+              : 0.04;
     const amount = Math.max(energy, level.rms * 8, level.peak * 2.4, idleMotion);
     return Math.max(5, Math.min(24, amount * 26 * wave));
   });
@@ -166,11 +188,21 @@ export function VoiceOverlay() {
   const compactShortcutLabel = isAskMode
     ? voiceAskShortcut.label
     : `${modeName} · ${voiceDictationShortcut.label}`;
+  const compactStatusLabel =
+    state.state === "preparing"
+      ? "準備中"
+      : state.state === "stopping"
+        ? "終了中"
+        : state.state === "processing"
+          ? "処理中"
+          : compactShortcutLabel;
   const showInlineText = expanded;
   const stateGlyph =
-    state.state === "recording"
+    state.state === "preparing"
+      ? "pending"
+      : state.state === "recording"
       ? "mic"
-      : state.state === "processing"
+      : state.state === "stopping" || state.state === "processing"
         ? "off"
         : state.state === "error"
           ? "error"
@@ -178,7 +210,9 @@ export function VoiceOverlay() {
   const tone =
     state.state === "error"
       ? "red"
-      : state.state === "processing"
+      : state.state === "preparing" ||
+          state.state === "stopping" ||
+          state.state === "processing"
         ? "amber"
         : state.state === "fallback"
           ? "sky"
@@ -247,6 +281,9 @@ export function VoiceOverlay() {
                 }`}
               />
             ) : null}
+            {stateGlyph === "pending" ? (
+              <span className="size-3 rounded-full border-2 border-amber-200/80 border-t-transparent animate-spin" />
+            ) : null}
             {stateGlyph === "off" ? (
               <span className="relative h-4 w-4 rounded-full border-2 border-amber-200/80">
                 <span className="absolute top-1/2 left-1/2 h-0.5 w-6 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-amber-200/90 shadow-[0_0_18px_rgba(253,230,138,0.55)]" />
@@ -309,7 +346,7 @@ export function VoiceOverlay() {
                     : "border-emerald-200/20 bg-emerald-300/10 text-emerald-100/80"
                 }`}
               >
-                {compactShortcutLabel}
+                {compactStatusLabel}
               </span>
             </div>
           ) : null}
