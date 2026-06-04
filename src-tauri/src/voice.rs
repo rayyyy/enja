@@ -57,7 +57,9 @@ const ACTIVE_AUDIO_RMS_THRESHOLD: f32 = 0.006;
 const MIN_ACTIVE_AUDIO_SECS: f32 = 0.08;
 const EDGE_SILENCE_PADDING_MS: u32 = 160;
 const MAX_INTERNAL_SILENCE_MS: u32 = 320;
-const DICTIONARY_LEARNING_DELAYS_MS: [u64; 3] = [1_500, 3_500, 7_000];
+const DICTIONARY_LEARNING_POLL_INTERVAL_MS: u64 = 250;
+const DICTIONARY_LEARNING_QUIET_MS: u64 = 2_000;
+const DICTIONARY_LEARNING_MAX_WATCH_MS: u64 = 15_000;
 const DICTIONARY_NOTICE_VISIBLE_MS: u64 = 6_500;
 const DICTIONARY_UNDO_NOTICE_MS: u64 = 900;
 const MIN_LEARNED_CORRECTION_CHARS: usize = 2;
@@ -278,6 +280,66 @@ struct ChangedSpan {
     new_range: TextRange,
     from: String,
     to: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DictionaryLearningQuiescence {
+    baseline_value: String,
+    last_value: String,
+    stable_ms: u64,
+    elapsed_ms: u64,
+    last_ready_value: Option<String>,
+}
+
+impl DictionaryLearningQuiescence {
+    fn new(baseline_value: &str) -> Self {
+        Self {
+            baseline_value: baseline_value.to_string(),
+            last_value: baseline_value.to_string(),
+            stable_ms: 0,
+            elapsed_ms: 0,
+            last_ready_value: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DictionaryLearningQuiescenceStep {
+    Continue,
+    Ready,
+    Expired,
+}
+
+fn advance_dictionary_learning_quiescence(
+    state: &mut DictionaryLearningQuiescence,
+    current_value: &str,
+    poll_ms: u64,
+    quiet_ms: u64,
+    max_watch_ms: u64,
+) -> DictionaryLearningQuiescenceStep {
+    state.elapsed_ms = state.elapsed_ms.saturating_add(poll_ms);
+
+    if current_value == state.last_value {
+        state.stable_ms = state.stable_ms.saturating_add(poll_ms);
+    } else {
+        state.last_value = current_value.to_string();
+        state.stable_ms = 0;
+        state.last_ready_value = None;
+    }
+
+    if state.elapsed_ms > max_watch_ms {
+        return DictionaryLearningQuiescenceStep::Expired;
+    }
+
+    if current_value != state.baseline_value
+        && state.stable_ms >= quiet_ms
+        && state.last_ready_value.as_deref() != Some(current_value)
+    {
+        state.last_ready_value = Some(current_value.to_string());
+        return DictionaryLearningQuiescenceStep::Ready;
+    }
+
+    DictionaryLearningQuiescenceStep::Continue
 }
 
 pub struct VoiceManager {
@@ -3250,30 +3312,42 @@ fn start_dictionary_learning_watch(app: tauri::AppHandle, target: AxFocusedText)
 
     std::thread::spawn(move || {
         let baseline = after_paste;
-        for delay_ms in DICTIONARY_LEARNING_DELAYS_MS {
-            std::thread::sleep(Duration::from_millis(delay_ms));
+        let mut quiescence = DictionaryLearningQuiescence::new(&baseline.value);
+        loop {
+            std::thread::sleep(Duration::from_millis(DICTIONARY_LEARNING_POLL_INTERVAL_MS));
             let Some(current) = target.element.read_text_snapshot() else {
                 return;
             };
             if current.pid != baseline.pid {
                 return;
             }
-            if current.value == baseline.value {
-                continue;
-            }
-            let Some((from, to)) =
-                learned_correction_from_values(&baseline.value, &current.value, inserted_range)
-            else {
-                return;
-            };
-            match dictionary::upsert_learned_correction(&app, &from, &to) {
-                Ok(Some(learned)) => {
-                    show_dictionary_learning_notice(&app, learned);
+            match advance_dictionary_learning_quiescence(
+                &mut quiescence,
+                &current.value,
+                DICTIONARY_LEARNING_POLL_INTERVAL_MS,
+                DICTIONARY_LEARNING_QUIET_MS,
+                DICTIONARY_LEARNING_MAX_WATCH_MS,
+            ) {
+                DictionaryLearningQuiescenceStep::Continue => {}
+                DictionaryLearningQuiescenceStep::Expired => return,
+                DictionaryLearningQuiescenceStep::Ready => {
+                    let Some((from, to)) = learned_correction_from_values(
+                        &baseline.value,
+                        &current.value,
+                        inserted_range,
+                    ) else {
+                        continue;
+                    };
+                    match dictionary::upsert_learned_correction(&app, &from, &to) {
+                        Ok(Some(learned)) => {
+                            show_dictionary_learning_notice(&app, learned);
+                        }
+                        Ok(None) => {}
+                        Err(err) => eprintln!("[enja] dictionary learning failed: {err}"),
+                    }
+                    return;
                 }
-                Ok(None) => {}
-                Err(err) => eprintln!("[enja] dictionary learning failed: {err}"),
             }
-            return;
         }
     });
 }
@@ -3995,6 +4069,133 @@ mod tests {
         assert_eq!(span.to, "Typeless");
         assert_eq!(span.old_range.location, "絵文字🙂".encode_utf16().count());
         assert_eq!(span.old_range.length, "タイプレス".encode_utf16().count());
+    }
+
+    #[test]
+    fn dictionary_learning_quiescence_waits_while_value_changes() {
+        let mut state = DictionaryLearningQuiescence::new("タイプレス");
+
+        for value in ["t", "ty", "typ", "type", "typel"] {
+            assert_eq!(
+                advance_dictionary_learning_quiescence(
+                    &mut state,
+                    value,
+                    DICTIONARY_LEARNING_POLL_INTERVAL_MS,
+                    DICTIONARY_LEARNING_QUIET_MS,
+                    DICTIONARY_LEARNING_MAX_WATCH_MS,
+                ),
+                DictionaryLearningQuiescenceStep::Continue
+            );
+        }
+    }
+
+    #[test]
+    fn dictionary_learning_quiescence_requires_quiet_period() {
+        let mut state = DictionaryLearningQuiescence::new("タイプレス");
+        let stable_polls = DICTIONARY_LEARNING_QUIET_MS / DICTIONARY_LEARNING_POLL_INTERVAL_MS;
+
+        for _ in 0..stable_polls {
+            assert_eq!(
+                advance_dictionary_learning_quiescence(
+                    &mut state,
+                    "Typeless",
+                    DICTIONARY_LEARNING_POLL_INTERVAL_MS,
+                    DICTIONARY_LEARNING_QUIET_MS,
+                    DICTIONARY_LEARNING_MAX_WATCH_MS,
+                ),
+                DictionaryLearningQuiescenceStep::Continue
+            );
+        }
+        assert_eq!(
+            advance_dictionary_learning_quiescence(
+                &mut state,
+                "Typeless",
+                DICTIONARY_LEARNING_POLL_INTERVAL_MS,
+                DICTIONARY_LEARNING_QUIET_MS,
+                DICTIONARY_LEARNING_MAX_WATCH_MS,
+            ),
+            DictionaryLearningQuiescenceStep::Ready
+        );
+    }
+
+    #[test]
+    fn dictionary_learning_quiescence_ignores_baseline_value() {
+        let mut state = DictionaryLearningQuiescence::new("タイプレス");
+
+        for _ in 0..10 {
+            assert_eq!(
+                advance_dictionary_learning_quiescence(
+                    &mut state,
+                    "タイプレス",
+                    DICTIONARY_LEARNING_POLL_INTERVAL_MS,
+                    DICTIONARY_LEARNING_QUIET_MS,
+                    DICTIONARY_LEARNING_MAX_WATCH_MS,
+                ),
+                DictionaryLearningQuiescenceStep::Continue
+            );
+        }
+    }
+
+    #[test]
+    fn dictionary_learning_quiescence_can_recover_after_ineligible_candidate() {
+        let mut state = DictionaryLearningQuiescence::new("タイプレス");
+        let stable_polls = DICTIONARY_LEARNING_QUIET_MS / DICTIONARY_LEARNING_POLL_INTERVAL_MS;
+
+        for _ in 0..stable_polls {
+            assert_eq!(
+                advance_dictionary_learning_quiescence(
+                    &mut state,
+                    "T",
+                    DICTIONARY_LEARNING_POLL_INTERVAL_MS,
+                    DICTIONARY_LEARNING_QUIET_MS,
+                    DICTIONARY_LEARNING_MAX_WATCH_MS,
+                ),
+                DictionaryLearningQuiescenceStep::Continue
+            );
+        }
+        assert_eq!(
+            advance_dictionary_learning_quiescence(
+                &mut state,
+                "T",
+                DICTIONARY_LEARNING_POLL_INTERVAL_MS,
+                DICTIONARY_LEARNING_QUIET_MS,
+                DICTIONARY_LEARNING_MAX_WATCH_MS,
+            ),
+            DictionaryLearningQuiescenceStep::Ready
+        );
+        assert_eq!(
+            advance_dictionary_learning_quiescence(
+                &mut state,
+                "T",
+                DICTIONARY_LEARNING_POLL_INTERVAL_MS,
+                DICTIONARY_LEARNING_QUIET_MS,
+                DICTIONARY_LEARNING_MAX_WATCH_MS,
+            ),
+            DictionaryLearningQuiescenceStep::Continue
+        );
+
+        for _ in 0..stable_polls {
+            assert_eq!(
+                advance_dictionary_learning_quiescence(
+                    &mut state,
+                    "Typeless",
+                    DICTIONARY_LEARNING_POLL_INTERVAL_MS,
+                    DICTIONARY_LEARNING_QUIET_MS,
+                    DICTIONARY_LEARNING_MAX_WATCH_MS,
+                ),
+                DictionaryLearningQuiescenceStep::Continue
+            );
+        }
+        assert_eq!(
+            advance_dictionary_learning_quiescence(
+                &mut state,
+                "Typeless",
+                DICTIONARY_LEARNING_POLL_INTERVAL_MS,
+                DICTIONARY_LEARNING_QUIET_MS,
+                DICTIONARY_LEARNING_MAX_WATCH_MS,
+            ),
+            DictionaryLearningQuiescenceStep::Ready
+        );
     }
 
     #[test]

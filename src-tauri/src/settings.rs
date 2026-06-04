@@ -4,6 +4,9 @@ use std::sync::RwLock;
 use tauri::AppHandle;
 use tauri::Manager;
 
+const KEYCODE_FUNCTION: i64 = 63;
+const KEYCODE_GLOBE_FUNCTION: i64 = 179;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum UiLanguage {
@@ -82,6 +85,7 @@ pub struct ShortcutBinding {
     pub key_code: Option<i64>,
     pub key: String,
     pub label: String,
+    pub tap_count: u8,
     pub modifiers: ShortcutModifiers,
 }
 
@@ -91,6 +95,17 @@ impl ShortcutBinding {
             key_code: None,
             key: "fn".to_string(),
             label: "Fn".to_string(),
+            tap_count: 1,
+            modifiers: ShortcutModifiers::default(),
+        }
+    }
+
+    pub fn fn_double_tap() -> Self {
+        Self {
+            key_code: None,
+            key: "fn".to_string(),
+            label: "Fn Fn".to_string(),
+            tap_count: 2,
             modifiers: ShortcutModifiers::default(),
         }
     }
@@ -117,6 +132,7 @@ impl ShortcutBinding {
             key_code,
             key,
             label: base_label,
+            tap_count: 1,
             modifiers,
         };
         binding.normalize();
@@ -125,9 +141,19 @@ impl ShortcutBinding {
 
     pub fn normalize(&mut self) {
         self.key = self.key.trim().to_ascii_lowercase();
+        if self.is_function_keycode_binding() {
+            self.key_code = None;
+            self.key = "fn".to_string();
+        }
         self.label = if self.is_fn_key() {
-            "Fn".to_string()
+            self.tap_count = self.tap_count.clamp(1, 2);
+            self.modifiers = ShortcutModifiers::default();
+            match self.tap_count {
+                2 => "Fn Fn".to_string(),
+                _ => "Fn".to_string(),
+            }
         } else {
+            self.tap_count = 1;
             let base_label = shortcut_base_label(&self.label, &self.key);
             format_shortcut_label(&self.modifiers, &base_label)
         };
@@ -137,11 +163,26 @@ impl ShortcutBinding {
         self.key_code.is_none() && self.key == "fn"
     }
 
+    fn is_function_keycode_binding(&self) -> bool {
+        matches!(
+            self.key_code,
+            Some(KEYCODE_FUNCTION | KEYCODE_GLOBE_FUNCTION)
+        ) || matches!(self.key.as_str(), "function" | "globe")
+    }
+
     pub fn is_same_shortcut(&self, other: &Self) -> bool {
         self.key_code == other.key_code
             && self.key == other.key
+            && self.tap_count == other.tap_count
             && self.modifiers == other.modifiers
             && self.is_fn_key() == other.is_fn_key()
+    }
+
+    pub fn conflicts_with(&self, other: &Self) -> bool {
+        if self.is_fn_key() && other.is_fn_key() {
+            return true;
+        }
+        self.is_same_shortcut(other)
     }
 }
 
@@ -720,7 +761,7 @@ impl AppSettings {
         if self
             .shortcuts
             .voice_dictation
-            .is_same_shortcut(&self.shortcuts.voice_ask)
+            .conflicts_with(&self.shortcuts.voice_ask)
         {
             return Err("音声入力と音声指示に同じショートカットは設定できません。".to_string());
         }
@@ -818,6 +859,7 @@ mod tests {
         assert_eq!(settings.translation.target_language, UiLanguage::Ja);
         assert_eq!(settings.app.double_tap_threshold_ms, 400);
         assert_eq!(settings.shortcuts.voice_dictation.label, "Fn");
+        assert_eq!(settings.shortcuts.voice_dictation.tap_count, 1);
         assert_eq!(settings.voice.active_mode_profile_id, DEFAULT_VOICE_MODE_ID);
         assert_eq!(settings.voice.mode_profiles.len(), 5);
         assert_eq!(settings.voice.mode_profiles[1].id, "speed");
@@ -931,6 +973,7 @@ mod tests {
             key_code: Some(49),
             key: "space".to_string(),
             label: "Fn Fn Fn Space".to_string(),
+            tap_count: 1,
             modifiers: ShortcutModifiers {
                 function: true,
                 ..ShortcutModifiers::default()
@@ -940,5 +983,46 @@ mod tests {
         shortcut.normalize();
 
         assert_eq!(shortcut.label, "Fn Space");
+    }
+
+    #[test]
+    fn shortcut_normalize_supports_fn_double_tap() {
+        let mut shortcut = ShortcutBinding {
+            key_code: None,
+            key: "fn".to_string(),
+            label: "Fn".to_string(),
+            tap_count: 2,
+            modifiers: ShortcutModifiers::default(),
+        };
+
+        shortcut.normalize();
+
+        assert_eq!(shortcut.label, "Fn Fn");
+        assert!(shortcut.is_same_shortcut(&ShortcutBinding::fn_double_tap()));
+    }
+
+    #[test]
+    fn shortcut_normalize_migrates_globe_function_keycode_to_fn() {
+        let mut shortcut = ShortcutBinding {
+            key_code: Some(179),
+            key: "unknown".to_string(),
+            label: "Key 179".to_string(),
+            tap_count: 1,
+            modifiers: ShortcutModifiers::default(),
+        };
+
+        shortcut.normalize();
+
+        assert!(shortcut.is_same_shortcut(&ShortcutBinding::fn_key()));
+        assert_eq!(shortcut.label, "Fn");
+    }
+
+    #[test]
+    fn shortcut_validation_rejects_fn_single_and_double_together() {
+        let mut settings = AppSettings::default();
+        settings.shortcuts.voice_dictation = ShortcutBinding::fn_key();
+        settings.shortcuts.voice_ask = ShortcutBinding::fn_double_tap();
+
+        assert!(settings.validate_shortcuts().is_err());
     }
 }

@@ -8,6 +8,7 @@ const defaultVoiceDictationShortcut: ShortcutBinding = {
   keyCode: null,
   key: "fn",
   label: "Fn",
+  tapCount: 1,
   modifiers: {
     command: false,
     option: false,
@@ -21,6 +22,7 @@ const defaultVoiceAskShortcut: ShortcutBinding = {
   keyCode: 49,
   key: "space",
   label: "Fn Space",
+  tapCount: 1,
   modifiers: {
     command: false,
     option: false,

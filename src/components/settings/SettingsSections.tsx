@@ -847,6 +847,7 @@ const DEFAULT_SHORTCUTS: Record<ShortcutAction, ShortcutBinding> = {
     keyCode: null,
     key: "fn",
     label: "Fn",
+    tapCount: 1,
     modifiers: {
       command: false,
       option: false,
@@ -859,6 +860,7 @@ const DEFAULT_SHORTCUTS: Record<ShortcutAction, ShortcutBinding> = {
     keyCode: 49,
     key: "space",
     label: "Fn Space",
+    tapCount: 1,
     modifiers: {
       command: false,
       option: false,

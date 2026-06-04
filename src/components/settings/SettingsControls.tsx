@@ -13,10 +13,10 @@ export const settingsButtonPrimaryClass =
   "rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 disabled:opacity-50";
 
 export const settingsButtonSecondaryClass =
-  "rounded-lg bg-neutral-100 px-3 py-1.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-200/80 focus-visible:outline-none disabled:opacity-40";
+  "whitespace-nowrap rounded-lg bg-neutral-100 px-3 py-1.5 text-xs font-medium text-neutral-700 transition hover:bg-neutral-200/80 focus-visible:outline-none disabled:opacity-40";
 
 export const settingsButtonAccentClass =
-  "rounded-lg bg-blue-100 px-3 py-1.5 text-xs font-medium text-blue-700 transition hover:bg-blue-200/70 focus-visible:outline-none";
+  "whitespace-nowrap rounded-lg bg-blue-100 px-3 py-1.5 text-xs font-medium text-blue-700 transition hover:bg-blue-200/70 focus-visible:outline-none";
 
 export function SettingsSectionPanel({
   title,
@@ -64,17 +64,17 @@ export function ShortcutRow({
   onReset: () => void;
 }) {
   return (
-    <div className="grid gap-4 rounded-xl bg-neutral-100/70 px-4 py-4 sm:grid-cols-[minmax(0,1fr)_17rem] sm:items-center sm:gap-6">
+    <div className="grid gap-4 rounded-xl bg-neutral-100/70 px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-6">
       <div className="min-w-0">
         <p className="text-sm font-medium text-neutral-900">{label}</p>
         <p className="mt-0.5 text-xs text-neutral-500">
           {capturing ? "キーを押してください。" : "現在の割り当て"}
         </p>
       </div>
-      <div className="flex min-w-0 items-center gap-2 sm:justify-end">
+      <div className="flex min-w-0 flex-wrap items-center gap-2 sm:flex-nowrap sm:justify-end">
         <kbd
           title={capturing ? undefined : shortcut.label}
-          className="inline-flex h-9 min-w-0 flex-1 items-center justify-center truncate rounded-lg bg-white/80 px-3 text-xs font-semibold tracking-wide text-neutral-800 sm:max-w-38 sm:flex-none"
+          className="inline-flex h-9 min-w-[5.5rem] max-w-[10rem] shrink-0 items-center justify-center truncate rounded-lg bg-white/80 px-3 text-xs font-semibold tracking-wide text-neutral-800"
         >
           {capturing ? "記録中…" : shortcut.label}
         </kbd>

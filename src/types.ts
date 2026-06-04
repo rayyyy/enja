@@ -31,6 +31,7 @@ export type ShortcutBinding = {
   keyCode: number | null;
   key: string;
   label: string;
+  tapCount: number;
   modifiers: ShortcutModifiers;
 };
 

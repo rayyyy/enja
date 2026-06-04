@@ -106,6 +106,9 @@ mod macos {
     const KEYCODE_C: i64 = 8;
     const KEYCODE_SPACE: i64 = 49;
     const KEYCODE_ESCAPE: i64 = 53;
+    const KEYCODE_FUNCTION: i64 = 63;
+    const KEYCODE_GLOBE_FUNCTION: i64 = 179;
+    const FN_SOURCE_DEDUP_MS: u64 = 80;
 
     // --- FFI bindings --------------------------------------------------------
 
@@ -149,6 +152,12 @@ mod macos {
         control_down: bool,
         control_chord_used: bool,
         fn_down: bool,
+        fn_modifier_down: bool,
+        fn_keycode_down: bool,
+        suppress_fn_modifier_until_up: bool,
+        suppress_fn_keycode_until_up: bool,
+        last_fn_modifier_release_at: Option<Instant>,
+        last_fn_keycode_release_at: Option<Instant>,
         /// True while Fn is held and a Space press has already been registered
         /// for this hold. Used so the matching Fn release suppresses the
         /// FunctionTap event.
@@ -170,8 +179,12 @@ mod macos {
         /// etc.). A scheduled tap only fires if its captured token still
         /// matches.
         fn_release_generation: u64,
+        fn_recent_release_at: Option<Instant>,
+        last_fn_tap: Option<Instant>,
         capture_action: Option<ShortcutAction>,
         capture_fn_down: bool,
+        capture_fn_tap_at: Option<Instant>,
+        capture_fn_release_generation: u64,
         last_cmd_c: Option<Instant>,
         tap: CFMachPortRef,
     }
@@ -235,20 +248,15 @@ mod macos {
                 } else if state.control_down && control_has_other_modifiers(flags) {
                     state.control_chord_used = true;
                 }
-                if fn_down != state.fn_down {
-                    state.fn_down = fn_down;
-                    if state.capture_action.is_some() {
-                        handle_capture_fn_change(state, fn_down);
-                    } else if fn_down {
-                        handle_fn_pressed(state);
-                    } else {
-                        handle_fn_released(state);
-                    }
-                }
+                handle_function_modifier_change(state, fn_down);
             }
             KCG_EVENT_KEY_DOWN => {
                 let keycode = CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE);
                 let flags = CGEventGetFlags(event);
+                if is_function_keycode(keycode) {
+                    handle_function_keycode_change(state, true);
+                    return std::ptr::null_mut();
+                }
                 if state.capture_action.is_some() {
                     handle_capture_key_down(state, keycode, flags);
                     return std::ptr::null_mut();
@@ -261,6 +269,7 @@ mod macos {
                     // explicitly cancelling.
                     let should_swallow = state.voice_overlay_visible;
                     invalidate_pending_fn_tap(state);
+                    reset_fn_tap_sequence(state);
                     let _ = state.tx.send(KeyboardTrigger::Escape);
                     if should_swallow {
                         return std::ptr::null_mut();
@@ -273,6 +282,7 @@ mod macos {
                     if state.fn_recent_release {
                         invalidate_pending_fn_tap(state);
                     }
+                    reset_fn_tap_sequence(state);
                     state.fn_chord_used = true;
                     let shortcut = ShortcutBinding::fn_space();
                     if !state.fn_space_down {
@@ -286,6 +296,7 @@ mod macos {
                 }
                 if state.fn_down {
                     state.fn_chord_used = true;
+                    reset_fn_tap_sequence(state);
                 }
                 if let Some(trigger) =
                     voice_trigger_for_shortcut(state, &shortcut_from_key_event(keycode, flags))
@@ -310,6 +321,10 @@ mod macos {
             }
             KCG_EVENT_KEY_UP => {
                 let keycode = CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE);
+                if is_function_keycode(keycode) {
+                    handle_function_keycode_change(state, false);
+                    return std::ptr::null_mut();
+                }
                 if keycode == KEYCODE_SPACE && state.fn_space_down {
                     state.fn_space_down = false;
                     return std::ptr::null_mut();
@@ -321,7 +336,149 @@ mod macos {
         event
     }
 
+    fn is_function_keycode(keycode: i64) -> bool {
+        // Some macOS keyboard layouts emit Fn/Globe as ordinary key events in
+        // addition to, or instead of, the secondary-Fn modifier flag.
+        matches!(keycode, KEYCODE_FUNCTION | KEYCODE_GLOBE_FUNCTION)
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum FunctionSource {
+        Modifier,
+        Keycode,
+    }
+
+    fn handle_function_modifier_change(state: &mut ListenerState, fn_down: bool) {
+        handle_function_source_change(state, FunctionSource::Modifier, fn_down, Instant::now());
+    }
+
+    fn handle_function_keycode_change(state: &mut ListenerState, fn_down: bool) {
+        handle_function_source_change(state, FunctionSource::Keycode, fn_down, Instant::now());
+    }
+
+    fn handle_function_source_change(
+        state: &mut ListenerState,
+        source: FunctionSource,
+        source_down: bool,
+        now: Instant,
+    ) {
+        let was_active = state.fn_down;
+
+        if source_down {
+            if is_function_source_down(state, source) {
+                return;
+            }
+            if !was_active && recently_released_other_function_source(state, source, now) {
+                set_function_source_suppressed(state, source, true);
+                return;
+            }
+            set_function_source_down(state, source, true);
+        } else {
+            if take_function_source_suppressed(state, source) {
+                return;
+            }
+            if !is_function_source_down(state, source) {
+                return;
+            }
+            set_function_source_down(state, source, false);
+            set_function_source_release_at(state, source, now);
+        }
+
+        let is_active = state.fn_modifier_down || state.fn_keycode_down;
+        if was_active == is_active {
+            return;
+        }
+
+        state.fn_down = is_active;
+        if state.capture_action.is_some() {
+            handle_capture_fn_change(state, is_active);
+        } else if is_active {
+            handle_fn_pressed(state);
+        } else {
+            handle_fn_released(state);
+        }
+    }
+
+    fn is_function_source_down(state: &ListenerState, source: FunctionSource) -> bool {
+        match source {
+            FunctionSource::Modifier => state.fn_modifier_down,
+            FunctionSource::Keycode => state.fn_keycode_down,
+        }
+    }
+
+    fn set_function_source_down(
+        state: &mut ListenerState,
+        source: FunctionSource,
+        source_down: bool,
+    ) {
+        match source {
+            FunctionSource::Modifier => state.fn_modifier_down = source_down,
+            FunctionSource::Keycode => state.fn_keycode_down = source_down,
+        }
+    }
+
+    fn set_function_source_suppressed(
+        state: &mut ListenerState,
+        source: FunctionSource,
+        suppressed: bool,
+    ) {
+        match source {
+            FunctionSource::Modifier => state.suppress_fn_modifier_until_up = suppressed,
+            FunctionSource::Keycode => state.suppress_fn_keycode_until_up = suppressed,
+        }
+    }
+
+    fn take_function_source_suppressed(state: &mut ListenerState, source: FunctionSource) -> bool {
+        let suppressed = match source {
+            FunctionSource::Modifier => &mut state.suppress_fn_modifier_until_up,
+            FunctionSource::Keycode => &mut state.suppress_fn_keycode_until_up,
+        };
+        let was_suppressed = *suppressed;
+        *suppressed = false;
+        was_suppressed
+    }
+
+    fn set_function_source_release_at(
+        state: &mut ListenerState,
+        source: FunctionSource,
+        released_at: Instant,
+    ) {
+        match source {
+            FunctionSource::Modifier => state.last_fn_modifier_release_at = Some(released_at),
+            FunctionSource::Keycode => state.last_fn_keycode_release_at = Some(released_at),
+        }
+    }
+
+    fn recently_released_other_function_source(
+        state: &ListenerState,
+        source: FunctionSource,
+        now: Instant,
+    ) -> bool {
+        let other_release_at = match source {
+            FunctionSource::Modifier => state.last_fn_keycode_release_at,
+            FunctionSource::Keycode => state.last_fn_modifier_release_at,
+        };
+        other_release_at
+            .and_then(|released_at| now.checked_duration_since(released_at))
+            .is_some_and(|elapsed| elapsed <= Duration::from_millis(FN_SOURCE_DEDUP_MS))
+    }
+
+    fn reset_function_sources(state: &mut ListenerState) {
+        state.fn_down = false;
+        state.fn_modifier_down = false;
+        state.fn_keycode_down = false;
+        state.suppress_fn_modifier_until_up = false;
+        state.suppress_fn_keycode_until_up = false;
+        state.last_fn_modifier_release_at = None;
+        state.last_fn_keycode_release_at = None;
+    }
+
     fn handle_fn_pressed(state: &mut ListenerState) {
+        if state.fn_recent_release {
+            if let Some(trigger) = confirm_pending_fn_tap(state, false) {
+                let _ = state.tx.send(trigger);
+            }
+        }
         // Start a fresh chord-detection cycle. A new Fn press also cancels any
         // FunctionTap still sitting in the previous release's grace window.
         state.fn_space_combo = false;
@@ -345,6 +502,7 @@ mod macos {
         state.fn_release_generation = state.fn_release_generation.wrapping_add(1);
         let token = state.fn_release_generation;
         state.fn_recent_release = true;
+        state.fn_recent_release_at = Some(Instant::now());
 
         let tx = state.tx.clone();
         std::thread::spawn(move || {
@@ -353,8 +511,7 @@ mod macos {
             if let Ok(mut guard) = LISTENER_STATE.lock() {
                 if let Some(state) = guard.as_mut() {
                     if state.fn_release_generation == token && state.fn_recent_release {
-                        state.fn_recent_release = false;
-                        trigger = voice_trigger_for_shortcut(state, &ShortcutBinding::fn_key());
+                        trigger = confirm_pending_fn_tap(state, true);
                     }
                 }
             }
@@ -367,6 +524,48 @@ mod macos {
     fn invalidate_pending_fn_tap(state: &mut ListenerState) {
         state.fn_release_generation = state.fn_release_generation.wrapping_add(1);
         state.fn_recent_release = false;
+        state.fn_recent_release_at = None;
+    }
+
+    fn confirm_pending_fn_tap(
+        state: &mut ListenerState,
+        emit_single_tap: bool,
+    ) -> Option<KeyboardTrigger> {
+        let tapped_at = state.fn_recent_release_at.unwrap_or_else(Instant::now);
+        state.fn_recent_release = false;
+        state.fn_recent_release_at = None;
+        trigger_for_confirmed_fn_tap(state, tapped_at, emit_single_tap)
+    }
+
+    fn trigger_for_confirmed_fn_tap(
+        state: &mut ListenerState,
+        tapped_at: Instant,
+        emit_single_tap: bool,
+    ) -> Option<KeyboardTrigger> {
+        let is_double_tap = state
+            .last_fn_tap
+            .and_then(|previous| tapped_at.checked_duration_since(previous))
+            .is_some_and(|elapsed| elapsed <= state.threshold);
+
+        if is_double_tap {
+            state.last_fn_tap = None;
+            if let Some(trigger) =
+                voice_trigger_for_shortcut(state, &ShortcutBinding::fn_double_tap())
+            {
+                return Some(trigger);
+            }
+        }
+
+        state.last_fn_tap = Some(tapped_at);
+        if emit_single_tap {
+            voice_trigger_for_shortcut(state, &ShortcutBinding::fn_key())
+        } else {
+            None
+        }
+    }
+
+    fn reset_fn_tap_sequence(state: &mut ListenerState) {
+        state.last_fn_tap = None;
     }
 
     fn handle_control_pressed(state: &mut ListenerState, flags: u64) {
@@ -392,11 +591,54 @@ mod macos {
     fn handle_capture_fn_change(state: &mut ListenerState, fn_down: bool) {
         if fn_down {
             state.capture_fn_down = true;
+            cancel_pending_capture_fn_completion(state);
             invalidate_pending_fn_tap(state);
             return;
         }
 
         if state.capture_fn_down {
+            state.capture_fn_down = false;
+            handle_capture_fn_released(state);
+        }
+    }
+
+    fn handle_capture_fn_released(state: &mut ListenerState) {
+        let released_at = Instant::now();
+        let is_double_tap = state
+            .capture_fn_tap_at
+            .and_then(|previous| released_at.checked_duration_since(previous))
+            .is_some_and(|elapsed| elapsed <= state.threshold);
+
+        if is_double_tap {
+            invalidate_pending_capture_fn_tap(state);
+            complete_capture(state, ShortcutBinding::fn_double_tap());
+            return;
+        }
+
+        state.capture_fn_tap_at = Some(released_at);
+        state.capture_fn_release_generation = state.capture_fn_release_generation.wrapping_add(1);
+        let token = state.capture_fn_release_generation;
+        let threshold = state.threshold;
+
+        std::thread::spawn(move || {
+            std::thread::sleep(threshold);
+            if let Ok(mut guard) = LISTENER_STATE.lock() {
+                if let Some(state) = guard.as_mut() {
+                    complete_pending_capture_fn_tap(state, token, released_at);
+                }
+            }
+        });
+    }
+
+    fn complete_pending_capture_fn_tap(
+        state: &mut ListenerState,
+        token: u64,
+        released_at: Instant,
+    ) {
+        let pending_matches = state.capture_fn_release_generation == token
+            && state.capture_fn_tap_at == Some(released_at)
+            && state.capture_action.is_some();
+        if pending_matches {
             complete_capture(state, ShortcutBinding::fn_key());
         }
     }
@@ -406,6 +648,7 @@ mod macos {
             cancel_capture(state, "キャンセルしました。".to_string());
             return;
         }
+        invalidate_pending_capture_fn_tap(state);
         complete_capture(state, shortcut_from_key_event(keycode, flags));
     }
 
@@ -414,10 +657,13 @@ mod macos {
             return;
         };
         state.capture_fn_down = false;
+        invalidate_pending_capture_fn_tap(state);
         state.fn_space_down = false;
         state.fn_space_combo = false;
         state.fn_chord_used = state.fn_down;
         invalidate_pending_fn_tap(state);
+        reset_fn_tap_sequence(state);
+        reset_function_sources(state);
         let _ = state
             .tx
             .send(KeyboardTrigger::ShortcutCaptured { action, shortcut });
@@ -428,10 +674,13 @@ mod macos {
             return;
         };
         state.capture_fn_down = false;
+        invalidate_pending_capture_fn_tap(state);
         state.fn_space_down = false;
         state.fn_space_combo = false;
         state.fn_chord_used = state.fn_down;
         invalidate_pending_fn_tap(state);
+        reset_fn_tap_sequence(state);
+        reset_function_sources(state);
         let _ = state
             .tx
             .send(KeyboardTrigger::ShortcutCaptureCancelled { action, reason });
@@ -441,6 +690,15 @@ mod macos {
         if let Some(trigger) = voice_trigger_for_shortcut(state, shortcut) {
             let _ = state.tx.send(trigger);
         }
+    }
+
+    fn invalidate_pending_capture_fn_tap(state: &mut ListenerState) {
+        cancel_pending_capture_fn_completion(state);
+        state.capture_fn_tap_at = None;
+    }
+
+    fn cancel_pending_capture_fn_completion(state: &mut ListenerState) {
+        state.capture_fn_release_generation = state.capture_fn_release_generation.wrapping_add(1);
     }
 
     fn voice_trigger_for_shortcut(
@@ -600,14 +858,24 @@ mod macos {
                 control_down: false,
                 control_chord_used: false,
                 fn_down: false,
+                fn_modifier_down: false,
+                fn_keycode_down: false,
+                suppress_fn_modifier_until_up: false,
+                suppress_fn_keycode_until_up: false,
+                last_fn_modifier_release_at: None,
+                last_fn_keycode_release_at: None,
                 fn_space_combo: false,
                 fn_chord_used: false,
                 fn_space_down: false,
                 fn_recent_release: false,
                 voice_overlay_visible: false,
                 fn_release_generation: 0,
+                fn_recent_release_at: None,
+                last_fn_tap: None,
                 capture_action: None,
                 capture_fn_down: false,
+                capture_fn_tap_at: None,
+                capture_fn_release_generation: 0,
                 last_cmd_c: None,
                 tap: std::ptr::null(),
             }
@@ -629,6 +897,35 @@ mod macos {
         }
 
         #[test]
+        fn fn_double_tap_resolves_to_configured_voice_shortcut() {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut state = state_with_tx(tx);
+            state.runtime.voice_dictation_shortcut = ShortcutBinding::fn_double_tap();
+
+            let first_tap = Instant::now();
+            assert!(trigger_for_confirmed_fn_tap(&mut state, first_tap, true).is_none());
+
+            let second_tap = first_tap + Duration::from_millis(120);
+            assert!(matches!(
+                trigger_for_confirmed_fn_tap(&mut state, second_tap, true),
+                Some(KeyboardTrigger::FunctionTap)
+            ));
+        }
+
+        #[test]
+        fn fn_double_tap_does_not_match_after_threshold() {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut state = state_with_tx(tx);
+            state.runtime.voice_dictation_shortcut = ShortcutBinding::fn_double_tap();
+
+            let first_tap = Instant::now();
+            assert!(trigger_for_confirmed_fn_tap(&mut state, first_tap, true).is_none());
+
+            let second_tap = first_tap + Duration::from_millis(401);
+            assert!(trigger_for_confirmed_fn_tap(&mut state, second_tap, true).is_none());
+        }
+
+        #[test]
         fn shortcut_capture_emits_normalized_binding() {
             let (tx, rx) = std::sync::mpsc::channel();
             let mut state = state_with_tx(tx);
@@ -643,6 +940,205 @@ mod macos {
                 KeyboardTrigger::ShortcutCaptured { action, shortcut } => {
                     assert_eq!(action, ShortcutAction::VoiceAsk);
                     assert!(shortcut.is_same_shortcut(&ShortcutBinding::fn_space()));
+                }
+                trigger => panic!("unexpected trigger: {trigger:?}"),
+            }
+        }
+
+        #[test]
+        fn shortcut_capture_treats_globe_function_keycode_as_fn_tap() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut state = state_with_tx(tx);
+            state.capture_action = Some(ShortcutAction::VoiceDictation);
+
+            assert!(is_function_keycode(KEYCODE_GLOBE_FUNCTION));
+            handle_function_keycode_change(&mut state, true);
+
+            assert!(rx.recv_timeout(Duration::from_millis(20)).is_err());
+            assert!(state.capture_fn_down);
+
+            handle_function_keycode_change(&mut state, false);
+            assert!(rx.recv_timeout(Duration::from_millis(20)).is_err());
+
+            let released_at = state.capture_fn_tap_at.expect("pending Fn tap");
+            let token = state.capture_fn_release_generation;
+            complete_pending_capture_fn_tap(&mut state, token, released_at);
+
+            match rx.recv_timeout(Duration::from_millis(20)).expect("trigger") {
+                KeyboardTrigger::ShortcutCaptured { action, shortcut } => {
+                    assert_eq!(action, ShortcutAction::VoiceDictation);
+                    assert!(shortcut.is_same_shortcut(&ShortcutBinding::fn_key()));
+                }
+                trigger => panic!("unexpected trigger: {trigger:?}"),
+            }
+        }
+
+        #[test]
+        fn shortcut_capture_treats_globe_function_keycode_double_tap_as_fn_double_tap() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut state = state_with_tx(tx);
+            state.capture_action = Some(ShortcutAction::VoiceDictation);
+
+            handle_function_keycode_change(&mut state, true);
+            handle_function_keycode_change(&mut state, false);
+            handle_function_keycode_change(&mut state, true);
+            handle_function_keycode_change(&mut state, false);
+
+            match rx.recv_timeout(Duration::from_millis(20)).expect("trigger") {
+                KeyboardTrigger::ShortcutCaptured { action, shortcut } => {
+                    assert_eq!(action, ShortcutAction::VoiceDictation);
+                    assert!(shortcut.is_same_shortcut(&ShortcutBinding::fn_double_tap()));
+                }
+                trigger => panic!("unexpected trigger: {trigger:?}"),
+            }
+        }
+
+        #[test]
+        fn shortcut_capture_deduplicates_keycode_then_modifier_for_one_fn_tap() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut state = state_with_tx(tx);
+            state.capture_action = Some(ShortcutAction::VoiceDictation);
+            let start = Instant::now();
+
+            handle_function_source_change(&mut state, FunctionSource::Keycode, true, start);
+            handle_function_source_change(
+                &mut state,
+                FunctionSource::Keycode,
+                false,
+                start + Duration::from_millis(8),
+            );
+            handle_function_source_change(
+                &mut state,
+                FunctionSource::Modifier,
+                true,
+                start + Duration::from_millis(16),
+            );
+            handle_function_source_change(
+                &mut state,
+                FunctionSource::Modifier,
+                false,
+                start + Duration::from_millis(24),
+            );
+
+            assert!(rx.recv_timeout(Duration::from_millis(20)).is_err());
+            let released_at = state.capture_fn_tap_at.expect("pending Fn tap");
+            let token = state.capture_fn_release_generation;
+            complete_pending_capture_fn_tap(&mut state, token, released_at);
+
+            match rx.recv_timeout(Duration::from_millis(20)).expect("trigger") {
+                KeyboardTrigger::ShortcutCaptured { action, shortcut } => {
+                    assert_eq!(action, ShortcutAction::VoiceDictation);
+                    assert!(shortcut.is_same_shortcut(&ShortcutBinding::fn_key()));
+                }
+                trigger => panic!("unexpected trigger: {trigger:?}"),
+            }
+        }
+
+        #[test]
+        fn shortcut_capture_deduplicates_modifier_then_keycode_for_one_fn_tap() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut state = state_with_tx(tx);
+            state.capture_action = Some(ShortcutAction::VoiceDictation);
+            let start = Instant::now();
+
+            handle_function_source_change(&mut state, FunctionSource::Modifier, true, start);
+            handle_function_source_change(
+                &mut state,
+                FunctionSource::Modifier,
+                false,
+                start + Duration::from_millis(8),
+            );
+            handle_function_source_change(
+                &mut state,
+                FunctionSource::Keycode,
+                true,
+                start + Duration::from_millis(16),
+            );
+            handle_function_source_change(
+                &mut state,
+                FunctionSource::Keycode,
+                false,
+                start + Duration::from_millis(24),
+            );
+
+            assert!(rx.recv_timeout(Duration::from_millis(20)).is_err());
+            let released_at = state.capture_fn_tap_at.expect("pending Fn tap");
+            let token = state.capture_fn_release_generation;
+            complete_pending_capture_fn_tap(&mut state, token, released_at);
+
+            match rx.recv_timeout(Duration::from_millis(20)).expect("trigger") {
+                KeyboardTrigger::ShortcutCaptured { action, shortcut } => {
+                    assert_eq!(action, ShortcutAction::VoiceDictation);
+                    assert!(shortcut.is_same_shortcut(&ShortcutBinding::fn_key()));
+                }
+                trigger => panic!("unexpected trigger: {trigger:?}"),
+            }
+        }
+
+        #[test]
+        fn fn_double_tap_shortcut_does_not_fire_for_duplicate_fn_sources() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut state = state_with_tx(tx);
+            state.runtime.voice_dictation_shortcut = ShortcutBinding::fn_double_tap();
+            let start = Instant::now();
+
+            handle_function_source_change(&mut state, FunctionSource::Keycode, true, start);
+            handle_function_source_change(
+                &mut state,
+                FunctionSource::Keycode,
+                false,
+                start + Duration::from_millis(8),
+            );
+            handle_function_source_change(
+                &mut state,
+                FunctionSource::Modifier,
+                true,
+                start + Duration::from_millis(16),
+            );
+            handle_function_source_change(
+                &mut state,
+                FunctionSource::Modifier,
+                false,
+                start + Duration::from_millis(24),
+            );
+
+            assert!(confirm_pending_fn_tap(&mut state, true).is_none());
+            assert!(rx.recv_timeout(Duration::from_millis(20)).is_err());
+        }
+
+        #[test]
+        fn shortcut_capture_emits_fn_double_tap() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut state = state_with_tx(tx);
+            state.capture_action = Some(ShortcutAction::VoiceDictation);
+            state.capture_fn_tap_at = Some(Instant::now());
+
+            handle_capture_fn_released(&mut state);
+
+            match rx.recv_timeout(Duration::from_millis(20)).expect("trigger") {
+                KeyboardTrigger::ShortcutCaptured { action, shortcut } => {
+                    assert_eq!(action, ShortcutAction::VoiceDictation);
+                    assert!(shortcut.is_same_shortcut(&ShortcutBinding::fn_double_tap()));
+                }
+                trigger => panic!("unexpected trigger: {trigger:?}"),
+            }
+        }
+
+        #[test]
+        fn shortcut_capture_emits_fn_single_tap_after_threshold() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut state = state_with_tx(tx);
+            state.capture_action = Some(ShortcutAction::VoiceDictation);
+            let released_at = Instant::now();
+            state.capture_fn_tap_at = Some(released_at);
+            state.capture_fn_release_generation = 1;
+
+            complete_pending_capture_fn_tap(&mut state, 1, released_at);
+
+            match rx.recv_timeout(Duration::from_millis(20)).expect("trigger") {
+                KeyboardTrigger::ShortcutCaptured { action, shortcut } => {
+                    assert_eq!(action, ShortcutAction::VoiceDictation);
+                    assert!(shortcut.is_same_shortcut(&ShortcutBinding::fn_key()));
                 }
                 trigger => panic!("unexpected trigger: {trigger:?}"),
             }
@@ -722,14 +1218,24 @@ mod macos {
                     control_down: false,
                     control_chord_used: false,
                     fn_down: false,
+                    fn_modifier_down: false,
+                    fn_keycode_down: false,
+                    suppress_fn_modifier_until_up: false,
+                    suppress_fn_keycode_until_up: false,
+                    last_fn_modifier_release_at: None,
+                    last_fn_keycode_release_at: None,
                     fn_space_combo: false,
                     fn_chord_used: false,
                     fn_space_down: false,
                     fn_recent_release: false,
                     voice_overlay_visible: false,
                     fn_release_generation: 0,
+                    fn_recent_release_at: None,
+                    last_fn_tap: None,
                     capture_action: None,
                     capture_fn_down: false,
+                    capture_fn_tap_at: None,
+                    capture_fn_release_generation: 0,
                     last_cmd_c: None,
                     tap,
                 }));
@@ -754,6 +1260,9 @@ mod macos {
                 state.threshold = Duration::from_millis(runtime.double_tap_threshold_ms.max(50));
                 state.runtime = runtime;
                 invalidate_pending_fn_tap(state);
+                invalidate_pending_capture_fn_tap(state);
+                reset_fn_tap_sequence(state);
+                reset_function_sources(state);
             }
         }
     }
@@ -769,6 +1278,9 @@ mod macos {
         state.fn_space_combo = false;
         state.fn_chord_used = false;
         invalidate_pending_fn_tap(state);
+        invalidate_pending_capture_fn_tap(state);
+        reset_fn_tap_sequence(state);
+        reset_function_sources(state);
         Ok(())
     }
 
@@ -778,6 +1290,9 @@ mod macos {
             state.capture_action = None;
             state.capture_fn_down = false;
             invalidate_pending_fn_tap(state);
+            invalidate_pending_capture_fn_tap(state);
+            reset_fn_tap_sequence(state);
+            reset_function_sources(state);
         }
         Ok(())
     }
