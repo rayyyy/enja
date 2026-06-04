@@ -335,22 +335,24 @@ fn handle_keyboard_trigger(app: tauri::AppHandle, trigger: KeyboardTrigger) {
             let _ = app.emit("enja-trigger", text);
         }
         KeyboardTrigger::FunctionTap => {
-            // The keyboard listener emits this on Fn *release* only when no
-            // Space was pressed during the hold — so the user's intent is
-            // unambiguously "Dictation toggle".
-            let Some(manager) = app.try_state::<VoiceManager>() else {
-                return;
-            };
-            if manager.is_active() {
-                let app_for_task = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let Some(manager) = app_for_task.try_state::<VoiceManager>() else {
-                        return;
-                    };
-                    let _ = manager.stop_session(app_for_task.clone()).await;
-                });
-            } else {
-                let _ = manager.start_session(app.clone(), VoiceMode::Dictation);
+            let voice_active = app
+                .try_state::<VoiceManager>()
+                .is_some_and(|manager| manager.is_active());
+            if voice_active {
+                stop_voice_session_async(app);
+            } else if let Some(mode) =
+                voice_start_mode_for_shortcut(&app, &ShortcutBinding::fn_key())
+            {
+                if let Some(manager) = app.try_state::<VoiceManager>() {
+                    let _ = manager.start_session(app.clone(), mode);
+                }
+            }
+        }
+        KeyboardTrigger::VoiceDictationStart => {
+            if let Some(manager) = app.try_state::<VoiceManager>() {
+                if !manager.is_active() {
+                    let _ = manager.start_session(app.clone(), VoiceMode::Dictation);
+                }
             }
         }
         KeyboardTrigger::FunctionSpace => {
@@ -386,6 +388,37 @@ fn handle_keyboard_trigger(app: tauri::AppHandle, trigger: KeyboardTrigger) {
             );
         }
     }
+}
+
+fn stop_voice_session_async(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let Some(manager) = app.try_state::<VoiceManager>() else {
+            return;
+        };
+        let _ = manager.stop_session(app.clone()).await;
+    });
+}
+
+fn voice_start_mode_for_shortcut(
+    app: &tauri::AppHandle,
+    shortcut: &ShortcutBinding,
+) -> Option<VoiceMode> {
+    app.try_state::<SettingsStore>()
+        .map(|store| {
+            let settings = store.get();
+            if settings
+                .shortcuts
+                .voice_dictation
+                .is_same_shortcut(shortcut)
+            {
+                Some(VoiceMode::Dictation)
+            } else if settings.shortcuts.voice_ask.is_same_shortcut(shortcut) {
+                Some(VoiceMode::Ask)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(None)
 }
 
 #[derive(Clone, Serialize)]

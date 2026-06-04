@@ -47,11 +47,11 @@ export function ShortcutSettingsSection({
   return (
     <SettingsSectionPanel
       title="ショートカット"
-      description="キー記録中は次に押したキー操作が登録されます。Escapeは録音キャンセル用に予約されています。"
+      description="キー記録中は次に押したキー操作が登録されます。録音停止は常にFn、Escapeは録音キャンセル用に予約されています。"
     >
       <SettingsFieldGroup className="sm:col-span-2">
         <ShortcutRow
-          label="音声入力開始/停止"
+          label="音声入力開始"
           shortcut={shortcuts.voiceDictation}
           capturing={capturingAction === "voiceDictation"}
           onCapture={() => onCapture("voiceDictation")}

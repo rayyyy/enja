@@ -18,7 +18,6 @@ type DictionaryNotice = VoiceDictionaryLearningEvent & {
 };
 
 export function VoiceOverlay() {
-  const voiceDictationShortcut = useAppStore((s) => s.voiceDictationShortcut);
   const voiceAskShortcut = useAppStore((s) => s.voiceAskShortcut);
   const [state, setState] = useState<VoiceStateEvent>({
     state: "preparing",
@@ -186,8 +185,8 @@ export function VoiceOverlay() {
   const isAskMode = state.mode === "ask";
   const modeName = isAskMode ? "Ask" : (state.modeProfileName ?? "デフォルト");
   const compactShortcutLabel = isAskMode
-    ? voiceAskShortcut.label
-    : `${modeName} · ${voiceDictationShortcut.label}`;
+    ? `${voiceAskShortcut.label} · Fn`
+    : `${modeName} · Fn`;
   const compactStatusLabel =
     state.state === "preparing"
       ? "準備中"

@@ -12,10 +12,13 @@ use crate::settings::{AppSettings, ShortcutAction, ShortcutBinding};
 #[derive(Debug, Clone)]
 pub enum KeyboardTrigger {
     CmdCopyDouble,
-    /// An Fn key tap (press + release) that did *not* form a chord with Space.
-    /// Emitted on Fn release so we can wait and see whether Space arrives
-    /// during the hold.
+    /// A bare Fn key tap (press + release) that did *not* form a chord with
+    /// Space. This is the fixed voice-session stop gesture, and also the
+    /// default dictation start gesture when configured that way.
     FunctionTap,
+    /// The configured dictation start shortcut. This starts dictation only; it
+    /// does not stop an active voice session.
+    VoiceDictationStart,
     /// Space was pressed while Fn was held — Ask mode.
     FunctionSpace,
     /// Control was tapped by itself. Voice mode cycling decides whether it is
@@ -299,7 +302,7 @@ mod macos {
                     reset_fn_tap_sequence(state);
                 }
                 if let Some(trigger) =
-                    voice_trigger_for_shortcut(state, &shortcut_from_key_event(keycode, flags))
+                    start_trigger_for_shortcut(state, &shortcut_from_key_event(keycode, flags))
                 {
                     let _ = state.tx.send(trigger);
                     return std::ptr::null_mut();
@@ -498,7 +501,7 @@ mod macos {
 
         // Defer the FunctionTap by the chord grace window. If Space arrives
         // during the window the gesture is reclassified as Fn+Space; otherwise
-        // the tap fires after the window expires and Dictation toggles.
+        // the bare Fn tap fires after the window expires.
         state.fn_release_generation = state.fn_release_generation.wrapping_add(1);
         let token = state.fn_release_generation;
         state.fn_recent_release = true;
@@ -550,7 +553,7 @@ mod macos {
         if is_double_tap {
             state.last_fn_tap = None;
             if let Some(trigger) =
-                voice_trigger_for_shortcut(state, &ShortcutBinding::fn_double_tap())
+                start_trigger_for_shortcut(state, &ShortcutBinding::fn_double_tap())
             {
                 return Some(trigger);
             }
@@ -558,7 +561,7 @@ mod macos {
 
         state.last_fn_tap = Some(tapped_at);
         if emit_single_tap {
-            voice_trigger_for_shortcut(state, &ShortcutBinding::fn_key())
+            Some(KeyboardTrigger::FunctionTap)
         } else {
             None
         }
@@ -687,7 +690,7 @@ mod macos {
     }
 
     fn send_voice_shortcut_if_matched(state: &ListenerState, shortcut: &ShortcutBinding) {
-        if let Some(trigger) = voice_trigger_for_shortcut(state, shortcut) {
+        if let Some(trigger) = start_trigger_for_shortcut(state, shortcut) {
             let _ = state.tx.send(trigger);
         }
     }
@@ -701,12 +704,12 @@ mod macos {
         state.capture_fn_release_generation = state.capture_fn_release_generation.wrapping_add(1);
     }
 
-    fn voice_trigger_for_shortcut(
+    fn start_trigger_for_shortcut(
         state: &ListenerState,
         shortcut: &ShortcutBinding,
     ) -> Option<KeyboardTrigger> {
         if shortcut.is_same_shortcut(&state.runtime.voice_dictation_shortcut) {
-            Some(KeyboardTrigger::FunctionTap)
+            Some(KeyboardTrigger::VoiceDictationStart)
         } else if shortcut.is_same_shortcut(&state.runtime.voice_ask_shortcut) {
             Some(KeyboardTrigger::FunctionSpace)
         } else {
@@ -887,12 +890,29 @@ mod macos {
             let state = state_with_tx(tx);
 
             assert!(matches!(
-                voice_trigger_for_shortcut(&state, &ShortcutBinding::fn_key()),
-                Some(KeyboardTrigger::FunctionTap)
+                start_trigger_for_shortcut(&state, &ShortcutBinding::fn_key()),
+                Some(KeyboardTrigger::VoiceDictationStart)
             ));
             assert!(matches!(
-                voice_trigger_for_shortcut(&state, &ShortcutBinding::fn_space()),
+                start_trigger_for_shortcut(&state, &ShortcutBinding::fn_space()),
                 Some(KeyboardTrigger::FunctionSpace)
+            ));
+        }
+
+        #[test]
+        fn custom_dictation_start_does_not_replace_fixed_fn_tap() {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut state = state_with_tx(tx);
+            let custom_shortcut = shortcut_from_key_event(KEYCODE_C, KCG_EVENT_FLAG_MASK_SHIFT);
+            state.runtime.voice_dictation_shortcut = custom_shortcut.clone();
+
+            assert!(matches!(
+                start_trigger_for_shortcut(&state, &custom_shortcut),
+                Some(KeyboardTrigger::VoiceDictationStart)
+            ));
+            assert!(matches!(
+                trigger_for_confirmed_fn_tap(&mut state, Instant::now(), true),
+                Some(KeyboardTrigger::FunctionTap)
             ));
         }
 
@@ -903,12 +923,15 @@ mod macos {
             state.runtime.voice_dictation_shortcut = ShortcutBinding::fn_double_tap();
 
             let first_tap = Instant::now();
-            assert!(trigger_for_confirmed_fn_tap(&mut state, first_tap, true).is_none());
+            assert!(matches!(
+                trigger_for_confirmed_fn_tap(&mut state, first_tap, true),
+                Some(KeyboardTrigger::FunctionTap)
+            ));
 
             let second_tap = first_tap + Duration::from_millis(120);
             assert!(matches!(
                 trigger_for_confirmed_fn_tap(&mut state, second_tap, true),
-                Some(KeyboardTrigger::FunctionTap)
+                Some(KeyboardTrigger::VoiceDictationStart)
             ));
         }
 
@@ -919,10 +942,16 @@ mod macos {
             state.runtime.voice_dictation_shortcut = ShortcutBinding::fn_double_tap();
 
             let first_tap = Instant::now();
-            assert!(trigger_for_confirmed_fn_tap(&mut state, first_tap, true).is_none());
+            assert!(matches!(
+                trigger_for_confirmed_fn_tap(&mut state, first_tap, true),
+                Some(KeyboardTrigger::FunctionTap)
+            ));
 
             let second_tap = first_tap + Duration::from_millis(401);
-            assert!(trigger_for_confirmed_fn_tap(&mut state, second_tap, true).is_none());
+            assert!(matches!(
+                trigger_for_confirmed_fn_tap(&mut state, second_tap, true),
+                Some(KeyboardTrigger::FunctionTap)
+            ));
         }
 
         #[test]
@@ -1076,7 +1105,7 @@ mod macos {
         }
 
         #[test]
-        fn fn_double_tap_shortcut_does_not_fire_for_duplicate_fn_sources() {
+        fn duplicate_fn_sources_emit_single_fixed_fn_tap() {
             let (tx, rx) = std::sync::mpsc::channel();
             let mut state = state_with_tx(tx);
             state.runtime.voice_dictation_shortcut = ShortcutBinding::fn_double_tap();
@@ -1102,7 +1131,10 @@ mod macos {
                 start + Duration::from_millis(24),
             );
 
-            assert!(confirm_pending_fn_tap(&mut state, true).is_none());
+            assert!(matches!(
+                confirm_pending_fn_tap(&mut state, true),
+                Some(KeyboardTrigger::FunctionTap)
+            ));
             assert!(rx.recv_timeout(Duration::from_millis(20)).is_err());
         }
 

@@ -756,7 +756,7 @@ impl AppSettings {
     }
 
     pub fn validate_shortcuts(&self) -> Result<(), String> {
-        validate_shortcut("音声入力開始/停止", &self.shortcuts.voice_dictation)?;
+        validate_shortcut("音声入力開始", &self.shortcuts.voice_dictation)?;
         validate_shortcut("選択テキストへの音声指示", &self.shortcuts.voice_ask)?;
         if self
             .shortcuts
