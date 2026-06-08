@@ -29,7 +29,8 @@ const ASK_WITHOUT_SELECTION_USER: &str = r#"{{dictionary_section}}
 要件:
 - 音声指示だけに基づいて最終本文を作る。
 - 選択されていない文章、過去のクリップボード、過去の会話内容を推測して混ぜない。
-- 辞書の優先表記を必ず尊重する。
+- 音声指示または文脈から該当語だと判断できる場合だけ、辞書の優先表記に整える。
+- 該当すると判断できない語を辞書語へ置き換えない。
 - 内容を勝手に増やさない。"#;
 
 const ASK_WITH_SELECTION_SYSTEM: &str = "あなたは日本語の文章編集者です。選択中テキストを、音声指示に従って書き換えます。出力は置換後の本文のみ。前置き、説明、引用符、ラベルは出しません。";
@@ -45,7 +46,8 @@ const ASK_WITH_SELECTION_USER: &str = r#"{{dictionary_section}}
 要件:
 - 音声指示に従って選択中テキストを書き換える。
 - 指示が曖昧な場合は、選択中テキストの意味を保ったまま自然に整える。
-- 辞書の優先表記を必ず尊重する。
+- 音声指示、選択中テキスト、文脈から該当語だと判断できる場合だけ、辞書の優先表記に整える。
+- 該当すると判断できない語を辞書語へ置き換えない。
 - 出力は置換する本文のみ。"#;
 
 pub fn catalog() -> Vec<PromptCatalogItem> {
@@ -174,14 +176,22 @@ pub fn translation_system_prompt(
     }
 }
 
-/// 文字起こしモデルへ渡す辞書ブロック。固有名詞を音写・翻訳せず、辞書の表記の
-/// まま出力するよう明示して STT のバイアスを強める。辞書が空なら空文字を返す。
+/// 文字起こしモデルへ渡す辞書ブロック。辞書語はヒントとして渡し、聞こえていない
+/// 語への過剰な置換を抑える。辞書が空なら空文字を返す。
 fn dictionary_context_block(dictionary_context: &str) -> String {
     if dictionary_context.trim().is_empty() {
         String::new()
     } else {
         format!(
-            "\n\n次の固有名詞・専門用語は、必ず以下の表記のまま出力してください（カタカナへの音写や日本語訳をしない）:\n{dictionary_context}"
+            concat!(
+                "\n\n次の固有名詞・専門用語は辞書ヒントです。",
+                "音声が該当語として聞こえる場合だけ、以下の優先表記を使ってください。",
+                "該当すると判断できない語を辞書語へ置き換えたり、",
+                "聞こえていない辞書語を追加したりしないでください。",
+                "該当語はカタカナへの音写や日本語訳をせず、",
+                "優先表記のまま出力してください:\n{}"
+            ),
+            dictionary_context
         )
     }
 }
@@ -316,11 +326,12 @@ mod tests {
     }
 
     #[test]
-    fn dictionary_context_block_instructs_exact_spelling() {
+    fn dictionary_context_block_keeps_terms_as_conditional_hints() {
         let block = dictionary_context_block("- Typeless\n- AquaVoice");
         assert!(block.contains("Typeless"));
         assert!(block.contains("AquaVoice"));
         assert!(block.contains("音写"));
+        assert!(block.contains("聞こえていない辞書語を追加"));
     }
 
     #[test]
@@ -328,5 +339,6 @@ mod tests {
         let prompt = openai_transcription_prompt(&PromptOverrides::default(), "- Typeless");
         assert!(prompt.contains("Typeless"));
         assert!(prompt.contains("音写"));
+        assert!(prompt.contains("該当すると判断できない語"));
     }
 }

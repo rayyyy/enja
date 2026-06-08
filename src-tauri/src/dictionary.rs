@@ -467,9 +467,6 @@ fn replacement_rules(entries: &[DictionaryEntry]) -> Vec<ReplacementRule> {
         for correction in &entry.corrections {
             push_rule(&mut rules, &mut seen, &correction.from, &correction.to);
         }
-        for value in entry.readings.iter().chain(entry.aliases.iter()) {
-            push_rule(&mut rules, &mut seen, value, &entry.preferred);
-        }
     }
     rules.sort_by(|a, b| {
         b.from
@@ -592,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_transcript_corrections_uses_aliases_without_llm() {
+    fn apply_transcript_corrections_keeps_aliases_as_hints_without_llm() {
         let mut typeless = entry("1", "Typeless", true);
         typeless.aliases = vec!["タイプレス".to_string()];
         let mut aqua = entry("2", "AquaVoice", true);
@@ -603,11 +600,11 @@ mod tests {
             &[normalize_entry(typeless), normalize_entry(aqua)],
         );
 
-        assert_eq!(out, "TypelessかAquaVoiceどっちがいいの？");
+        assert_eq!(out, "タイプレスかアクアボイスどっちがいいの？");
     }
 
     #[test]
-    fn apply_transcript_corrections_prefers_longer_rules() {
+    fn apply_transcript_corrections_uses_explicit_rules() {
         let mut typeless = entry("1", "Typeless", true);
         typeless.aliases = vec!["タイプです".to_string()];
         typeless.corrections = vec![DictionaryCorrection {

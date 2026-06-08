@@ -97,7 +97,7 @@ const SPEECH_PROFILES: SpeechProfileOption[] = [
       "Enjaは録音WAVをSpeech-to-Text V2 recognizeへ送ります。",
       "ADC利用時はgcloudからアクセストークンを取得します。GUIアプリのPATHに依存しないよう代表的なgcloud配置場所も探索します。",
       "modelは chirp_3、languageCodesは ja-JP を使います。",
-      "辞書に登録した優先表記はadaptation phraseとして最大500件渡します。",
+      "辞書に登録した優先表記はadaptation phraseとして最大1,000件渡します。",
       "取得した文字起こしをGeminiの整形モデルへ渡し、最終文へ整えます。",
     ],
     docs: [

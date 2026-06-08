@@ -81,6 +81,7 @@ const DICTIONARY_LEARNING_QUIET_MS: u64 = 2_000;
 const DICTIONARY_LEARNING_MAX_WATCH_MS: u64 = 15_000;
 const DICTIONARY_NOTICE_VISIBLE_MS: u64 = 6_500;
 const DICTIONARY_UNDO_NOTICE_MS: u64 = 900;
+const GOOGLE_SPEECH_DICTIONARY_BOOST: f32 = 8.0;
 const MIN_LEARNED_CORRECTION_CHARS: usize = 2;
 const MAX_LEARNED_CORRECTION_CHARS: usize = 40;
 const MIN_FULL_INSERT_REWRITE_CHARS: usize = 12;
@@ -2631,12 +2632,17 @@ async fn transcribe_google_chirp3(
     }
     let token = google_access_token(settings).await?;
     let phrases = dictionary::enabled_phrases(entries);
-    // chirp_3 は最大1,000フレーズの適応辞書に対応。固有名詞を確実に拾うため
-    // boost は推奨レンジ上限(20.0)に設定する。
+    // chirp_3 は最大1,000フレーズの適応辞書に対応。高い boost は false positive も
+    // 増やすため、既定は中程度に留める。
     let phrase_values = phrases
         .iter()
         .take(1000)
-        .map(|value| serde_json::json!({ "value": value, "boost": 20.0 }))
+        .map(|value| {
+            serde_json::json!({
+                "value": value,
+                "boost": GOOGLE_SPEECH_DICTIONARY_BOOST,
+            })
+        })
         .collect::<Vec<_>>();
     let mut config = serde_json::json!({
         "autoDecodingConfig": {},
@@ -3007,7 +3013,7 @@ async fn finalize_text(
     let dictionary_section = if dictionary_context.trim().is_empty() {
         "優先表記辞書は空です。".to_string()
     } else {
-        format!("優先表記辞書:\n{dictionary_context}")
+        format!("優先表記辞書（該当語だと判断できる場合のみ使用）:\n{dictionary_context}")
     };
     let (system, user) = match mode {
         VoiceMode::Dictation => {

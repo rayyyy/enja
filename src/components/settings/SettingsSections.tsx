@@ -731,7 +731,8 @@ const CUSTOM_MODE_USER_PROMPT = `{{dictionary_section}}
 要件:
 - 用途に合わせて自然な文章へ整える。
 - 口癖、言い直し、不要な間を整理する。
-- 辞書の優先表記を必ず尊重する。
+- 音声認識結果または文脈から該当語だと判断できる場合だけ、辞書の優先表記に整える。
+- 該当すると判断できない語を辞書語へ置き換えない。
 - 内容を勝手に増やさない。`;
 
 const VOICE_MODE_PRESET_DEFAULTS: Record<VoiceModePresetKey, VoiceModeProfile> = {
@@ -750,7 +751,8 @@ const VOICE_MODE_PRESET_DEFAULTS: Record<VoiceModePresetKey, VoiceModeProfile> =
 要件:
 - 話し言葉の不要な言い直しを整理する。
 - 録音内に「これをこうまとめて」などの指示が含まれる場合、その意図に従って最終文章を作る。
-- 辞書の優先表記を必ず尊重する。
+- 音声認識結果または文脈から該当語だと判断できる場合だけ、辞書の優先表記に整える。
+- 該当すると判断できない語を辞書語へ置き換えない。
 - 内容を勝手に増やさない。`,
     deletable: false,
     order: 0,
@@ -812,7 +814,8 @@ const VOICE_MODE_PRESET_DEFAULTS: Record<VoiceModePresetKey, VoiceModeProfile> =
 - くだけすぎない親しみやすい文体にする。
 - 必要に応じて感嘆符を使い、硬さを和らげる。
 - 口癖、言い直し、不要な間を整理する。
-- 辞書の優先表記を必ず尊重する。
+- 音声認識結果または文脈から該当語だと判断できる場合だけ、辞書の優先表記に整える。
+- 該当すると判断できない語を辞書語へ置き換えない。
 - 内容を勝手に増やさない。`,
     deletable: true,
     order: 3,
@@ -834,7 +837,8 @@ const VOICE_MODE_PRESET_DEFAULTS: Record<VoiceModePresetKey, VoiceModeProfile> =
 - メールや業務チャットで使いやすい、やや丁寧な文体にする。
 - 過度に堅くしすぎず、自然な敬体で整える。
 - 口癖、言い直し、不要な間を整理する。
-- 辞書の優先表記を必ず尊重する。
+- 音声認識結果または文脈から該当語だと判断できる場合だけ、辞書の優先表記に整える。
+- 該当すると判断できない語を辞書語へ置き換えない。
 - 内容を勝手に増やさない。`,
     deletable: true,
     order: 4,

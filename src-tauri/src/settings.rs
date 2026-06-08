@@ -326,6 +326,8 @@ pub enum SystemAudioHandling {
 
 pub const DEFAULT_VOICE_MODE_ID: &str = "default";
 const TRANSCRIPT_TOKEN: &str = "{{transcript}}";
+const FORCE_DICTIONARY_RULE: &str = "- 辞書の優先表記を必ず尊重する。";
+const CONDITIONAL_DICTIONARY_RULE: &str = "- 音声認識結果または文脈から該当語だと判断できる場合だけ、辞書の優先表記に整える。\n- 該当すると判断できない語を辞書語へ置き換えない。";
 
 const DEFAULT_MODE_SYSTEM: &str = "あなたは日本語の音声入力編集者です。音声認識結果を、ユーザーがそのまま貼り付けられる自然な日本語文に整形します。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。";
 
@@ -337,7 +339,8 @@ const DEFAULT_MODE_USER: &str = r#"{{dictionary_section}}
 要件:
 - 話し言葉の不要な言い直しを整理する。
 - 録音内に「これをこうまとめて」などの指示が含まれる場合、その意図に従って最終文章を作る。
-- 辞書の優先表記を必ず尊重する。
+- 音声認識結果または文脈から該当語だと判断できる場合だけ、辞書の優先表記に整える。
+- 該当すると判断できない語を辞書語へ置き換えない。
 - 内容を勝手に増やさない。"#;
 
 const SPEED_MODE_SYSTEM: &str = "あなたは日本語の音声入力編集者です。音声認識結果を必要最小限だけ整えます。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。";
@@ -375,7 +378,8 @@ const CASUAL_MODE_USER: &str = r#"{{dictionary_section}}
 - くだけすぎない親しみやすい文体にする。
 - 必要に応じて感嘆符を使い、硬さを和らげる。
 - 口癖、言い直し、不要な間を整理する。
-- 辞書の優先表記を必ず尊重する。
+- 音声認識結果または文脈から該当語だと判断できる場合だけ、辞書の優先表記に整える。
+- 該当すると判断できない語を辞書語へ置き換えない。
 - 内容を勝手に増やさない。"#;
 
 const FORMAL_MODE_SYSTEM: &str = "あなたは日本語ビジネス文の編集者です。音声認識結果を、メール返信などに適したやや丁寧な文章へ整えます。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。";
@@ -389,7 +393,8 @@ const FORMAL_MODE_USER: &str = r#"{{dictionary_section}}
 - メールや業務チャットで使いやすい、やや丁寧な文体にする。
 - 過度に堅くしすぎず、自然な敬体で整える。
 - 口癖、言い直し、不要な間を整理する。
-- 辞書の優先表記を必ず尊重する。
+- 音声認識結果または文脈から該当語だと判断できる場合だけ、辞書の優先表記に整える。
+- 該当すると判断できない語を辞書語へ置き換えない。
 - 内容を勝手に増やさない。"#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -589,7 +594,7 @@ impl VoiceSettings {
             profile.name = profile.name.trim().to_string();
             profile.description = profile.description.trim().to_string();
             profile.system_prompt = profile.system_prompt.trim().to_string();
-            profile.user_prompt = profile.user_prompt.trim().to_string();
+            profile.user_prompt = soften_dictionary_prompt_rules(profile.user_prompt.trim());
             if profile.id == DEFAULT_VOICE_MODE_ID {
                 profile.deletable = false;
                 profile.preset_key = Some(VoiceModePresetKey::Default);
@@ -685,6 +690,10 @@ impl VoiceSettings {
         }
         Ok(())
     }
+}
+
+fn soften_dictionary_prompt_rules(prompt: &str) -> String {
+    prompt.replace(FORCE_DICTIONARY_RULE, CONDITIONAL_DICTIONARY_RULE)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -930,6 +939,21 @@ mod tests {
             .mode_profile_by_id(DEFAULT_VOICE_MODE_ID)
             .is_some());
         assert_eq!(settings.voice.active_mode_profile_id, DEFAULT_VOICE_MODE_ID);
+    }
+
+    #[test]
+    fn sanitize_softens_saved_dictionary_prompt_rule() {
+        let mut settings = AppSettings::default();
+        settings.voice.mode_profiles[0].user_prompt =
+            format!("前置き\n{FORCE_DICTIONARY_RULE}\n後続 {{{{transcript}}}}");
+
+        settings.sanitize();
+
+        let user_prompt = &settings.voice.mode_profiles[0].user_prompt;
+        assert!(!user_prompt.contains(FORCE_DICTIONARY_RULE));
+        assert!(user_prompt.contains(CONDITIONAL_DICTIONARY_RULE));
+        assert!(user_prompt.contains("前置き"));
+        assert!(user_prompt.contains("後続 {{transcript}}"));
     }
 
     #[test]
