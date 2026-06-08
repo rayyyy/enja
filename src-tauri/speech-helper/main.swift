@@ -246,15 +246,74 @@ func transcribe(audioPath: String, localeID: String, contextPath: String?) async
 @available(macOS 26.0, *)
 func collectFinalTranscript(from transcriber: DictationTranscriber) async throws -> String {
     var parts: [String] = []
+    var latestPending: String?
     for try await result in transcriber.results {
+        let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty {
+            continue
+        }
         if result.isFinal {
-            let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
+            if parts.last != text {
                 parts.append(text)
             }
+            latestPending = nil
+        } else {
+            latestPending = text
         }
     }
+
+    if let pending = latestPending {
+        appendPendingTranscript(pending, to: &parts)
+    }
+
     return parts.joined(separator: "\n")
+}
+
+func appendPendingTranscript(_ pending: String, to parts: inout [String]) {
+    let finalText = parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    if finalText.isEmpty {
+        parts.append(pending)
+        return
+    }
+    if finalText.contains(pending) || pending == finalText {
+        return
+    }
+    if pending.hasPrefix(finalText) {
+        let suffix = String(pending.dropFirst(finalText.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !suffix.isEmpty {
+            parts.append(suffix)
+        }
+        return
+    }
+
+    let overlap = suffixPrefixOverlap(finalText, pending)
+    if overlap > 0 {
+        let suffix = String(pending.dropFirst(overlap)).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !suffix.isEmpty {
+            parts.append(suffix)
+        }
+        return
+    }
+
+    parts.append(pending)
+}
+
+func suffixPrefixOverlap(_ left: String, _ right: String) -> Int {
+    let leftCharacters = Array(left)
+    let rightCharacters = Array(right)
+    let maxLength = min(leftCharacters.count, rightCharacters.count)
+    if maxLength == 0 {
+        return 0
+    }
+
+    for length in stride(from: maxLength, through: 1, by: -1) {
+        let leftSuffix = leftCharacters[(leftCharacters.count - length)..<leftCharacters.count]
+        let rightPrefix = rightCharacters[0..<length]
+        if Array(leftSuffix) == Array(rightPrefix) {
+            return length
+        }
+    }
+    return 0
 }
 
 func loadContextualStrings(path: String?) -> [String] {

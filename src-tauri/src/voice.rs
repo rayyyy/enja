@@ -21,6 +21,8 @@ use core_foundation::boolean::CFBoolean;
 #[cfg(target_os = "macos")]
 use core_foundation::string::{CFString, CFStringRef};
 #[cfg(target_os = "macos")]
+use core_foundation_sys::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
+#[cfg(target_os = "macos")]
 use core_foundation_sys::base::{CFGetTypeID, CFTypeRef};
 #[cfg(target_os = "macos")]
 use core_foundation_sys::string::CFStringGetTypeID;
@@ -53,10 +55,27 @@ const VOICE_WINDOW_BOTTOM_MARGIN: f64 = 42.0;
 const VOICE_WINDOW_FOLLOW_INTERVAL_MS: u64 = 180;
 const MIN_API_RECORDING_SECS: f32 = 0.7;
 const VOICE_FRAME_MS: u32 = 20;
-const ACTIVE_AUDIO_RMS_THRESHOLD: f32 = 0.006;
 const MIN_ACTIVE_AUDIO_SECS: f32 = 0.08;
-const EDGE_SILENCE_PADDING_MS: u32 = 160;
-const MAX_INTERNAL_SILENCE_MS: u32 = 320;
+const VAD_NOISE_RMS_FLOOR: f32 = 0.0003;
+const VAD_NOISE_PEAK_FLOOR: f32 = 0.001;
+const VAD_MIN_CONTINUATION_RMS_THRESHOLD: f32 = 0.0008;
+const VAD_MIN_WEAK_RMS_THRESHOLD: f32 = 0.0012;
+const VAD_MIN_STRONG_RMS_THRESHOLD: f32 = 0.0024;
+const VAD_MIN_CONTINUATION_PEAK_THRESHOLD: f32 = 0.004;
+const VAD_MIN_WEAK_PEAK_THRESHOLD: f32 = 0.006;
+const VAD_MIN_STRONG_PEAK_THRESHOLD: f32 = 0.012;
+const VAD_AMBIGUOUS_DYNAMIC_RANGE: f32 = 2.5;
+const VAD_MIN_START_MS: u32 = 60;
+const VAD_MIN_SEGMENT_MS: u32 = 80;
+const VAD_PREFIX_PADDING_MS: u32 = 300;
+const VAD_POST_PADDING_MS: u32 = 600;
+const VAD_END_SILENCE_MS: u32 = 1_200;
+const VAD_SHORT_GAP_MERGE_MS: u32 = 900;
+const VAD_AMBIGUOUS_PREFIX_PADDING_MS: u32 = 420;
+const VAD_AMBIGUOUS_POST_PADDING_MS: u32 = 900;
+const VAD_AMBIGUOUS_END_SILENCE_MS: u32 = 1_800;
+const VAD_AMBIGUOUS_SHORT_GAP_MERGE_MS: u32 = 1_400;
+const VAD_TERMINAL_PROTECTION_MS: u32 = 2_600;
 const DICTIONARY_LEARNING_POLL_INTERVAL_MS: u64 = 250;
 const DICTIONARY_LEARNING_QUIET_MS: u64 = 2_000;
 const DICTIONARY_LEARNING_MAX_WATCH_MS: u64 = 15_000;
@@ -66,6 +85,12 @@ const MIN_LEARNED_CORRECTION_CHARS: usize = 2;
 const MAX_LEARNED_CORRECTION_CHARS: usize = 40;
 const MIN_FULL_INSERT_REWRITE_CHARS: usize = 12;
 const STOP_RECORDING_BUFFER: Duration = Duration::from_millis(500);
+#[cfg(target_os = "macos")]
+const PASTE_RESTORE_DELAY_MS: u64 = 420;
+#[cfg(target_os = "macos")]
+const PASTE_WRITE_SETTLE_MS: u64 = 40;
+#[cfg(target_os = "macos")]
+const PASTE_ACTIVATE_SETTLE_MS: u64 = 80;
 #[cfg(target_os = "macos")]
 const MANUAL_ACCESSIBILITY_POLL_ATTEMPTS: usize = 10;
 #[cfg(target_os = "macos")]
@@ -364,6 +389,7 @@ struct ActiveSession {
     mode: VoiceMode,
     mode_profile_id: String,
     selected_text: String,
+    paste_target: Option<PasteTargetInfo>,
     recorder: Recorder,
     audio_aux: Option<AudioAux>,
 }
@@ -409,6 +435,7 @@ enum RecorderCommand {
 struct AudioClip {
     wav: Vec<u8>,
     duration_secs: f32,
+    debug_id: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -421,6 +448,41 @@ struct PreparedAudioAnalysis {
 struct PreparedAudio {
     samples: Vec<i16>,
     analysis: PreparedAudioAnalysis,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VoiceFrameStats {
+    rms: f32,
+    peak: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VoiceSegment {
+    start_frame: usize,
+    end_frame: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VoiceVadConfig {
+    continuation_rms_threshold: f32,
+    weak_rms_threshold: f32,
+    strong_rms_threshold: f32,
+    continuation_peak_threshold: f32,
+    weak_peak_threshold: f32,
+    strong_peak_threshold: f32,
+    min_start_frames: usize,
+    min_segment_frames: usize,
+    prefix_padding_frames: usize,
+    post_padding_frames: usize,
+    end_silence_frames: usize,
+    short_gap_merge_frames: usize,
+    terminal_protection_frames: usize,
+}
+
+#[derive(Debug)]
+struct VoiceVadResult {
+    segments: Vec<VoiceSegment>,
+    speech_frames: usize,
 }
 
 #[cfg(target_os = "macos")]
@@ -543,6 +605,7 @@ impl VoiceManager {
             mode,
             mode_profile_id,
             selected_text,
+            paste_target,
             recorder,
             audio_aux,
         } = session;
@@ -626,9 +689,9 @@ impl VoiceManager {
         match result {
             Ok(text) => {
                 let inserted = if mode == VoiceMode::Dictation {
-                    paste_text_with_dictionary_learning(&app, &text)
+                    paste_text_with_dictionary_learning(&app, &text, paste_target.as_ref())
                 } else {
-                    paste_text(&text)
+                    paste_text(&text, paste_target.as_ref())
                 };
                 if inserted {
                     emit_result(
@@ -803,6 +866,8 @@ async fn finish_start_session(
         return Ok(());
     }
 
+    let paste_target = capture_paste_target();
+
     let selected_text = if mode == VoiceMode::Ask {
         tokio::task::spawn_blocking(capture_selected_text)
             .await
@@ -897,6 +962,7 @@ async fn finish_start_session(
         mode,
         mode_profile_id: starting_mode_profile_id.clone(),
         selected_text,
+        paste_target,
         recorder,
         audio_aux,
     }));
@@ -1028,7 +1094,7 @@ impl Recorder {
         let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<(), String>>();
         std::thread::spawn(move || {
             let result = run_recording_thread(
-                app,
+                app.clone(),
                 selected_device_id,
                 max_recording_seconds,
                 control_rx,
@@ -1153,7 +1219,7 @@ fn run_recording_thread(
                 samples.clone(),
                 last_emit,
                 max_samples,
-                app,
+                app.clone(),
                 device_channels,
                 aec_pipeline,
                 init_signal.clone(),
@@ -1165,7 +1231,7 @@ fn run_recording_thread(
                 samples.clone(),
                 last_emit,
                 max_samples,
-                app,
+                app.clone(),
                 device_channels,
                 aec_pipeline,
                 init_signal.clone(),
@@ -1177,7 +1243,7 @@ fn run_recording_thread(
                 samples.clone(),
                 last_emit,
                 max_samples,
-                app,
+                app.clone(),
                 device_channels,
                 aec_pipeline,
                 init_signal.clone(),
@@ -1223,11 +1289,28 @@ fn run_recording_thread(
     if samples.is_empty() {
         return Err("音声が録音されていません。".to_string());
     }
+    let debug_id = debug_audio_id();
+    if let Ok(pretrim_wav) = samples_to_wav(&samples, sample_rate, channels) {
+        save_debug_audio_wav(&app, &debug_id, "pretrim", &pretrim_wav);
+    }
+
+    let pretrim_duration_secs =
+        audio_duration_secs(samples.len(), sample_rate, channels.max(1) as usize);
     let prepared = prepare_recorded_audio_for_api(&samples, sample_rate, channels)?;
     let wav = samples_to_wav(&prepared.samples, sample_rate, channels)?;
+    save_debug_audio_wav(&app, &debug_id, "posttrim", &wav);
+    save_debug_audio_metadata(
+        &app,
+        &debug_id,
+        sample_rate,
+        channels,
+        pretrim_duration_secs,
+        prepared.analysis,
+    );
     Ok(AudioClip {
         wav,
         duration_secs: prepared.analysis.duration_secs,
+        debug_id,
     })
 }
 
@@ -1335,12 +1418,13 @@ fn prepare_recorded_audio_for_api(
 fn trim_recorded_audio(samples: &[i16], sample_rate: u32, channels: u16) -> PreparedAudio {
     let channels = channels.max(1) as usize;
     let frame_len = voice_frame_len(sample_rate, channels);
-    let frames = samples
+    let frame_stats = samples
         .chunks(frame_len)
-        .map(|frame| frame_rms(frame) >= ACTIVE_AUDIO_RMS_THRESHOLD)
+        .map(voice_frame_stats)
         .collect::<Vec<_>>();
-    let active_frames = frames.iter().filter(|active| **active).count();
-    let Some(first_active) = frames.iter().position(|active| *active) else {
+
+    let vad = detect_voice_segments(&frame_stats);
+    if vad.segments.is_empty() {
         return PreparedAudio {
             samples: Vec::new(),
             analysis: PreparedAudioAnalysis {
@@ -1348,42 +1432,14 @@ fn trim_recorded_audio(samples: &[i16], sample_rate: u32, channels: u16) -> Prep
                 active_audio_secs: 0.0,
             },
         };
-    };
-    let last_active = frames
-        .iter()
-        .rposition(|active| *active)
-        .unwrap_or(first_active);
-    let edge_padding_frames = ms_to_frame_count(EDGE_SILENCE_PADDING_MS);
-    let max_internal_silence_frames = ms_to_frame_count(MAX_INTERNAL_SILENCE_MS);
-    let start_frame = first_active.saturating_sub(edge_padding_frames);
-    let end_frame = (last_active + 1 + edge_padding_frames).min(frames.len());
-    let mut trimmed = Vec::with_capacity(samples.len());
-    let mut internal_silence_frames = 0usize;
-
-    for frame_index in start_frame..end_frame {
-        let active = frames[frame_index];
-        let is_edge_padding = frame_index < first_active || frame_index > last_active;
-        let should_keep = if active || is_edge_padding {
-            internal_silence_frames = 0;
-            true
-        } else if internal_silence_frames < max_internal_silence_frames {
-            internal_silence_frames += 1;
-            true
-        } else {
-            false
-        };
-
-        if should_keep {
-            let start = frame_index * frame_len;
-            let end = (start + frame_len).min(samples.len());
-            trimmed.extend_from_slice(&samples[start..end]);
-        }
     }
+
+    let trimmed = render_voice_segments(samples, frame_len, &vad.segments);
 
     PreparedAudio {
         analysis: PreparedAudioAnalysis {
             duration_secs: audio_duration_secs(trimmed.len(), sample_rate, channels),
-            active_audio_secs: active_frames as f32 * VOICE_FRAME_MS as f32 / 1000.0,
+            active_audio_secs: vad.speech_frames as f32 * VOICE_FRAME_MS as f32 / 1000.0,
         },
         samples: trimmed,
     }
@@ -1397,6 +1453,286 @@ fn ms_to_frame_count(ms: u32) -> usize {
     ms.div_ceil(VOICE_FRAME_MS) as usize
 }
 
+fn detect_voice_segments(stats: &[VoiceFrameStats]) -> VoiceVadResult {
+    if stats.is_empty() {
+        return VoiceVadResult {
+            segments: Vec::new(),
+            speech_frames: 0,
+        };
+    }
+
+    let config = estimate_voice_vad_config(stats);
+    let mut segments = Vec::new();
+    let mut speech_frames = 0usize;
+    let mut weak_run = 0usize;
+    let mut weak_run_start = 0usize;
+    let mut segment_start = 0usize;
+    let mut last_voice_frame = 0usize;
+    let mut silence_run = 0usize;
+    let mut in_segment = false;
+
+    for (frame_index, stat) in stats.iter().enumerate() {
+        let strong = is_strong_voice_frame(*stat, &config);
+        let weak = strong || is_weak_voice_frame(*stat, &config);
+        let continuation = weak || is_continuation_voice_frame(*stat, &config);
+
+        if weak {
+            speech_frames += 1;
+        }
+
+        if !in_segment {
+            if weak {
+                if weak_run == 0 {
+                    weak_run_start = frame_index;
+                }
+                weak_run += 1;
+            } else {
+                weak_run = 0;
+            }
+
+            if strong || weak_run >= config.min_start_frames {
+                let detected_start = if weak_run > 0 {
+                    weak_run_start
+                } else {
+                    frame_index
+                };
+                segment_start = detected_start.saturating_sub(config.prefix_padding_frames);
+                last_voice_frame = frame_index;
+                silence_run = 0;
+                in_segment = true;
+            }
+
+            continue;
+        }
+
+        if continuation {
+            last_voice_frame = frame_index;
+            silence_run = 0;
+        } else {
+            silence_run += 1;
+            if silence_run >= config.end_silence_frames {
+                let segment_end =
+                    (last_voice_frame + 1 + config.post_padding_frames).min(stats.len());
+                push_voice_segment(&mut segments, segment_start, segment_end, &config);
+                in_segment = false;
+                weak_run = 0;
+                silence_run = 0;
+            }
+        }
+    }
+
+    if in_segment {
+        let segment_end = (last_voice_frame + 1 + config.post_padding_frames).min(stats.len());
+        push_voice_segment(&mut segments, segment_start, segment_end, &config);
+    }
+
+    if segments.is_empty() && has_possible_voice_signal(stats) {
+        speech_frames = stats.len();
+        segments.push(VoiceSegment {
+            start_frame: 0,
+            end_frame: stats.len(),
+        });
+    } else {
+        protect_terminal_audio(&mut segments, stats.len(), &config);
+    }
+
+    VoiceVadResult {
+        segments,
+        speech_frames,
+    }
+}
+
+fn estimate_voice_vad_config(stats: &[VoiceFrameStats]) -> VoiceVadConfig {
+    let rms_values = stats.iter().map(|stat| stat.rms).collect::<Vec<_>>();
+    let peak_values = stats.iter().map(|stat| stat.peak).collect::<Vec<_>>();
+    let noise_rms = percentile(&rms_values, 0.20).max(VAD_NOISE_RMS_FLOOR);
+    let noise_peak = percentile(&peak_values, 0.20).max(VAD_NOISE_PEAK_FLOOR);
+    let p90_rms = percentile(&rms_values, 0.90);
+    let p90_peak = percentile(&peak_values, 0.90);
+    let rms_dynamic_range = p90_rms / noise_rms;
+    let peak_dynamic_range = p90_peak / noise_peak;
+    let ambiguous = rms_dynamic_range < VAD_AMBIGUOUS_DYNAMIC_RANGE
+        && peak_dynamic_range < VAD_AMBIGUOUS_DYNAMIC_RANGE;
+
+    let (
+        continuation_rms_multiplier,
+        weak_rms_multiplier,
+        strong_rms_multiplier,
+        continuation_peak_multiplier,
+        weak_peak_multiplier,
+        strong_peak_multiplier,
+        prefix_padding_ms,
+        post_padding_ms,
+        end_silence_ms,
+        short_gap_merge_ms,
+    ) = if ambiguous {
+        (
+            1.00,
+            1.03,
+            1.25,
+            1.00,
+            1.06,
+            1.30,
+            VAD_AMBIGUOUS_PREFIX_PADDING_MS,
+            VAD_AMBIGUOUS_POST_PADDING_MS,
+            VAD_AMBIGUOUS_END_SILENCE_MS,
+            VAD_AMBIGUOUS_SHORT_GAP_MERGE_MS,
+        )
+    } else {
+        (
+            1.08,
+            1.30,
+            2.30,
+            1.12,
+            1.45,
+            2.40,
+            VAD_PREFIX_PADDING_MS,
+            VAD_POST_PADDING_MS,
+            VAD_END_SILENCE_MS,
+            VAD_SHORT_GAP_MERGE_MS,
+        )
+    };
+
+    let possible_rms_signal = p90_rms >= VAD_MIN_CONTINUATION_RMS_THRESHOLD;
+    let possible_peak_signal = p90_peak >= VAD_MIN_CONTINUATION_PEAK_THRESHOLD;
+
+    let mut continuation_rms_threshold =
+        (noise_rms * continuation_rms_multiplier).max(VAD_MIN_CONTINUATION_RMS_THRESHOLD);
+    let mut weak_rms_threshold = (noise_rms * weak_rms_multiplier).max(VAD_MIN_WEAK_RMS_THRESHOLD);
+    let mut strong_rms_threshold =
+        (noise_rms * strong_rms_multiplier).max(VAD_MIN_STRONG_RMS_THRESHOLD);
+
+    if possible_rms_signal {
+        continuation_rms_threshold = continuation_rms_threshold
+            .min((p90_rms * 0.75).max(VAD_MIN_CONTINUATION_RMS_THRESHOLD));
+        weak_rms_threshold =
+            weak_rms_threshold.min((p90_rms * 0.90).max(VAD_MIN_CONTINUATION_RMS_THRESHOLD));
+        strong_rms_threshold =
+            strong_rms_threshold.min((p90_rms * 0.98).max(VAD_MIN_CONTINUATION_RMS_THRESHOLD));
+    }
+    weak_rms_threshold = weak_rms_threshold.max(continuation_rms_threshold);
+    strong_rms_threshold = strong_rms_threshold.max(weak_rms_threshold);
+
+    let mut continuation_peak_threshold =
+        (noise_peak * continuation_peak_multiplier).max(VAD_MIN_CONTINUATION_PEAK_THRESHOLD);
+    let mut weak_peak_threshold =
+        (noise_peak * weak_peak_multiplier).max(VAD_MIN_WEAK_PEAK_THRESHOLD);
+    let mut strong_peak_threshold =
+        (noise_peak * strong_peak_multiplier).max(VAD_MIN_STRONG_PEAK_THRESHOLD);
+
+    if possible_peak_signal {
+        continuation_peak_threshold = continuation_peak_threshold
+            .min((p90_peak * 0.75).max(VAD_MIN_CONTINUATION_PEAK_THRESHOLD));
+        weak_peak_threshold =
+            weak_peak_threshold.min((p90_peak * 0.90).max(VAD_MIN_CONTINUATION_PEAK_THRESHOLD));
+        strong_peak_threshold =
+            strong_peak_threshold.min((p90_peak * 0.98).max(VAD_MIN_CONTINUATION_PEAK_THRESHOLD));
+    }
+    weak_peak_threshold = weak_peak_threshold.max(continuation_peak_threshold);
+    strong_peak_threshold = strong_peak_threshold.max(weak_peak_threshold);
+
+    VoiceVadConfig {
+        continuation_rms_threshold,
+        weak_rms_threshold,
+        strong_rms_threshold,
+        continuation_peak_threshold,
+        weak_peak_threshold,
+        strong_peak_threshold,
+        min_start_frames: ms_to_frame_count(VAD_MIN_START_MS),
+        min_segment_frames: ms_to_frame_count(VAD_MIN_SEGMENT_MS),
+        prefix_padding_frames: ms_to_frame_count(prefix_padding_ms),
+        post_padding_frames: ms_to_frame_count(post_padding_ms),
+        end_silence_frames: ms_to_frame_count(end_silence_ms),
+        short_gap_merge_frames: ms_to_frame_count(short_gap_merge_ms),
+        terminal_protection_frames: ms_to_frame_count(VAD_TERMINAL_PROTECTION_MS),
+    }
+}
+
+fn is_strong_voice_frame(stat: VoiceFrameStats, config: &VoiceVadConfig) -> bool {
+    stat.rms >= config.strong_rms_threshold || stat.peak >= config.strong_peak_threshold
+}
+
+fn is_weak_voice_frame(stat: VoiceFrameStats, config: &VoiceVadConfig) -> bool {
+    stat.rms >= config.weak_rms_threshold || stat.peak >= config.weak_peak_threshold
+}
+
+fn is_continuation_voice_frame(stat: VoiceFrameStats, config: &VoiceVadConfig) -> bool {
+    stat.rms >= config.continuation_rms_threshold || stat.peak >= config.continuation_peak_threshold
+}
+
+fn push_voice_segment(
+    segments: &mut Vec<VoiceSegment>,
+    start_frame: usize,
+    end_frame: usize,
+    config: &VoiceVadConfig,
+) {
+    if end_frame <= start_frame || end_frame.saturating_sub(start_frame) < config.min_segment_frames
+    {
+        return;
+    }
+
+    if let Some(last) = segments.last_mut() {
+        if start_frame <= last.end_frame.saturating_add(config.short_gap_merge_frames) {
+            last.end_frame = last.end_frame.max(end_frame);
+            return;
+        }
+    }
+
+    segments.push(VoiceSegment {
+        start_frame,
+        end_frame,
+    });
+}
+
+fn protect_terminal_audio(
+    segments: &mut [VoiceSegment],
+    total_frames: usize,
+    config: &VoiceVadConfig,
+) {
+    let Some(last) = segments.last_mut() else {
+        return;
+    };
+
+    if total_frames.saturating_sub(last.end_frame) <= config.terminal_protection_frames {
+        last.end_frame = total_frames;
+    }
+}
+
+fn has_possible_voice_signal(stats: &[VoiceFrameStats]) -> bool {
+    let rms_values = stats.iter().map(|stat| stat.rms).collect::<Vec<_>>();
+    let peak_values = stats.iter().map(|stat| stat.peak).collect::<Vec<_>>();
+    percentile(&rms_values, 0.90) >= VAD_MIN_CONTINUATION_RMS_THRESHOLD
+        || percentile(&peak_values, 0.90) >= VAD_MIN_CONTINUATION_PEAK_THRESHOLD
+}
+
+fn render_voice_segments(samples: &[i16], frame_len: usize, segments: &[VoiceSegment]) -> Vec<i16> {
+    let retained_samples = segments
+        .iter()
+        .map(|segment| {
+            let start = segment.start_frame.saturating_mul(frame_len);
+            let end = segment
+                .end_frame
+                .saturating_mul(frame_len)
+                .min(samples.len());
+            end.saturating_sub(start)
+        })
+        .sum();
+    let mut trimmed = Vec::with_capacity(retained_samples);
+
+    for segment in segments {
+        let start = segment.start_frame.saturating_mul(frame_len);
+        let end = segment
+            .end_frame
+            .saturating_mul(frame_len)
+            .min(samples.len());
+        if start < end {
+            trimmed.extend_from_slice(&samples[start..end]);
+        }
+    }
+
+    trimmed
+}
+
 fn audio_duration_secs(sample_count: usize, sample_rate: u32, channels: usize) -> f32 {
     let samples_per_second = sample_rate as usize * channels.max(1);
     if samples_per_second == 0 {
@@ -1406,18 +1742,36 @@ fn audio_duration_secs(sample_count: usize, sample_rate: u32, channels: usize) -
     }
 }
 
-fn frame_rms(samples: &[i16]) -> f32 {
+fn voice_frame_stats(samples: &[i16]) -> VoiceFrameStats {
     if samples.is_empty() {
+        return VoiceFrameStats {
+            rms: 0.0,
+            peak: 0.0,
+        };
+    }
+
+    let mut peak = 0.0f32;
+    let sum = samples.iter().fold(0.0f32, |sum, sample| {
+        let value = (*sample as f32 / i16::MAX as f32).clamp(-1.0, 1.0);
+        peak = peak.max(value.abs());
+        sum + value * value
+    });
+
+    VoiceFrameStats {
+        rms: (sum / samples.len() as f32).sqrt(),
+        peak,
+    }
+}
+
+fn percentile(values: &[f32], fraction: f32) -> f32 {
+    if values.is_empty() {
         return 0.0;
     }
-    let sum = samples
-        .iter()
-        .map(|sample| {
-            let value = (*sample as f32 / i16::MAX as f32).clamp(-1.0, 1.0);
-            value * value
-        })
-        .sum::<f32>();
-    (sum / samples.len() as f32).sqrt()
+
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f32::total_cmp);
+    let rank = ((sorted.len() - 1) as f32 * fraction.clamp(0.0, 1.0)).round() as usize;
+    sorted[rank]
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1873,6 +2227,8 @@ async fn transcribe(
     entries: &[DictionaryEntry],
     clip: &AudioClip,
 ) -> Result<String, String> {
+    save_debug_audio_clip(app, settings.voice.speech_profile, clip);
+
     match settings.voice.speech_profile {
         SpeechProfile::GoogleChirp3 => {
             if clip.duration_secs > 60.0 || clip.wav.len() > 10 * 1024 * 1024 {
@@ -2163,6 +2519,98 @@ fn temp_voice_file_path(label: &str, extension: &str) -> PathBuf {
         "enja-{label}-{}-{nonce}.{extension}",
         std::process::id()
     ))
+}
+
+fn debug_audio_id() -> String {
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("{}-{timestamp_ms}", std::process::id())
+}
+
+fn save_debug_audio_clip(app: &tauri::AppHandle, profile: SpeechProfile, clip: &AudioClip) {
+    save_debug_audio_wav(
+        app,
+        &clip.debug_id,
+        &format!("provider-{}", speech_profile_debug_label(profile)),
+        &clip.wav,
+    );
+}
+
+fn save_debug_audio_wav(app: &tauri::AppHandle, debug_id: &str, label: &str, wav: &[u8]) {
+    let dir = debug_audio_dir(app);
+    if let Err(err) = fs::create_dir_all(&dir) {
+        eprintln!(
+            "[enja] debug voice audio directory could not be created ({}): {err}",
+            dir.display()
+        );
+        return;
+    }
+
+    let path = dir.join(format!("enja-voice-{debug_id}-{label}.wav"));
+
+    match write_debug_audio(&path, wav) {
+        Ok(()) => eprintln!("[enja] debug voice audio saved: {}", path.display()),
+        Err(err) => eprintln!(
+            "[enja] debug voice audio could not be saved ({}): {err}",
+            path.display()
+        ),
+    }
+}
+
+fn save_debug_audio_metadata(
+    app: &tauri::AppHandle,
+    debug_id: &str,
+    sample_rate: u32,
+    channels: u16,
+    pretrim_duration_secs: f32,
+    posttrim_analysis: PreparedAudioAnalysis,
+) {
+    let dir = debug_audio_dir(app);
+    if let Err(err) = fs::create_dir_all(&dir) {
+        eprintln!(
+            "[enja] debug voice audio directory could not be created ({}): {err}",
+            dir.display()
+        );
+        return;
+    }
+
+    let metadata = serde_json::json!({
+        "id": debug_id,
+        "sampleRate": sample_rate,
+        "channels": channels,
+        "pretrimDurationSecs": pretrim_duration_secs,
+        "posttrimDurationSecs": posttrim_analysis.duration_secs,
+        "activeAudioSecs": posttrim_analysis.active_audio_secs,
+    });
+    let path = dir.join(format!("enja-voice-{debug_id}-metadata.json"));
+    if let Err(err) = fs::write(&path, metadata.to_string()) {
+        eprintln!(
+            "[enja] debug voice metadata could not be saved ({}): {err}",
+            path.display()
+        );
+    }
+}
+
+fn debug_audio_dir(app: &tauri::AppHandle) -> PathBuf {
+    app.path()
+        .app_data_dir()
+        .unwrap_or_else(|err| {
+            eprintln!("[enja] app data directory could not be resolved: {err}");
+            std::env::temp_dir().join("enja")
+        })
+        .join("debug-audio")
+}
+
+fn speech_profile_debug_label(profile: SpeechProfile) -> &'static str {
+    match profile {
+        SpeechProfile::GoogleChirp3 => "google-chirp3",
+        SpeechProfile::OpenAiGpt4oTranscribe => "openai-gpt4o-transcribe",
+        SpeechProfile::OpenAiGpt4oMiniTranscribe => "openai-gpt4o-mini-transcribe",
+        SpeechProfile::GeminiAudio => "gemini-audio",
+        SpeechProfile::AppleSpeechAnalyzer => "apple-speech-analyzer",
+    }
 }
 
 async fn transcribe_google_chirp3(
@@ -3007,6 +3455,16 @@ fn set_output_volume(volume: u8) {
 fn set_output_volume(_volume: u8) {}
 
 #[cfg(target_os = "macos")]
+fn capture_paste_target() -> Option<PasteTargetInfo> {
+    current_paste_target_info()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn capture_paste_target() -> Option<PasteTargetInfo> {
+    None
+}
+
+#[cfg(target_os = "macos")]
 fn capture_selected_text() -> String {
     if let Some(selected) = read_accessibility_selected_text() {
         return selected;
@@ -3123,6 +3581,7 @@ extern "C" {
         attribute: CFStringRef,
         value: *mut CFTypeRef,
     ) -> AXError;
+    fn AXUIElementCopyAttributeNames(element: AXUIElementRef, names: *mut CFArrayRef) -> AXError;
     fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut c_int) -> AXError;
     fn AXUIElementSetAttributeValue(
         element: AXUIElementRef,
@@ -3161,13 +3620,12 @@ struct AxTextSnapshot {
 }
 
 #[cfg(target_os = "macos")]
-struct AxFocusedText {
+struct AxFocusedElement {
     element: AxElementRef,
-    snapshot: AxTextSnapshot,
 }
 
 #[cfg(target_os = "macos")]
-impl AxFocusedText {
+impl AxFocusedElement {
     fn capture() -> Option<Self> {
         unsafe {
             let system = AXUIElementCreateSystemWide();
@@ -3180,16 +3638,42 @@ impl AxFocusedText {
                 });
             CFRelease(system.cast());
 
-            let element = focused?;
-            let snapshot = element.read_text_snapshot()?;
-            Some(Self { element, snapshot })
+            focused.map(|element| Self { element })
         }
+    }
+
+    fn read_paste_target_info(&self) -> Option<PasteTargetInfo> {
+        let pid = self.element.pid()?;
+        Some(PasteTargetInfo {
+            pid: Some(pid),
+            role: copy_ax_string_attribute(self.element.raw, "AXRole").unwrap_or_default(),
+            subrole: copy_ax_string_attribute(self.element.raw, "AXSubrole").unwrap_or_default(),
+            attributes: copy_ax_attribute_names(self.element.raw).unwrap_or_default(),
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct AxFocusedText {
+    element: AxElementRef,
+    snapshot: AxTextSnapshot,
+}
+
+#[cfg(target_os = "macos")]
+impl AxFocusedText {
+    fn capture() -> Option<Self> {
+        let focused = AxFocusedElement::capture()?;
+        let snapshot = focused.element.read_text_snapshot()?;
+        Some(Self {
+            element: focused.element,
+            snapshot,
+        })
     }
 }
 
 #[cfg(target_os = "macos")]
 impl AxElementRef {
-    fn read_text_snapshot(&self) -> Option<AxTextSnapshot> {
+    fn pid(&self) -> Option<c_int> {
         if self.raw.is_null() {
             return None;
         }
@@ -3199,6 +3683,11 @@ impl AxElementRef {
                 return None;
             }
         }
+        Some(pid)
+    }
+
+    fn read_text_snapshot(&self) -> Option<AxTextSnapshot> {
+        let pid = self.pid()?;
         let raw_value = copy_ax_string_attribute(self.raw, "AXValue")?;
         let placeholder = copy_ax_string_attribute(self.raw, "AXPlaceholderValue");
         let value = value_without_placeholder(raw_value, placeholder.as_deref());
@@ -3267,23 +3756,41 @@ fn copy_ax_range_attribute(element: AXUIElementRef, attribute: &str) -> Option<T
 }
 
 #[cfg(target_os = "macos")]
-fn paste_text_with_dictionary_learning(app: &tauri::AppHandle, text: &str) -> bool {
-    if !should_attempt_paste() {
+fn copy_ax_attribute_names(element: AXUIElementRef) -> Option<HashSet<String>> {
+    let mut names: CFArrayRef = std::ptr::null();
+    let status = unsafe { AXUIElementCopyAttributeNames(element, &mut names) };
+    if status != KAX_ERROR_SUCCESS || names.is_null() {
+        return None;
+    }
+
+    let mut out = HashSet::new();
+    unsafe {
+        let count = CFArrayGetCount(names);
+        for index in 0..count {
+            let value = CFArrayGetValueAtIndex(names, index);
+            if !value.is_null() && CFGetTypeID(value.cast()) == CFStringGetTypeID() {
+                let text = CFString::wrap_under_get_rule(value as CFStringRef).to_string();
+                out.insert(text);
+            }
+        }
+        CFRelease(names.cast());
+    }
+
+    Some(out)
+}
+
+#[cfg(target_os = "macos")]
+fn paste_text_with_dictionary_learning(
+    app: &tauri::AppHandle,
+    text: &str,
+    preferred_target: Option<&PasteTargetInfo>,
+) -> bool {
+    if !should_attempt_paste(preferred_target) {
         return false;
     }
 
     let learning_target = AxFocusedText::capture();
-    let original = read_clipboard_text();
-    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-        if clipboard.set_text(text.to_string()).is_err() {
-            return false;
-        }
-    } else {
-        return false;
-    }
-    let ok = run_keystroke("v");
-    std::thread::sleep(Duration::from_millis(180));
-    restore_clipboard(original);
+    let ok = perform_clipboard_paste(text);
 
     if ok {
         if let Some(target) = learning_target {
@@ -3294,8 +3801,12 @@ fn paste_text_with_dictionary_learning(app: &tauri::AppHandle, text: &str) -> bo
 }
 
 #[cfg(not(target_os = "macos"))]
-fn paste_text_with_dictionary_learning(_app: &tauri::AppHandle, text: &str) -> bool {
-    paste_text(text)
+fn paste_text_with_dictionary_learning(
+    _app: &tauri::AppHandle,
+    text: &str,
+    _preferred_target: Option<&PasteTargetInfo>,
+) -> bool {
+    paste_text(text, None)
 }
 
 #[cfg(target_os = "macos")]
@@ -3549,10 +4060,15 @@ fn utf16_len_chars(chars: &[char]) -> usize {
 }
 
 #[cfg(target_os = "macos")]
-fn paste_text(text: &str) -> bool {
-    if !should_attempt_paste() {
+fn paste_text(text: &str, preferred_target: Option<&PasteTargetInfo>) -> bool {
+    if !should_attempt_paste(preferred_target) {
         return false;
     }
+    perform_clipboard_paste(text)
+}
+
+#[cfg(target_os = "macos")]
+fn perform_clipboard_paste(text: &str) -> bool {
     let original = read_clipboard_text();
     if let Ok(mut clipboard) = arboard::Clipboard::new() {
         if clipboard.set_text(text.to_string()).is_err() {
@@ -3561,14 +4077,15 @@ fn paste_text(text: &str) -> bool {
     } else {
         return false;
     }
+    std::thread::sleep(Duration::from_millis(PASTE_WRITE_SETTLE_MS));
     let ok = run_keystroke("v");
-    std::thread::sleep(Duration::from_millis(180));
+    std::thread::sleep(Duration::from_millis(PASTE_RESTORE_DELAY_MS));
     restore_clipboard(original);
     ok
 }
 
 #[cfg(not(target_os = "macos"))]
-fn paste_text(_text: &str) -> bool {
+fn paste_text(_text: &str, _preferred_target: Option<&PasteTargetInfo>) -> bool {
     false
 }
 
@@ -3655,35 +4172,100 @@ fn post_command_key(keycode: u16) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn should_attempt_paste() -> bool {
-    resolve_paste_target_info().is_some()
+fn should_attempt_paste(preferred_target: Option<&PasteTargetInfo>) -> bool {
+    resolve_paste_target_info(preferred_target).is_some()
 }
 
 #[cfg(target_os = "macos")]
-fn resolve_paste_target_info() -> Option<PasteTargetInfo> {
+fn resolve_paste_target_info(
+    preferred_target: Option<&PasteTargetInfo>,
+) -> Option<PasteTargetInfo> {
+    let own_pid = std::process::id() as i32;
     let target = current_paste_target_info();
-    if target.as_ref().is_some_and(is_pasteable_target) {
+    let current_missing = target.is_none();
+    let current_is_own = target
+        .as_ref()
+        .is_some_and(|target| target.pid == Some(own_pid));
+    if target
+        .as_ref()
+        .is_some_and(|target| is_verified_paste_candidate(target, own_pid))
+    {
         return target;
     }
 
-    let pid = manual_accessibility_retry_pid(target.as_ref(), std::process::id() as i32)?;
-    if !ensure_manual_accessibility_for_pid(pid) {
-        return None;
-    }
+    let fallback = target
+        .as_ref()
+        .filter(|target| is_fallback_paste_candidate(target, own_pid))
+        .cloned();
 
-    for _ in 0..MANUAL_ACCESSIBILITY_POLL_ATTEMPTS {
-        std::thread::sleep(MANUAL_ACCESSIBILITY_POLL_INTERVAL);
-        let target = current_paste_target_info();
-        if target.as_ref().is_some_and(is_pasteable_target) {
-            return target;
+    if let Some(pid) = manual_accessibility_retry_pid(target.as_ref(), own_pid) {
+        if ensure_manual_accessibility_for_pid(pid) {
+            for _ in 0..MANUAL_ACCESSIBILITY_POLL_ATTEMPTS {
+                std::thread::sleep(MANUAL_ACCESSIBILITY_POLL_INTERVAL);
+                let target = current_paste_target_info();
+                if target
+                    .as_ref()
+                    .is_some_and(|target| is_verified_paste_candidate(target, own_pid))
+                {
+                    return target;
+                }
+                if target
+                    .as_ref()
+                    .is_some_and(|target| is_fallback_paste_candidate(target, own_pid))
+                {
+                    return target;
+                }
+            }
         }
     }
 
-    None
+    fallback.or_else(|| {
+        let preferred =
+            preferred_target.filter(|target| is_attemptable_paste_target(target, own_pid))?;
+
+        if current_is_own {
+            let pid = preferred.pid?;
+            if !activate_application_pid(pid) {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(PASTE_ACTIVATE_SETTLE_MS));
+            let target = current_paste_target_info();
+            if target
+                .as_ref()
+                .is_some_and(|target| is_verified_paste_candidate(target, own_pid))
+            {
+                return target;
+            }
+            if target
+                .as_ref()
+                .is_some_and(|target| is_fallback_paste_candidate(target, own_pid))
+            {
+                return target;
+            }
+            return Some(preferred.clone());
+        }
+
+        if current_missing {
+            Some(preferred.clone())
+        } else {
+            None
+        }
+    })
 }
 
 #[cfg(target_os = "macos")]
 fn current_paste_target_info() -> Option<PasteTargetInfo> {
+    current_ax_focused_target_info().or_else(current_system_events_paste_target_info)
+}
+
+#[cfg(target_os = "macos")]
+fn current_ax_focused_target_info() -> Option<PasteTargetInfo> {
+    let focused = AxFocusedElement::capture()?;
+    focused.read_paste_target_info()
+}
+
+#[cfg(target_os = "macos")]
+fn current_system_events_paste_target_info() -> Option<PasteTargetInfo> {
     let script = r#"
 tell application "System Events"
   try
@@ -3720,6 +4302,28 @@ end tell
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| PasteTargetInfo::from_osascript_output(&String::from_utf8_lossy(&o.stdout)))
+}
+
+#[cfg(target_os = "macos")]
+fn activate_application_pid(pid: i32) -> bool {
+    let script = format!(
+        r#"
+tell application "System Events"
+  try
+    set frontmost of first application process whose unix id is {pid} to true
+    return "ok"
+  on error
+    return ""
+  end try
+end tell
+"#
+    );
+    std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "ok")
 }
 
 fn manual_accessibility_retry_pid(target: Option<&PasteTargetInfo>, own_pid: i32) -> Option<i32> {
@@ -3825,6 +4429,40 @@ fn is_pasteable_target(target: &PasteTargetInfo) -> bool {
     // text. Unknown accessibility roles must fall back unless they expose a cursor.
     target.attributes.contains("AXSelectedTextRange")
         || target.attributes.contains("AXInsertionPointLineNumber")
+        || target.attributes.contains("AXSelectedTextMarkerRange")
+        || target.attributes.contains("AXEditableAncestor")
+}
+
+fn is_verified_paste_candidate(target: &PasteTargetInfo, own_pid: i32) -> bool {
+    target.pid != Some(own_pid) && is_pasteable_target(target)
+}
+
+fn is_attemptable_paste_target(target: &PasteTargetInfo, own_pid: i32) -> bool {
+    if target.pid == Some(own_pid) {
+        return false;
+    }
+
+    is_pasteable_target(target) || is_fallback_paste_candidate(target, own_pid)
+}
+
+fn is_fallback_paste_candidate(target: &PasteTargetInfo, own_pid: i32) -> bool {
+    is_web_content_paste_candidate(target, own_pid)
+        || is_ambiguous_external_paste_candidate(target, own_pid)
+}
+
+fn is_web_content_paste_candidate(target: &PasteTargetInfo, own_pid: i32) -> bool {
+    if target.pid == Some(own_pid) {
+        return false;
+    }
+
+    is_web_content_role(&target.role) || is_web_content_role(&target.subrole)
+}
+
+fn is_ambiguous_external_paste_candidate(target: &PasteTargetInfo, own_pid: i32) -> bool {
+    target.pid.is_some_and(|pid| pid != own_pid)
+        && target.role.is_empty()
+        && target.subrole.is_empty()
+        && target.attributes.is_empty()
 }
 
 fn is_text_input_role(role: &str) -> bool {
@@ -3832,6 +4470,10 @@ fn is_text_input_role(role: &str) -> bool {
         role,
         "AXTextArea" | "AXTextField" | "AXComboBox" | "AXSearchField" | "AXTextView"
     )
+}
+
+fn is_web_content_role(role: &str) -> bool {
+    role == "AXWebArea"
 }
 
 fn read_clipboard_text() -> Option<String> {
@@ -3859,11 +4501,9 @@ fn restore_clipboard(value: Option<String>) {
     }
 }
 
-#[allow(dead_code)]
-fn write_debug_audio(path: &std::path::Path, wav: &[u8]) {
-    if let Ok(mut file) = std::fs::File::create(path) {
-        let _ = file.write_all(wav);
-    }
+fn write_debug_audio(path: &std::path::Path, wav: &[u8]) -> Result<(), std::io::Error> {
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(wav)
 }
 
 #[cfg(test)]
@@ -3920,7 +4560,7 @@ mod tests {
         let prepared = prepare_recorded_audio_for_api(&samples, 1_000, 1).expect("trimmed");
 
         assert!(prepared.samples.len() < samples.len());
-        assert!((prepared.analysis.duration_secs - 1.32).abs() < 0.001);
+        assert!((prepared.analysis.duration_secs - 1.8).abs() < 0.001);
     }
 
     #[test]
@@ -3933,7 +4573,19 @@ mod tests {
         let prepared = prepare_recorded_audio_for_api(&samples, 1_000, 1).expect("trimmed");
 
         assert!(prepared.samples.len() < samples.len());
-        assert!((prepared.analysis.duration_secs - 2.32).abs() < 0.001);
+        assert!((prepared.analysis.duration_secs - 2.9).abs() < 0.001);
+    }
+
+    #[test]
+    fn prepare_recorded_audio_preserves_low_volume_tail_before_stop() {
+        let mut samples = Vec::new();
+        samples.extend(vec![2_000_i16; 1_000]);
+        samples.extend(vec![80_i16; 800]);
+        samples.extend(vec![0_i16; 500]);
+
+        let prepared = prepare_recorded_audio_for_api(&samples, 1_000, 1).expect("tail preserved");
+
+        assert_eq!(prepared.samples.len(), samples.len());
     }
 
     #[test]
@@ -3957,6 +4609,20 @@ mod tests {
     }
 
     #[test]
+    fn paste_target_attempt_skips_own_text_input() {
+        let target = PasteTargetInfo {
+            pid: Some(100),
+            role: "AXTextArea".to_string(),
+            subrole: String::new(),
+            attributes: HashSet::new(),
+        };
+
+        assert!(is_pasteable_target(&target));
+        assert!(!is_verified_paste_candidate(&target, 100));
+        assert!(!is_attemptable_paste_target(&target, 100));
+    }
+
+    #[test]
     fn paste_target_accepts_editor_cursor_attributes() {
         assert!(is_pasteable_target(&paste_target(
             "AXGroup",
@@ -3967,6 +4633,16 @@ mod tests {
             "AXWebArea",
             "",
             &["AXInsertionPointLineNumber"]
+        )));
+        assert!(is_pasteable_target(&paste_target(
+            "AXGroup",
+            "",
+            &["AXSelectedTextMarkerRange"]
+        )));
+        assert!(is_pasteable_target(&paste_target(
+            "AXStaticText",
+            "",
+            &["AXEditableAncestor"]
         )));
     }
 
@@ -3983,6 +4659,56 @@ mod tests {
             &["AXRole"]
         )));
         assert!(!is_pasteable_target(&paste_target("AXUnknown", "", &[])));
+    }
+
+    #[test]
+    fn paste_target_treats_web_area_as_fallback_candidate() {
+        assert!(is_web_content_paste_candidate(
+            &paste_target("AXWebArea", "", &["AXRole"]),
+            100
+        ));
+        assert!(is_web_content_paste_candidate(
+            &paste_target("", "AXWebArea", &["AXRole"]),
+            100
+        ));
+    }
+
+    #[test]
+    fn paste_target_fallback_skips_own_web_area() {
+        let target = PasteTargetInfo {
+            pid: Some(100),
+            role: "AXWebArea".to_string(),
+            subrole: String::new(),
+            attributes: HashSet::new(),
+        };
+
+        assert!(!is_web_content_paste_candidate(&target, 100));
+    }
+
+    #[test]
+    fn paste_target_treats_pid_only_external_target_as_fallback_candidate() {
+        let target = PasteTargetInfo {
+            pid: Some(4242),
+            role: String::new(),
+            subrole: String::new(),
+            attributes: HashSet::new(),
+        };
+
+        assert!(is_ambiguous_external_paste_candidate(&target, 100));
+        assert!(is_attemptable_paste_target(&target, 100));
+    }
+
+    #[test]
+    fn paste_target_rejects_known_non_text_external_target_as_fallback_candidate() {
+        let target = PasteTargetInfo {
+            pid: Some(4242),
+            role: "AXButton".to_string(),
+            subrole: String::new(),
+            attributes: HashSet::new(),
+        };
+
+        assert!(!is_fallback_paste_candidate(&target, 100));
+        assert!(!is_attemptable_paste_target(&target, 100));
     }
 
     #[test]
