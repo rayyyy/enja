@@ -31,7 +31,7 @@ use cpal::Sample;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Cursor, Write};
+use std::io::Cursor;
 #[cfg(target_os = "macos")]
 use std::os::raw::c_int;
 #[cfg(target_os = "macos")]
@@ -436,7 +436,6 @@ enum RecorderCommand {
 struct AudioClip {
     wav: Vec<u8>,
     duration_secs: f32,
-    debug_id: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1290,28 +1289,12 @@ fn run_recording_thread(
     if samples.is_empty() {
         return Err("音声が録音されていません。".to_string());
     }
-    let debug_id = debug_audio_id();
-    if let Ok(pretrim_wav) = samples_to_wav(&samples, sample_rate, channels) {
-        save_debug_audio_wav(&app, &debug_id, "pretrim", &pretrim_wav);
-    }
 
-    let pretrim_duration_secs =
-        audio_duration_secs(samples.len(), sample_rate, channels.max(1) as usize);
     let prepared = prepare_recorded_audio_for_api(&samples, sample_rate, channels)?;
     let wav = samples_to_wav(&prepared.samples, sample_rate, channels)?;
-    save_debug_audio_wav(&app, &debug_id, "posttrim", &wav);
-    save_debug_audio_metadata(
-        &app,
-        &debug_id,
-        sample_rate,
-        channels,
-        pretrim_duration_secs,
-        prepared.analysis,
-    );
     Ok(AudioClip {
         wav,
         duration_secs: prepared.analysis.duration_secs,
-        debug_id,
     })
 }
 
@@ -2228,8 +2211,6 @@ async fn transcribe(
     entries: &[DictionaryEntry],
     clip: &AudioClip,
 ) -> Result<String, String> {
-    save_debug_audio_clip(app, settings.voice.speech_profile, clip);
-
     match settings.voice.speech_profile {
         SpeechProfile::GoogleChirp3 => {
             if clip.duration_secs > 60.0 || clip.wav.len() > 10 * 1024 * 1024 {
@@ -2520,98 +2501,6 @@ fn temp_voice_file_path(label: &str, extension: &str) -> PathBuf {
         "enja-{label}-{}-{nonce}.{extension}",
         std::process::id()
     ))
-}
-
-fn debug_audio_id() -> String {
-    let timestamp_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    format!("{}-{timestamp_ms}", std::process::id())
-}
-
-fn save_debug_audio_clip(app: &tauri::AppHandle, profile: SpeechProfile, clip: &AudioClip) {
-    save_debug_audio_wav(
-        app,
-        &clip.debug_id,
-        &format!("provider-{}", speech_profile_debug_label(profile)),
-        &clip.wav,
-    );
-}
-
-fn save_debug_audio_wav(app: &tauri::AppHandle, debug_id: &str, label: &str, wav: &[u8]) {
-    let dir = debug_audio_dir(app);
-    if let Err(err) = fs::create_dir_all(&dir) {
-        eprintln!(
-            "[enja] debug voice audio directory could not be created ({}): {err}",
-            dir.display()
-        );
-        return;
-    }
-
-    let path = dir.join(format!("enja-voice-{debug_id}-{label}.wav"));
-
-    match write_debug_audio(&path, wav) {
-        Ok(()) => eprintln!("[enja] debug voice audio saved: {}", path.display()),
-        Err(err) => eprintln!(
-            "[enja] debug voice audio could not be saved ({}): {err}",
-            path.display()
-        ),
-    }
-}
-
-fn save_debug_audio_metadata(
-    app: &tauri::AppHandle,
-    debug_id: &str,
-    sample_rate: u32,
-    channels: u16,
-    pretrim_duration_secs: f32,
-    posttrim_analysis: PreparedAudioAnalysis,
-) {
-    let dir = debug_audio_dir(app);
-    if let Err(err) = fs::create_dir_all(&dir) {
-        eprintln!(
-            "[enja] debug voice audio directory could not be created ({}): {err}",
-            dir.display()
-        );
-        return;
-    }
-
-    let metadata = serde_json::json!({
-        "id": debug_id,
-        "sampleRate": sample_rate,
-        "channels": channels,
-        "pretrimDurationSecs": pretrim_duration_secs,
-        "posttrimDurationSecs": posttrim_analysis.duration_secs,
-        "activeAudioSecs": posttrim_analysis.active_audio_secs,
-    });
-    let path = dir.join(format!("enja-voice-{debug_id}-metadata.json"));
-    if let Err(err) = fs::write(&path, metadata.to_string()) {
-        eprintln!(
-            "[enja] debug voice metadata could not be saved ({}): {err}",
-            path.display()
-        );
-    }
-}
-
-fn debug_audio_dir(app: &tauri::AppHandle) -> PathBuf {
-    app.path()
-        .app_data_dir()
-        .unwrap_or_else(|err| {
-            eprintln!("[enja] app data directory could not be resolved: {err}");
-            std::env::temp_dir().join("enja")
-        })
-        .join("debug-audio")
-}
-
-fn speech_profile_debug_label(profile: SpeechProfile) -> &'static str {
-    match profile {
-        SpeechProfile::GoogleChirp3 => "google-chirp3",
-        SpeechProfile::OpenAiGpt4oTranscribe => "openai-gpt4o-transcribe",
-        SpeechProfile::OpenAiGpt4oMiniTranscribe => "openai-gpt4o-mini-transcribe",
-        SpeechProfile::GeminiAudio => "gemini-audio",
-        SpeechProfile::AppleSpeechAnalyzer => "apple-speech-analyzer",
-    }
 }
 
 async fn transcribe_google_chirp3(
@@ -4505,11 +4394,6 @@ fn restore_clipboard(value: Option<String>) {
             }
         }
     }
-}
-
-fn write_debug_audio(path: &std::path::Path, wav: &[u8]) -> Result<(), std::io::Error> {
-    let mut file = std::fs::File::create(path)?;
-    file.write_all(wav)
 }
 
 #[cfg(test)]
