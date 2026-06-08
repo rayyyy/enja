@@ -52,7 +52,8 @@ const APPLE_SPEECH_INSTALL_TIMEOUT: Duration = Duration::from_secs(900);
 const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const OPENAI_REALTIME_TRANSCRIPTION_MODEL: &str = "gpt-realtime-whisper";
 const OPENAI_REALTIME_TRANSCRIPTION_SAMPLE_RATE: u32 = 24_000;
-const OPENAI_REALTIME_TRANSCRIPTION_TIMEOUT: Duration = Duration::from_secs(20);
+const OPENAI_REALTIME_TRANSCRIPTION_TIMEOUT: Duration = Duration::from_secs(3);
+const RECORDING_STOP_NOTIFY_TIMEOUT: Duration = Duration::from_millis(250);
 const AUDIO_INPUT_DEVICES_CHANGED_EVENT: &str = "audio-input-devices-changed";
 const VOICE_WINDOW_EDGE_MARGIN: f64 = 16.0;
 const VOICE_WINDOW_BOTTOM_MARGIN: f64 = 42.0;
@@ -89,7 +90,6 @@ const GOOGLE_SPEECH_DICTIONARY_BOOST: f32 = 8.0;
 const MIN_LEARNED_CORRECTION_CHARS: usize = 2;
 const MAX_LEARNED_CORRECTION_CHARS: usize = 40;
 const MIN_FULL_INSERT_REWRITE_CHARS: usize = 12;
-const STOP_RECORDING_BUFFER: Duration = Duration::from_millis(500);
 #[cfg(target_os = "macos")]
 const PASTE_RESTORE_DELAY_MS: u64 = 420;
 #[cfg(target_os = "macos")]
@@ -435,6 +435,7 @@ enum PipelineMode {
 
 struct Recorder {
     control_tx: std::sync::mpsc::Sender<RecorderCommand>,
+    stopped_rx: std::sync::mpsc::Receiver<()>,
     done_rx: std::sync::mpsc::Receiver<Result<AudioClip, String>>,
 }
 
@@ -451,7 +452,7 @@ struct LiveTranscript {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecorderCommand {
-    Finish { include_stop_buffer: bool },
+    Finish,
     Cancel,
 }
 
@@ -657,23 +658,22 @@ impl VoiceManager {
             Some("録音を終了しています…".to_string()),
         );
 
-        let clip = recorder.finish_with_stop_buffer(move || {
+        let should_play_stop_sound = app
+            .try_state::<SettingsStore>()
+            .map(|store| store.get().voice.interaction_sounds_enabled)
+            .unwrap_or(false);
+        let clip = recorder.finish(move || {
             if let Some(aux) = audio_aux {
                 aux.stop();
+            }
+            if should_play_stop_sound {
+                play_interaction_sound("stop");
             }
         });
 
         if is_processing_cancelled(&cancelled) {
             self.clear_processing_session(&cancelled);
             return Ok(());
-        }
-
-        if app
-            .try_state::<SettingsStore>()
-            .map(|store| store.get().voice.interaction_sounds_enabled)
-            .unwrap_or(false)
-        {
-            play_interaction_sound("stop");
         }
 
         let clip = match clip {
@@ -1122,6 +1122,7 @@ impl Recorder {
         live_transcription_provider: Option<LiveTranscriptionProvider>,
     ) -> Result<Self, String> {
         let (control_tx, control_rx) = std::sync::mpsc::channel::<RecorderCommand>();
+        let (stopped_tx, stopped_rx) = std::sync::mpsc::channel::<()>();
         let (done_tx, done_rx) = std::sync::mpsc::channel::<Result<AudioClip, String>>();
         let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<(), String>>();
         std::thread::spawn(move || {
@@ -1130,6 +1131,7 @@ impl Recorder {
                 selected_device_id,
                 max_recording_seconds,
                 control_rx,
+                stopped_tx,
                 init_tx,
                 pipeline,
                 live_transcription_provider,
@@ -1141,22 +1143,19 @@ impl Recorder {
             .map_err(|_| "マイクの初期化がタイムアウトしました。".to_string())??;
         Ok(Self {
             control_tx,
+            stopped_rx,
             done_rx,
         })
     }
 
-    fn finish_with_stop_buffer(
-        self,
-        after_recording_stopped: impl FnOnce(),
-    ) -> Result<AudioClip, String> {
-        let _ = self.control_tx.send(RecorderCommand::Finish {
-            include_stop_buffer: true,
-        });
+    fn finish(self, after_recording_stopped: impl FnOnce()) -> Result<AudioClip, String> {
+        let _ = self.control_tx.send(RecorderCommand::Finish);
+        let _ = self.stopped_rx.recv_timeout(RECORDING_STOP_NOTIFY_TIMEOUT);
+        after_recording_stopped();
         let result = match self.done_rx.recv_timeout(Duration::from_secs(10)) {
             Ok(result) => result,
             Err(_) => Err("録音停止処理がタイムアウトしました。".to_string()),
         };
-        after_recording_stopped();
         result
     }
 
@@ -1655,7 +1654,7 @@ async fn openai_realtime_transcribe(
                     "transcription": {
                         "model": OPENAI_REALTIME_TRANSCRIPTION_MODEL,
                         "language": "ja",
-                        "delay": "low",
+                        "delay": "minimal",
                     },
                     "turn_detection": null,
                 },
@@ -1667,6 +1666,8 @@ async fn openai_realtime_transcribe(
         .await
         .map_err(|e| format!("OpenAI Realtimeへ初期設定を送信できませんでした: {e}"))?;
 
+    let latest_transcript = Arc::new(Mutex::new(String::new()));
+    let latest_transcript_for_receive = latest_transcript.clone();
     let mut receive_task = tokio::spawn(async move {
         while let Some(message) = read.next().await {
             let message = message.map_err(|e| e.to_string())?;
@@ -1676,17 +1677,31 @@ async fn openai_realtime_transcribe(
             let text = message.to_text().map_err(|e| e.to_string())?;
             let value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
             match value.get("type").and_then(|kind| kind.as_str()) {
+                Some("conversation.item.input_audio_transcription.delta") => {
+                    if let Some(delta) = value.get("delta").and_then(|delta| delta.as_str()) {
+                        append_openai_realtime_transcript(&latest_transcript_for_receive, delta);
+                    }
+                }
                 Some("conversation.item.input_audio_transcription.completed") => {
-                    let transcript = value
+                    let mut transcript = value
                         .get("transcript")
                         .and_then(|transcript| transcript.as_str())
                         .unwrap_or("")
                         .trim()
                         .to_string();
                     if transcript.is_empty() {
+                        transcript =
+                            openai_realtime_latest_transcript(&latest_transcript_for_receive);
+                    } else {
+                        set_openai_realtime_transcript(&latest_transcript_for_receive, &transcript);
+                    }
+                    if transcript.is_empty() {
                         return Err("OpenAI Realtimeの文字起こし結果が空でした。".to_string());
                     }
                     return Ok(transcript);
+                }
+                Some("conversation.item.input_audio_transcription.failed") => {
+                    return Err(openai_realtime_error_message(&value));
                 }
                 Some("error") => {
                     return Err(openai_realtime_error_message(&value));
@@ -1694,7 +1709,12 @@ async fn openai_realtime_transcribe(
                 _ => {}
             }
         }
-        Err("OpenAI Realtimeの完了イベントを受信できませんでした。".to_string())
+        let transcript = openai_realtime_latest_transcript(&latest_transcript_for_receive);
+        if transcript.is_empty() {
+            Err("OpenAI Realtimeの完了イベントを受信できませんでした。".to_string())
+        } else {
+            Ok(transcript)
+        }
     });
 
     let (audio_tx, mut audio_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<i16>>();
@@ -1755,7 +1775,12 @@ async fn openai_realtime_transcribe(
         Ok(Err(err)) => return Err(format!("OpenAI Realtime受信タスクが停止しました: {err}")),
         Err(_) => {
             receive_task.abort();
-            return Err("OpenAI Realtimeの完了待ちがタイムアウトしました。".to_string());
+            let transcript = openai_realtime_latest_transcript(&latest_transcript);
+            if transcript.is_empty() {
+                let _ = write.close().await;
+                return Err("OpenAI Realtimeの完了待ちがタイムアウトしました。".to_string());
+            }
+            transcript
         }
     };
 
@@ -1782,6 +1807,26 @@ where
         ))
         .await
         .map_err(|e| format!("OpenAI Realtimeへ音声を送信できませんでした: {e}"))
+}
+
+fn append_openai_realtime_transcript(latest_transcript: &Arc<Mutex<String>>, delta: &str) {
+    if let Ok(mut transcript) = latest_transcript.lock() {
+        transcript.push_str(delta);
+    }
+}
+
+fn set_openai_realtime_transcript(latest_transcript: &Arc<Mutex<String>>, value: &str) {
+    if let Ok(mut transcript) = latest_transcript.lock() {
+        transcript.clear();
+        transcript.push_str(value);
+    }
+}
+
+fn openai_realtime_latest_transcript(latest_transcript: &Arc<Mutex<String>>) -> String {
+    latest_transcript
+        .lock()
+        .map(|transcript| transcript.trim().to_string())
+        .unwrap_or_default()
 }
 
 fn openai_realtime_error_message(value: &serde_json::Value) -> String {
@@ -1907,6 +1952,7 @@ fn run_recording_thread(
     selected_device_id: Option<String>,
     max_recording_seconds: u64,
     control_rx: std::sync::mpsc::Receiver<RecorderCommand>,
+    stopped_tx: std::sync::mpsc::Sender<()>,
     init_tx: std::sync::mpsc::Sender<Result<(), String>>,
     pipeline: PipelineMode,
     live_transcription_provider: Option<LiveTranscriptionProvider>,
@@ -2018,18 +2064,11 @@ fn run_recording_thread(
     let max_wait = Duration::from_secs(max_recording_seconds.clamp(5, 600));
     let command = match control_rx.recv_timeout(max_wait) {
         Ok(command) => command,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => RecorderCommand::Finish {
-            include_stop_buffer: false,
-        },
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => RecorderCommand::Finish,
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => RecorderCommand::Cancel,
     };
-    if let RecorderCommand::Finish {
-        include_stop_buffer: true,
-    } = command
-    {
-        std::thread::sleep(STOP_RECORDING_BUFFER);
-    }
     drop(stream);
+    let _ = stopped_tx.send(());
 
     if command == RecorderCommand::Cancel {
         if let Some(transcriber) = live_transcriber {
