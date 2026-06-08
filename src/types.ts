@@ -76,6 +76,7 @@ export type VoiceModeProfile = {
   name: string;
   description: string;
   formattingEnabled: boolean;
+  liveTranscriptionEnabled: boolean;
   systemPrompt: string;
   userPrompt: string;
   deletable: boolean;

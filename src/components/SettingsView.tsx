@@ -98,6 +98,7 @@ const SPEECH_PROFILES: SpeechProfileOption[] = [
       "ADC利用時はgcloudからアクセストークンを取得します。GUIアプリのPATHに依存しないよう代表的なgcloud配置場所も探索します。",
       "modelは chirp_3、languageCodesは ja-JP を使います。",
       "辞書に登録した優先表記はadaptation phraseとして最大1,000件渡します。",
+      "音声モードでライブ文字起こしを有効にした場合は、録音中のPCMをSpeech-to-Text V2 StreamingRecognizeへ送り、停止後は最終本文を一括出力します。",
       "取得した文字起こしをGeminiの整形モデルへ渡し、最終文へ整えます。",
     ],
     docs: [
@@ -136,6 +137,7 @@ const SPEECH_PROFILES: SpeechProfileOption[] = [
       "Enjaは録音WAVをOpenAI /v1/audio/transcriptions へ送ります。",
       "modelは gpt-4o-transcribe、languageは ja を指定します。",
       "辞書に登録した優先表記はpromptとして渡します。",
+      "音声モードでライブ文字起こしを有効にした場合は、録音中の先行文字起こしにOpenAI Realtimeのgpt-realtime-whisperを使い、停止後は最終本文を一括出力します。",
       "取得した文字起こしをGeminiの整形モデルへ渡し、最終文へ整えます。",
     ],
     docs: [
@@ -174,6 +176,7 @@ const SPEECH_PROFILES: SpeechProfileOption[] = [
       "Enjaは録音WAVをOpenAI /v1/audio/transcriptions へ送ります。",
       "modelは gpt-4o-mini-transcribe、languageは ja を指定します。",
       "辞書に登録した優先表記はpromptとして渡します。",
+      "音声モードでライブ文字起こしを有効にした場合は、録音中の先行文字起こしにOpenAI Realtimeのgpt-realtime-whisperを使い、停止後は最終本文を一括出力します。",
       "取得した文字起こしをGeminiの整形モデルへ渡し、最終文へ整えます。",
     ],
     docs: [
@@ -245,6 +248,7 @@ const SPEECH_PROFILES: SpeechProfileOption[] = [
     ],
     enjaDataFlow: [
       "Enjaは録音WAVを外部APIへ送らず、Swift helper経由でApple SpeechAnalyzerへ渡します。",
+      "音声モードでライブ文字起こしを有効にした場合は、録音中のPCMをSwift helperへ流し、停止後は最終本文を一括出力します。",
       "辞書に登録した短い単語は最大100件までcontextualStringsとして渡します。",
       "整形が有効な音声モードでは、文字起こし結果をGeminiの整形モデルへ渡します。",
       "失敗時にGoogle/OpenAI/Geminiへ自動フォールバックしません。",

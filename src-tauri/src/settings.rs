@@ -419,6 +419,7 @@ pub struct VoiceModeProfile {
     pub description: String,
     #[serde(default = "default_true")]
     pub formatting_enabled: bool,
+    pub live_transcription_enabled: bool,
     pub system_prompt: String,
     pub user_prompt: String,
     pub deletable: bool,
@@ -438,6 +439,7 @@ fn voice_mode_profile(
     name: &str,
     description: &str,
     formatting_enabled: bool,
+    live_transcription_enabled: bool,
     system_prompt: &str,
     user_prompt: &str,
     deletable: bool,
@@ -449,6 +451,7 @@ fn voice_mode_profile(
         name: name.to_string(),
         description: description.to_string(),
         formatting_enabled,
+        live_transcription_enabled,
         system_prompt: system_prompt.to_string(),
         user_prompt: user_prompt.to_string(),
         deletable,
@@ -463,6 +466,7 @@ fn default_voice_mode_profile() -> VoiceModeProfile {
         "デフォルト",
         "話した内容を自然な日本語文として整えます。",
         true,
+        false,
         DEFAULT_MODE_SYSTEM,
         DEFAULT_MODE_USER,
         false,
@@ -479,6 +483,7 @@ pub fn default_voice_mode_profiles() -> Vec<VoiceModeProfile> {
             "スピード",
             "整形せず、文字起こし結果をすぐに出力します。",
             false,
+            true,
             SPEED_MODE_SYSTEM,
             SPEED_MODE_USER,
             true,
@@ -490,6 +495,7 @@ pub fn default_voice_mode_profiles() -> Vec<VoiceModeProfile> {
             "AIプロンプト",
             "話した内容をAIに渡しやすいプロンプトへ整えます。",
             true,
+            false,
             AI_PROMPT_MODE_SYSTEM,
             AI_PROMPT_MODE_USER,
             true,
@@ -501,6 +507,7 @@ pub fn default_voice_mode_profiles() -> Vec<VoiceModeProfile> {
             "カジュアル",
             "Slackなどに合う親しみやすい文体へ整えます。",
             true,
+            false,
             CASUAL_MODE_SYSTEM,
             CASUAL_MODE_USER,
             true,
@@ -512,6 +519,7 @@ pub fn default_voice_mode_profiles() -> Vec<VoiceModeProfile> {
             "フォーマル",
             "メール返信などに合うやや丁寧な文体へ整えます。",
             true,
+            false,
             FORMAL_MODE_SYSTEM,
             FORMAL_MODE_USER,
             true,
@@ -873,6 +881,7 @@ mod tests {
         assert_eq!(settings.voice.mode_profiles.len(), 5);
         assert_eq!(settings.voice.mode_profiles[1].id, "speed");
         assert!(!settings.voice.mode_profiles[1].formatting_enabled);
+        assert!(settings.voice.mode_profiles[1].live_transcription_enabled);
         assert!(
             !settings
                 .voice
@@ -924,6 +933,7 @@ mod tests {
             name: "Custom".to_string(),
             description: String::new(),
             formatting_enabled: true,
+            live_transcription_enabled: false,
             system_prompt: "system".to_string(),
             user_prompt: "{{transcript}}".to_string(),
             deletable: true,

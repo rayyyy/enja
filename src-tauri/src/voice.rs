@@ -28,10 +28,11 @@ use core_foundation_sys::base::{CFGetTypeID, CFTypeRef};
 use core_foundation_sys::string::CFStringGetTypeID;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 #[cfg(target_os = "macos")]
 use std::os::raw::c_int;
 #[cfg(target_os = "macos")]
@@ -49,6 +50,9 @@ const SPEECH_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 const APPLE_SPEECH_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const APPLE_SPEECH_INSTALL_TIMEOUT: Duration = Duration::from_secs(900);
 const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const OPENAI_REALTIME_TRANSCRIPTION_MODEL: &str = "gpt-realtime-whisper";
+const OPENAI_REALTIME_TRANSCRIPTION_SAMPLE_RATE: u32 = 24_000;
+const OPENAI_REALTIME_TRANSCRIPTION_TIMEOUT: Duration = Duration::from_secs(20);
 const AUDIO_INPUT_DEVICES_CHANGED_EVENT: &str = "audio-input-devices-changed";
 const VOICE_WINDOW_EDGE_MARGIN: f64 = 16.0;
 const VOICE_WINDOW_BOTTOM_MARGIN: f64 = 42.0;
@@ -402,6 +406,13 @@ struct VoiceModeProfileSnapshot {
     formatting_enabled: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveTranscriptionProvider {
+    AppleSpeechAnalyzer,
+    GoogleChirp3,
+    OpenAiRealtimeWhisper,
+}
+
 enum AudioAux {
     Mute(SystemAudioMuteGuard),
     Isolate(#[allow(dead_code)] Arc<SystemTap>),
@@ -427,6 +438,17 @@ struct Recorder {
     done_rx: std::sync::mpsc::Receiver<Result<AudioClip, String>>,
 }
 
+struct LiveTranscriber {
+    provider: LiveTranscriptionProvider,
+    sample_tx: Option<std::sync::mpsc::Sender<Vec<i16>>>,
+    join: Option<std::thread::JoinHandle<Result<String, String>>>,
+}
+
+struct LiveTranscript {
+    provider: LiveTranscriptionProvider,
+    result: Result<String, String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecorderCommand {
     Finish { include_stop_buffer: bool },
@@ -436,6 +458,7 @@ enum RecorderCommand {
 struct AudioClip {
     wav: Vec<u8>,
     duration_secs: f32,
+    live_transcript: Option<LiveTranscript>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -502,7 +525,13 @@ struct SystemAudioMuteGuard {
     join: Option<std::thread::JoinHandle<()>>,
 }
 
-type RecorderSetup = (Arc<Mutex<Vec<i16>>>, u32, u16, cpal::Stream);
+type RecorderSetup = (
+    Arc<Mutex<Vec<i16>>>,
+    u32,
+    u16,
+    cpal::Stream,
+    Option<LiveTranscriber>,
+);
 type RecorderInitSignal = Arc<Mutex<Option<std::sync::mpsc::Sender<Result<(), String>>>>>;
 
 impl VoiceManager {
@@ -893,12 +922,14 @@ async fn finish_start_session(
     let microphone_id = settings.voice.selected_microphone_id.clone();
     let max_recording_seconds = settings.voice.max_recording_seconds;
     let pipeline_for_recorder = pipeline_mode.clone();
+    let live_transcription_provider = live_transcription_provider_for_settings(&settings, mode);
     let recorder = tokio::task::spawn_blocking(move || {
         Recorder::start(
             app_for_recorder,
             microphone_id,
             max_recording_seconds,
             pipeline_for_recorder,
+            live_transcription_provider,
         )
     })
     .await
@@ -1088,6 +1119,7 @@ impl Recorder {
         selected_device_id: Option<String>,
         max_recording_seconds: u64,
         pipeline: PipelineMode,
+        live_transcription_provider: Option<LiveTranscriptionProvider>,
     ) -> Result<Self, String> {
         let (control_tx, control_rx) = std::sync::mpsc::channel::<RecorderCommand>();
         let (done_tx, done_rx) = std::sync::mpsc::channel::<Result<AudioClip, String>>();
@@ -1100,6 +1132,7 @@ impl Recorder {
                 control_rx,
                 init_tx,
                 pipeline,
+                live_transcription_provider,
             );
             let _ = done_tx.send(result);
         });
@@ -1130,6 +1163,701 @@ impl Recorder {
     fn cancel(self) {
         let _ = self.control_tx.send(RecorderCommand::Cancel);
         let _ = self.done_rx.recv_timeout(Duration::from_secs(2));
+    }
+}
+
+impl LiveTranscriber {
+    fn sample_sender(&self) -> Option<std::sync::mpsc::Sender<Vec<i16>>> {
+        self.sample_tx.as_ref().cloned()
+    }
+
+    fn finish(mut self) -> Result<String, String> {
+        self.sample_tx.take();
+        match self.join.take() {
+            Some(join) => join
+                .join()
+                .unwrap_or_else(|_| Err("ライブ文字起こしスレッドが停止しました。".to_string())),
+            None => Err("ライブ文字起こしが開始されていません。".to_string()),
+        }
+    }
+
+    fn cancel(mut self) {
+        self.sample_tx.take();
+        self.join.take();
+    }
+}
+
+fn live_transcription_provider_for_settings(
+    settings: &AppSettings,
+    mode: VoiceMode,
+) -> Option<LiveTranscriptionProvider> {
+    if mode != VoiceMode::Dictation {
+        return None;
+    }
+    let profile = settings.voice.active_mode_profile()?;
+    if !profile.live_transcription_enabled {
+        return None;
+    }
+    live_transcription_provider_for_speech_profile(settings.voice.speech_profile)
+}
+
+fn live_transcription_provider_for_speech_profile(
+    profile: SpeechProfile,
+) -> Option<LiveTranscriptionProvider> {
+    match profile {
+        SpeechProfile::AppleSpeechAnalyzer => Some(LiveTranscriptionProvider::AppleSpeechAnalyzer),
+        SpeechProfile::GoogleChirp3 => Some(LiveTranscriptionProvider::GoogleChirp3),
+        SpeechProfile::OpenAiGpt4oTranscribe | SpeechProfile::OpenAiGpt4oMiniTranscribe => {
+            Some(LiveTranscriptionProvider::OpenAiRealtimeWhisper)
+        }
+        SpeechProfile::GeminiAudio => None,
+    }
+}
+
+fn should_use_live_transcript(
+    settings: &AppSettings,
+    mode: VoiceMode,
+    mode_profile_id: &str,
+) -> bool {
+    if mode != VoiceMode::Dictation {
+        return false;
+    }
+    let Some(profile) = settings.voice.mode_profile_or_default(mode_profile_id) else {
+        return false;
+    };
+    profile.live_transcription_enabled
+        && live_transcription_provider_for_speech_profile(settings.voice.speech_profile).is_some()
+}
+
+fn start_live_transcriber(
+    app: &tauri::AppHandle,
+    provider: LiveTranscriptionProvider,
+    sample_rate: u32,
+    channels: u16,
+) -> Result<LiveTranscriber, String> {
+    match provider {
+        LiveTranscriptionProvider::AppleSpeechAnalyzer => {
+            start_apple_live_transcriber(app, sample_rate, channels)
+        }
+        LiveTranscriptionProvider::GoogleChirp3 => {
+            start_google_live_transcriber(app, sample_rate, channels)
+        }
+        LiveTranscriptionProvider::OpenAiRealtimeWhisper => {
+            start_openai_live_transcriber(sample_rate, channels)
+        }
+    }
+}
+
+fn start_apple_live_transcriber(
+    app: &tauri::AppHandle,
+    sample_rate: u32,
+    channels: u16,
+) -> Result<LiveTranscriber, String> {
+    let helper = resolve_apple_speech_helper(app)?;
+    let entries = dictionary::load_dictionary(app).unwrap_or_default();
+    let context_path = temp_voice_file_path("apple-speech-live-context", "json");
+    let context = serde_json::json!({
+        "contextualStrings": apple_speech_contextual_strings(&entries),
+    });
+    fs::write(&context_path, context.to_string()).map_err(|e| e.to_string())?;
+
+    let mut command = std::process::Command::new(&helper);
+    command
+        .arg("stream-transcribe")
+        .arg(sample_rate.to_string())
+        .arg(channels.to_string())
+        .arg("ja-JP")
+        .arg(context_path.display().to_string())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            let _ = fs::remove_file(&context_path);
+            return Err(format!(
+                "Apple SpeechAnalyzer helper（path: {}）を開始できませんでした: {err}",
+                helper.display()
+            ));
+        }
+    };
+
+    let Some(mut stdin) = child.stdin.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = fs::remove_file(&context_path);
+        return Err("Apple SpeechAnalyzer helperのstdinを取得できませんでした。".to_string());
+    };
+
+    let (sample_tx, sample_rx) = std::sync::mpsc::channel::<Vec<i16>>();
+    let writer_join = std::thread::spawn(move || -> Result<(), String> {
+        for samples in sample_rx {
+            write_i16_samples(&mut stdin, &samples)?;
+        }
+        stdin.flush().map_err(|e| e.to_string())
+    });
+
+    let join = std::thread::spawn(move || -> Result<String, String> {
+        let writer_result = writer_join
+            .join()
+            .unwrap_or_else(|_| Err("ライブ音声送信スレッドが停止しました。".to_string()));
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("Apple SpeechAnalyzer helperの出力を取得できませんでした: {e}"));
+        let _ = fs::remove_file(&context_path);
+        writer_result?;
+        let output = output?;
+        parse_apple_speech_transcript_output(output)
+    });
+
+    Ok(LiveTranscriber {
+        provider: LiveTranscriptionProvider::AppleSpeechAnalyzer,
+        sample_tx: Some(sample_tx),
+        join: Some(join),
+    })
+}
+
+fn write_i16_samples(writer: &mut impl Write, samples: &[i16]) -> Result<(), String> {
+    let bytes = i16_samples_to_bytes(samples);
+    writer.write_all(&bytes).map_err(|e| e.to_string())
+}
+
+fn i16_samples_to_bytes(samples: &[i16]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(samples.len() * std::mem::size_of::<i16>());
+    for sample in samples {
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    bytes
+}
+
+fn parse_apple_speech_transcript_output(output: std::process::Output) -> Result<String, String> {
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !output.status.success() {
+        let detail = if stderr.is_empty() { stdout } else { stderr };
+        return Err(if detail.trim().is_empty() {
+            format!(
+                "Apple SpeechAnalyzer helperが失敗しました: {}",
+                output.status
+            )
+        } else {
+            detail
+        });
+    }
+    let response: AppleSpeechHelperResponse = serde_json::from_str(&stdout).map_err(|err| {
+        if stderr.is_empty() {
+            format!("Apple SpeechAnalyzer helperからJSON応答が返りませんでした: {err}")
+        } else {
+            format!("Apple SpeechAnalyzer helperからJSON応答が返りませんでした: {err}: {stderr}")
+        }
+    })?;
+    if !response.ok {
+        return Err(response
+            .error
+            .or(response.reason)
+            .unwrap_or_else(|| "Apple SpeechAnalyzer helperが失敗しました。".to_string()));
+    }
+    response
+        .transcript
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Apple SpeechAnalyzerのライブ文字起こし結果が空でした。".to_string())
+}
+
+fn start_google_live_transcriber(
+    app: &tauri::AppHandle,
+    sample_rate: u32,
+    channels: u16,
+) -> Result<LiveTranscriber, String> {
+    let settings = app
+        .try_state::<SettingsStore>()
+        .map(|store| store.get())
+        .unwrap_or_default();
+    let project = settings.voice.google_cloud_project_id.trim().to_string();
+    if project.is_empty() {
+        return Err("Google Cloud Project IDを設定してください。".to_string());
+    }
+    let region = settings.voice.google_cloud_region.trim().to_string();
+    if region.is_empty() {
+        return Err("Google Cloudリージョンを設定してください。".to_string());
+    }
+    let entries = dictionary::load_dictionary(app).unwrap_or_default();
+    let (sample_tx, sample_rx) = std::sync::mpsc::channel::<Vec<i16>>();
+    let join = std::thread::spawn(move || -> Result<String, String> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        runtime.block_on(google_streaming_transcribe(
+            settings,
+            entries,
+            sample_rx,
+            sample_rate,
+            channels,
+            project,
+            region,
+        ))
+    });
+
+    Ok(LiveTranscriber {
+        provider: LiveTranscriptionProvider::GoogleChirp3,
+        sample_tx: Some(sample_tx),
+        join: Some(join),
+    })
+}
+
+async fn google_streaming_transcribe(
+    settings: AppSettings,
+    entries: Vec<DictionaryEntry>,
+    sample_rx: std::sync::mpsc::Receiver<Vec<i16>>,
+    sample_rate: u32,
+    channels: u16,
+    project: String,
+    region: String,
+) -> Result<String, String> {
+    use googleapis_tonic_google_cloud_speech_v2::google::cloud::speech::v2::{
+        explicit_decoding_config, phrase_set, recognition_config, speech_adaptation,
+        speech_client::SpeechClient, streaming_recognize_request, ExplicitDecodingConfig,
+        PhraseSet, RecognitionConfig, RecognitionFeatures, SpeechAdaptation,
+        StreamingRecognitionConfig, StreamingRecognitionFeatures, StreamingRecognizeRequest,
+    };
+    use tonic::metadata::MetadataValue;
+    use tonic::service::Interceptor;
+    use tonic::transport::Channel;
+
+    #[derive(Clone)]
+    struct GoogleAuthInterceptor {
+        authorization: MetadataValue<tonic::metadata::Ascii>,
+    }
+
+    impl Interceptor for GoogleAuthInterceptor {
+        fn call(
+            &mut self,
+            mut request: tonic::Request<()>,
+        ) -> Result<tonic::Request<()>, tonic::Status> {
+            request
+                .metadata_mut()
+                .insert("authorization", self.authorization.clone());
+            Ok(request)
+        }
+    }
+
+    let token = google_access_token(&settings).await?;
+    let endpoint = format!("https://{region}-speech.googleapis.com");
+    let channel = Channel::from_shared(endpoint.clone())
+        .map_err(|e| e.to_string())?
+        .connect()
+        .await
+        .map_err(|e| format!("Google Speech-to-Text gRPCへ接続できませんでした: {e}"))?;
+    let authorization = MetadataValue::try_from(format!("Bearer {token}"))
+        .map_err(|e| format!("Google認証メタデータを作成できませんでした: {e}"))?;
+    let mut client =
+        SpeechClient::with_interceptor(channel, GoogleAuthInterceptor { authorization });
+
+    let recognizer = format!("projects/{project}/locations/{region}/recognizers/_");
+    let phrases = dictionary::enabled_phrases(&entries);
+    let phrase_values = phrases
+        .iter()
+        .take(1000)
+        .map(|value| phrase_set::Phrase {
+            value: value.clone(),
+            boost: GOOGLE_SPEECH_DICTIONARY_BOOST,
+        })
+        .collect::<Vec<_>>();
+    let adaptation = if phrase_values.is_empty() {
+        None
+    } else {
+        Some(SpeechAdaptation {
+            phrase_sets: vec![speech_adaptation::AdaptationPhraseSet {
+                value: Some(
+                    speech_adaptation::adaptation_phrase_set::Value::InlinePhraseSet(PhraseSet {
+                        phrases: phrase_values,
+                        boost: GOOGLE_SPEECH_DICTIONARY_BOOST,
+                        ..Default::default()
+                    }),
+                ),
+            }],
+            custom_classes: Vec::new(),
+        })
+    };
+    let config = RecognitionConfig {
+        model: "chirp_3".to_string(),
+        language_codes: vec!["ja-JP".to_string()],
+        features: Some(RecognitionFeatures {
+            enable_automatic_punctuation: true,
+            ..Default::default()
+        }),
+        adaptation,
+        decoding_config: Some(recognition_config::DecodingConfig::ExplicitDecodingConfig(
+            ExplicitDecodingConfig {
+                encoding: explicit_decoding_config::AudioEncoding::Linear16 as i32,
+                sample_rate_hertz: sample_rate as i32,
+                audio_channel_count: channels as i32,
+            },
+        )),
+        ..Default::default()
+    };
+    let streaming_config = StreamingRecognitionConfig {
+        config: Some(config),
+        streaming_features: Some(StreamingRecognitionFeatures {
+            interim_results: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let (request_tx, request_rx) = tokio::sync::mpsc::channel::<StreamingRecognizeRequest>(16);
+    request_tx
+        .send(StreamingRecognizeRequest {
+            recognizer: recognizer.clone(),
+            streaming_request: Some(
+                streaming_recognize_request::StreamingRequest::StreamingConfig(streaming_config),
+            ),
+        })
+        .await
+        .map_err(|_| "Google Speech-to-Text gRPCの送信開始に失敗しました。".to_string())?;
+
+    let bridge_join = std::thread::spawn(move || -> Result<(), String> {
+        for samples in sample_rx {
+            let bytes = i16_samples_to_bytes(&samples);
+            for chunk in bytes.chunks(14 * 1024) {
+                request_tx
+                    .blocking_send(StreamingRecognizeRequest {
+                        recognizer: recognizer.clone(),
+                        streaming_request: Some(
+                            streaming_recognize_request::StreamingRequest::Audio(chunk.to_vec()),
+                        ),
+                    })
+                    .map_err(|_| {
+                        "Google Speech-to-Text gRPCへの音声送信が停止しました。".to_string()
+                    })?;
+            }
+        }
+        Ok(())
+    });
+
+    let mut response_stream = client
+        .streaming_recognize(tokio_stream::wrappers::ReceiverStream::new(request_rx))
+        .await
+        .map_err(|e| format!("Google Speech-to-Text streamingRecognizeが失敗しました: {e}"))?
+        .into_inner();
+    let mut final_parts = Vec::new();
+    let mut latest_interim = String::new();
+
+    while let Some(response) = response_stream
+        .message()
+        .await
+        .map_err(|e| format!("Google Speech-to-Text streaming応答の取得に失敗しました: {e}"))?
+    {
+        for result in response.results {
+            let transcript = result
+                .alternatives
+                .first()
+                .map(|alternative| alternative.transcript.trim().to_string())
+                .unwrap_or_default();
+            if transcript.is_empty() {
+                continue;
+            }
+            if result.is_final {
+                if final_parts.last() != Some(&transcript) {
+                    final_parts.push(transcript);
+                }
+                latest_interim.clear();
+            } else {
+                latest_interim = transcript;
+            }
+        }
+    }
+
+    let bridge_result = bridge_join.join().unwrap_or_else(|_| {
+        Err("Google Speech-to-Text音声送信スレッドが停止しました。".to_string())
+    });
+    bridge_result?;
+
+    if final_parts.is_empty() && !latest_interim.trim().is_empty() {
+        final_parts.push(latest_interim);
+    }
+    let transcript = final_parts.join("\n").trim().to_string();
+    if transcript.is_empty() {
+        Err("Google Speech-to-Textのライブ文字起こし結果が空でした。".to_string())
+    } else {
+        Ok(transcript)
+    }
+}
+
+fn start_openai_live_transcriber(
+    sample_rate: u32,
+    channels: u16,
+) -> Result<LiveTranscriber, String> {
+    let key = secrets::get_secret("openai")
+        .map_err(|_| "OpenAI APIキーを保存してください。".to_string())?;
+    if key.trim().is_empty() {
+        return Err("OpenAI APIキーを保存してください。".to_string());
+    }
+
+    let (sample_tx, sample_rx) = std::sync::mpsc::channel::<Vec<i16>>();
+    let join = std::thread::spawn(move || -> Result<String, String> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        runtime.block_on(openai_realtime_transcribe(
+            key,
+            sample_rx,
+            sample_rate,
+            channels,
+        ))
+    });
+
+    Ok(LiveTranscriber {
+        provider: LiveTranscriptionProvider::OpenAiRealtimeWhisper,
+        sample_tx: Some(sample_tx),
+        join: Some(join),
+    })
+}
+
+async fn openai_realtime_transcribe(
+    key: String,
+    sample_rx: std::sync::mpsc::Receiver<Vec<i16>>,
+    sample_rate: u32,
+    channels: u16,
+) -> Result<String, String> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let mut request = "wss://api.openai.com/v1/realtime?model=gpt-realtime-whisper"
+        .into_client_request()
+        .map_err(|e| e.to_string())?;
+    request.headers_mut().insert(
+        "Authorization",
+        HeaderValue::from_str(&format!("Bearer {}", key.trim())).map_err(|e| e.to_string())?,
+    );
+
+    let (ws_stream, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .map_err(|e| format!("OpenAI Realtimeへ接続できませんでした: {e}"))?;
+    let (mut write, mut read) = ws_stream.split();
+
+    let session_update = serde_json::json!({
+        "type": "session.update",
+        "session": {
+            "type": "transcription",
+            "audio": {
+                "input": {
+                    "format": {
+                        "type": "audio/pcm",
+                        "rate": OPENAI_REALTIME_TRANSCRIPTION_SAMPLE_RATE,
+                    },
+                    "transcription": {
+                        "model": OPENAI_REALTIME_TRANSCRIPTION_MODEL,
+                        "language": "ja",
+                        "delay": "low",
+                    },
+                    "turn_detection": null,
+                },
+            },
+        },
+    });
+    write
+        .send(Message::Text(session_update.to_string().into()))
+        .await
+        .map_err(|e| format!("OpenAI Realtimeへ初期設定を送信できませんでした: {e}"))?;
+
+    let mut receive_task = tokio::spawn(async move {
+        while let Some(message) = read.next().await {
+            let message = message.map_err(|e| e.to_string())?;
+            if !message.is_text() {
+                continue;
+            }
+            let text = message.to_text().map_err(|e| e.to_string())?;
+            let value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+            match value.get("type").and_then(|kind| kind.as_str()) {
+                Some("conversation.item.input_audio_transcription.completed") => {
+                    let transcript = value
+                        .get("transcript")
+                        .and_then(|transcript| transcript.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if transcript.is_empty() {
+                        return Err("OpenAI Realtimeの文字起こし結果が空でした。".to_string());
+                    }
+                    return Ok(transcript);
+                }
+                Some("error") => {
+                    return Err(openai_realtime_error_message(&value));
+                }
+                _ => {}
+            }
+        }
+        Err("OpenAI Realtimeの完了イベントを受信できませんでした。".to_string())
+    });
+
+    let (audio_tx, mut audio_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<i16>>();
+    let bridge_join = std::thread::spawn(move || {
+        for samples in sample_rx {
+            if audio_tx.send(samples).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut converter = StreamingPcmConverter::new(
+        sample_rate,
+        channels,
+        OPENAI_REALTIME_TRANSCRIPTION_SAMPLE_RATE,
+    );
+    let mut sent_audio = false;
+
+    while let Some(samples) = audio_rx.recv().await {
+        let converted = converter.push(&samples);
+        if converted.is_empty() {
+            continue;
+        }
+        send_openai_audio_chunk(&mut write, &converted).await?;
+        sent_audio = true;
+    }
+
+    let converted = converter.finish();
+    if !converted.is_empty() {
+        send_openai_audio_chunk(&mut write, &converted).await?;
+        sent_audio = true;
+    }
+
+    let _ = bridge_join.join();
+
+    if !sent_audio {
+        receive_task.abort();
+        let _ = write.close().await;
+        return Err("OpenAI Realtimeへ送信する音声がありませんでした。".to_string());
+    }
+
+    write
+        .send(Message::Text(
+            serde_json::json!({ "type": "input_audio_buffer.commit" })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .map_err(|e| format!("OpenAI Realtimeへcommitを送信できませんでした: {e}"))?;
+
+    let transcript = match tokio::time::timeout(
+        OPENAI_REALTIME_TRANSCRIPTION_TIMEOUT,
+        &mut receive_task,
+    )
+    .await
+    {
+        Ok(Ok(result)) => result?,
+        Ok(Err(err)) => return Err(format!("OpenAI Realtime受信タスクが停止しました: {err}")),
+        Err(_) => {
+            receive_task.abort();
+            return Err("OpenAI Realtimeの完了待ちがタイムアウトしました。".to_string());
+        }
+    };
+
+    let _ = write.close().await;
+    Ok(transcript)
+}
+
+async fn send_openai_audio_chunk<S>(write: &mut S, samples: &[i16]) -> Result<(), String>
+where
+    S: futures_util::Sink<tokio_tungstenite::tungstenite::Message> + Unpin,
+    S::Error: std::fmt::Display,
+{
+    let mut bytes = Vec::with_capacity(samples.len() * std::mem::size_of::<i16>());
+    for sample in samples {
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    let event = serde_json::json!({
+        "type": "input_audio_buffer.append",
+        "audio": base64::engine::general_purpose::STANDARD.encode(bytes),
+    });
+    write
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            event.to_string().into(),
+        ))
+        .await
+        .map_err(|e| format!("OpenAI Realtimeへ音声を送信できませんでした: {e}"))
+}
+
+fn openai_realtime_error_message(value: &serde_json::Value) -> String {
+    value
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(|message| message.as_str())
+        .map(|message| format!("OpenAI Realtime error: {message}"))
+        .unwrap_or_else(|| format!("OpenAI Realtime error: {value}"))
+}
+
+struct StreamingPcmConverter {
+    input_rate: f64,
+    channels: usize,
+    target_rate: f64,
+    buffer: Vec<f32>,
+    next_output_pos: f64,
+}
+
+impl StreamingPcmConverter {
+    fn new(input_rate: u32, channels: u16, target_rate: u32) -> Self {
+        Self {
+            input_rate: input_rate.max(1) as f64,
+            channels: channels.max(1) as usize,
+            target_rate: target_rate.max(1) as f64,
+            buffer: Vec::new(),
+            next_output_pos: 0.0,
+        }
+    }
+
+    fn push(&mut self, samples: &[i16]) -> Vec<i16> {
+        for frame in samples.chunks(self.channels) {
+            let mut mono = 0.0_f32;
+            for sample in frame {
+                mono += *sample as f32 / i16::MAX as f32;
+            }
+            self.buffer
+                .push((mono / frame.len().max(1) as f32).clamp(-1.0, 1.0));
+        }
+        self.drain(false)
+    }
+
+    fn finish(&mut self) -> Vec<i16> {
+        self.drain(true)
+    }
+
+    fn drain(&mut self, flush: bool) -> Vec<i16> {
+        if self.buffer.is_empty() {
+            return Vec::new();
+        }
+
+        let step = self.input_rate / self.target_rate;
+        let mut out = Vec::new();
+        let limit = if flush {
+            self.buffer.len().saturating_sub(1) as f64
+        } else {
+            self.buffer.len().saturating_sub(2) as f64
+        };
+
+        while self.next_output_pos <= limit {
+            let index = self.next_output_pos.floor() as usize;
+            let frac = (self.next_output_pos - index as f64) as f32;
+            let next_index = (index + 1).min(self.buffer.len() - 1);
+            let value = self.buffer[index] + (self.buffer[next_index] - self.buffer[index]) * frac;
+            out.push((value.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
+            self.next_output_pos += step;
+        }
+
+        let consumed = self.next_output_pos.floor() as usize;
+        if consumed > 0 {
+            let drain_to = consumed.min(self.buffer.len().saturating_sub(1));
+            self.buffer.drain(0..drain_to);
+            self.next_output_pos -= drain_to as f64;
+        }
+
+        out
     }
 }
 
@@ -1181,6 +1909,7 @@ fn run_recording_thread(
     control_rx: std::sync::mpsc::Receiver<RecorderCommand>,
     init_tx: std::sync::mpsc::Sender<Result<(), String>>,
     pipeline: PipelineMode,
+    live_transcription_provider: Option<LiveTranscriptionProvider>,
 ) -> Result<AudioClip, String> {
     let init_signal: RecorderInitSignal = Arc::new(Mutex::new(Some(init_tx)));
     let setup: Result<RecorderSetup, String> = (|| {
@@ -1200,6 +1929,18 @@ fn run_recording_thread(
         let max_samples = (output_sample_rate as usize)
             * (output_channels as usize)
             * max_recording_seconds.clamp(5, 600) as usize;
+        let live_transcriber = live_transcription_provider.and_then(|provider| {
+            match start_live_transcriber(&app, provider, output_sample_rate, output_channels) {
+                Ok(transcriber) => Some(transcriber),
+                Err(err) => {
+                    eprintln!("[enja] live transcription unavailable: {err}");
+                    None
+                }
+            }
+        });
+        let live_sample_tx = live_transcriber
+            .as_ref()
+            .and_then(LiveTranscriber::sample_sender);
         let last_emit = Arc::new(Mutex::new(Instant::now()));
         let err_fn = |err| eprintln!("[enja] audio input stream error: {err}");
 
@@ -1222,6 +1963,7 @@ fn run_recording_thread(
                 app.clone(),
                 device_channels,
                 aec_pipeline,
+                live_sample_tx.clone(),
                 init_signal.clone(),
                 err_fn,
             ),
@@ -1234,6 +1976,7 @@ fn run_recording_thread(
                 app.clone(),
                 device_channels,
                 aec_pipeline,
+                live_sample_tx.clone(),
                 init_signal.clone(),
                 err_fn,
             ),
@@ -1246,6 +1989,7 @@ fn run_recording_thread(
                 app.clone(),
                 device_channels,
                 aec_pipeline,
+                live_sample_tx.clone(),
                 init_signal.clone(),
                 err_fn,
             ),
@@ -1254,10 +1998,16 @@ fn run_recording_thread(
         .map_err(|e| e.to_string())?;
 
         stream.play().map_err(|e| e.to_string())?;
-        Ok((samples, output_sample_rate, output_channels, stream))
+        Ok((
+            samples,
+            output_sample_rate,
+            output_channels,
+            stream,
+            live_transcriber,
+        ))
     })();
 
-    let (samples, sample_rate, channels, stream) = match setup {
+    let (samples, sample_rate, channels, stream, live_transcriber) = match setup {
         Ok(values) => values,
         Err(err) => {
             send_recorder_init(&init_signal, Err(err.clone()));
@@ -1282,8 +2032,19 @@ fn run_recording_thread(
     drop(stream);
 
     if command == RecorderCommand::Cancel {
+        if let Some(transcriber) = live_transcriber {
+            transcriber.cancel();
+        }
         return Err("録音をキャンセルしました。".to_string());
     }
+
+    let live_transcript = live_transcriber.map(|transcriber| {
+        let provider = transcriber.provider;
+        LiveTranscript {
+            provider,
+            result: transcriber.finish(),
+        }
+    });
 
     let samples = samples.lock().map_err(|e| e.to_string())?.clone();
     if samples.is_empty() {
@@ -1295,6 +2056,7 @@ fn run_recording_thread(
     Ok(AudioClip {
         wav,
         duration_secs: prepared.analysis.duration_secs,
+        live_transcript,
     })
 }
 
@@ -1768,6 +2530,7 @@ fn build_input_stream<T>(
     app: tauri::AppHandle,
     device_channels: u16,
     mut aec_pipeline: Option<AecPipeline>,
+    live_sample_tx: Option<std::sync::mpsc::Sender<Vec<i16>>>,
     init_signal: RecorderInitSignal,
     err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
 ) -> Result<cpal::Stream, cpal::BuildStreamError>
@@ -1797,22 +2560,39 @@ where
                     pipeline.push_mono(mono);
                 }
                 let samples_buf = samples.clone();
+                let live_tx = live_sample_tx.clone();
                 pipeline.drain_frames(|frame| {
+                    let mut live_samples = Vec::new();
                     if let Ok(mut guard) = samples_buf.lock() {
                         let remaining = max_samples.saturating_sub(guard.len());
                         for value in frame.iter().take(remaining) {
-                            guard.push((value.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
+                            let sample = (value.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+                            guard.push(sample);
+                            live_samples.push(sample);
+                        }
+                    }
+                    if !live_samples.is_empty() {
+                        if let Some(tx) = live_tx.as_ref() {
+                            let _ = tx.send(live_samples);
                         }
                     }
                 });
             } else if let Ok(mut guard) = samples.lock() {
                 let remaining = max_samples.saturating_sub(guard.len());
+                let mut live_samples = Vec::new();
                 for sample in data.iter().take(remaining) {
                     let value = f32::from_sample(*sample).clamp(-1.0, 1.0);
                     peak = peak.max(value.abs());
                     sum += value * value;
                     count += 1;
-                    guard.push((value * i16::MAX as f32) as i16);
+                    let pcm = (value * i16::MAX as f32) as i16;
+                    guard.push(pcm);
+                    live_samples.push(pcm);
+                }
+                if !live_samples.is_empty() {
+                    if let Some(tx) = live_sample_tx.as_ref() {
+                        let _ = tx.send(live_samples);
+                    }
                 }
             }
 
@@ -2192,7 +2972,53 @@ async fn process_clip(
 ) -> Result<String, String> {
     let settings = crate::settings::load_settings(app)?;
     let entries = dictionary::load_dictionary(app)?;
-    let transcript = transcribe(app, &settings, &entries, &clip).await?;
+    let transcript = if should_use_live_transcript(&settings, mode, mode_profile_id) {
+        match clip.live_transcript.as_ref() {
+            Some(live)
+                if live
+                    .result
+                    .as_ref()
+                    .is_ok_and(|value| !value.trim().is_empty()) =>
+            {
+                match live.provider {
+                    LiveTranscriptionProvider::GoogleChirp3 => {
+                        if let Err(err) =
+                            usage::record_google_speech_to_text(app, clip.duration_secs)
+                        {
+                            eprintln!("[enja] usage tracking failed: {err}");
+                        }
+                    }
+                    LiveTranscriptionProvider::OpenAiRealtimeWhisper => {
+                        if let Err(err) = usage::record_openai_transcription(
+                            app,
+                            OPENAI_REALTIME_TRANSCRIPTION_MODEL,
+                            clip.duration_secs,
+                        ) {
+                            eprintln!("[enja] usage tracking failed: {err}");
+                        }
+                    }
+                    LiveTranscriptionProvider::AppleSpeechAnalyzer => {}
+                }
+                live.result.as_ref().unwrap().clone()
+            }
+            Some(live) if live.result.is_ok() => {
+                transcribe(app, &settings, &entries, &clip).await?
+            }
+            Some(live) => {
+                let err = live
+                    .result
+                    .as_ref()
+                    .err()
+                    .cloned()
+                    .unwrap_or_else(|| "ライブ文字起こしに失敗しました。".to_string());
+                eprintln!("[enja] live transcription failed; falling back to batch: {err}");
+                transcribe(app, &settings, &entries, &clip).await?
+            }
+            None => transcribe(app, &settings, &entries, &clip).await?,
+        }
+    } else {
+        transcribe(app, &settings, &entries, &clip).await?
+    };
     finalize_text(
         app,
         &settings,

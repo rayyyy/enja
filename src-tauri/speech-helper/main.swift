@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreMedia
 import Foundation
 import Speech
 
@@ -57,6 +58,23 @@ struct EnjaSpeechHelper {
                 let response = try await transcribe(
                     audioPath: args[1],
                     localeID: args[2],
+                    contextPath: contextPath
+                )
+                emit(response)
+            case "stream-transcribe":
+                guard args.count >= 4,
+                      let sampleRate = Double(args[1]),
+                      let channelsValue = UInt32(args[2]),
+                      channelsValue > 0
+                else {
+                    emit(HelperResponse(ok: false, error: "Usage: stream-transcribe <sample-rate> <channels> <locale-id> [context-json-path]"))
+                    return
+                }
+                let contextPath = args.count >= 5 ? args[4] : nil
+                let response = try await streamTranscribe(
+                    sampleRate: sampleRate,
+                    channels: AVAudioChannelCount(channelsValue),
+                    localeID: args[3],
                     contextPath: contextPath
                 )
                 emit(response)
@@ -241,6 +259,143 @@ func transcribe(audioPath: String, localeID: String, contextPath: String?) async
         details: contextualStrings.isEmpty ? [] : ["contextualStrings: \(contextualStrings.count)"],
         transcript: transcript
     )
+}
+
+@available(macOS 26.0, *)
+func streamTranscribe(sampleRate: Double, channels: AVAudioChannelCount, localeID: String, contextPath: String?) async throws -> HelperResponse {
+    let authorization = SFSpeechRecognizer.authorizationStatus()
+    guard authorization == .authorized else {
+        return HelperResponse(
+            ok: false,
+            authorization: authorizationName(authorization),
+            error: "Speech recognition permission is not authorized."
+        )
+    }
+
+    guard sampleRate > 0, channels > 0 else {
+        return HelperResponse(ok: false, error: "Invalid PCM audio format.")
+    }
+
+    let (maybeTranscriber, locale) = await transcriber(localeID: localeID)
+    guard let transcriber = maybeTranscriber else {
+        return HelperResponse(
+            ok: false,
+            status: "unsupported",
+            supported: false,
+            authorization: authorizationName(authorization),
+            error: "Locale \(locale.identifier) is not supported by DictationTranscriber."
+        )
+    }
+    let assetStatus = await AssetInventory.status(forModules: [transcriber])
+    guard assetStatus == .installed else {
+        return HelperResponse(
+            ok: false,
+            status: assetStatusName(assetStatus),
+            supported: assetStatus != .unsupported,
+            authorization: authorizationName(authorization),
+            error: "Japanese dictation model is not installed."
+        )
+    }
+
+    let context = AnalysisContext()
+    let contextualStrings = loadContextualStrings(path: contextPath)
+    if !contextualStrings.isEmpty {
+        context.contextualStrings = [.general: contextualStrings]
+    }
+
+    guard let analyzerFormat = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: sampleRate,
+        channels: channels,
+        interleaved: false
+    ) else {
+        return HelperResponse(ok: false, error: "Failed to create analyzer audio format.")
+    }
+
+    let analyzer = SpeechAnalyzer(modules: [transcriber])
+    try await analyzer.setContext(context)
+    let inputSequence = stdinAnalyzerInputSequence(format: analyzerFormat)
+
+    async let collectedTranscript = collectFinalTranscript(from: transcriber)
+    let lastSampleTime = try await analyzer.analyzeSequence(inputSequence)
+    if let lastSampleTime {
+        try await analyzer.finalizeAndFinish(through: lastSampleTime)
+    } else {
+        await analyzer.cancelAndFinishNow()
+    }
+    let transcript = try await collectedTranscript
+
+    return HelperResponse(
+        ok: true,
+        status: "installed",
+        supported: true,
+        authorization: authorizationName(authorization),
+        details: contextualStrings.isEmpty ? [] : ["contextualStrings: \(contextualStrings.count)"],
+        transcript: transcript
+    )
+}
+
+@available(macOS 26.0, *)
+func stdinAnalyzerInputSequence(format: AVAudioFormat) -> AsyncStream<AnalyzerInput> {
+    AsyncStream { continuation in
+        Task.detached {
+            let channels = Int(format.channelCount)
+            let bytesPerFrame = max(channels, 1) * MemoryLayout<Int16>.size
+            let readSize = max(4096, Int(format.sampleRate / 10.0) * bytesPerFrame)
+            var pending = Data()
+
+            while true {
+                let chunk = FileHandle.standardInput.readData(ofLength: readSize)
+                if chunk.isEmpty {
+                    break
+                }
+                pending.append(chunk)
+                let usableBytes = pending.count - (pending.count % bytesPerFrame)
+                if usableBytes <= 0 {
+                    continue
+                }
+                let inputData = Data(pending.prefix(usableBytes))
+                pending.removeFirst(usableBytes)
+                if let buffer = pcm16Buffer(data: inputData, format: format) {
+                    continuation.yield(AnalyzerInput(buffer: buffer))
+                }
+            }
+
+            continuation.finish()
+        }
+    }
+}
+
+func pcm16Buffer(data: Data, format: AVAudioFormat) -> AVAudioPCMBuffer? {
+    let channels = Int(format.channelCount)
+    let bytesPerFrame = max(channels, 1) * MemoryLayout<Int16>.size
+    let frameCount = data.count / bytesPerFrame
+    if frameCount <= 0 {
+        return nil
+    }
+    guard let buffer = AVAudioPCMBuffer(
+        pcmFormat: format,
+        frameCapacity: AVAudioFrameCount(frameCount)
+    ) else {
+        return nil
+    }
+    buffer.frameLength = AVAudioFrameCount(frameCount)
+
+    guard let channelData = buffer.floatChannelData else {
+        return nil
+    }
+
+    data.withUnsafeBytes { rawBuffer in
+        let samples = rawBuffer.bindMemory(to: Int16.self)
+        for frame in 0..<frameCount {
+            for channel in 0..<channels {
+                let sampleIndex = frame * channels + channel
+                channelData[channel][frame] = Float(samples[sampleIndex]) / Float(Int16.max)
+            }
+        }
+    }
+
+    return buffer
 }
 
 @available(macOS 26.0, *)

@@ -135,6 +135,9 @@ export function VoiceModeSettingsSection({
     profiles.some((profile) => profile.id === voice.activeModeProfileId)
       ? voice.activeModeProfileId
       : "default";
+  const liveTranscriptionAvailable = supportsLiveTranscription(
+    voice.speechProfile,
+  );
 
   function commitProfiles(nextProfiles: VoiceModeProfile[], nextActiveId = activeId) {
     const normalized = withVoiceModeOrder(nextProfiles);
@@ -367,6 +370,17 @@ export function VoiceModeSettingsSection({
                         整形なし
                       </span>
                     ) : null}
+                    {profile.liveTranscriptionEnabled ? (
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[11px] ${
+                          liveTranscriptionAvailable
+                            ? "bg-emerald-50 text-emerald-700"
+                            : "bg-neutral-100 text-neutral-500"
+                        }`}
+                      >
+                        {liveTranscriptionAvailable ? "ライブ" : "ライブ未対応"}
+                      </span>
+                    ) : null}
                   </div>
                   <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-neutral-500">
                     {profile.description || "説明なし"}
@@ -400,6 +414,7 @@ export function VoiceModeSettingsSection({
       {editor ? (
         <VoiceModeEditorDialog
           editor={editor}
+          liveTranscriptionAvailable={liveTranscriptionAvailable}
           onChange={(profile) =>
             setEditor({ ...editor, profile, confirmDelete: false, error: null })
           }
@@ -519,6 +534,7 @@ export function AppSettingsSection({
 
 function VoiceModeEditorDialog({
   editor,
+  liveTranscriptionAvailable,
   onChange,
   onClose,
   onSave,
@@ -526,6 +542,7 @@ function VoiceModeEditorDialog({
   onDelete,
 }: {
   editor: VoiceModeEditorState;
+  liveTranscriptionAvailable: boolean;
   onChange: (profile: VoiceModeProfile) => void;
   onClose: () => void;
   onSave: () => void;
@@ -598,6 +615,20 @@ function VoiceModeEditorDialog({
             checked={profile.formattingEnabled}
             onChange={(formattingEnabled) =>
               onChange({ ...profile, formattingEnabled })
+            }
+          />
+
+          <Toggle
+            label="ライブ文字起こし"
+            description={
+              liveTranscriptionAvailable
+                ? "録音中に文字起こしを先行し、停止後は最終本文を一括で出力します。"
+                : "現在の音声認識モデルではライブ文字起こしを利用できません。"
+            }
+            checked={profile.liveTranscriptionEnabled}
+            disabled={!liveTranscriptionAvailable}
+            onChange={(liveTranscriptionEnabled) =>
+              onChange({ ...profile, liveTranscriptionEnabled })
             }
           />
 
@@ -694,6 +725,7 @@ function createCustomVoiceModeProfile(order: number): VoiceModeProfile {
     name: "新しいモード",
     description: "用途に合わせて出力文体を調整します。",
     formattingEnabled: true,
+    liveTranscriptionEnabled: false,
     systemPrompt: CUSTOM_MODE_SYSTEM_PROMPT,
     userPrompt: CUSTOM_MODE_USER_PROMPT,
     deletable: true,
@@ -709,9 +741,21 @@ function resetVoiceModeProfile(profile: VoiceModeProfile): VoiceModeProfile {
   return {
     ...profile,
     formattingEnabled: true,
+    liveTranscriptionEnabled: false,
     systemPrompt: CUSTOM_MODE_SYSTEM_PROMPT,
     userPrompt: CUSTOM_MODE_USER_PROMPT,
   };
+}
+
+function supportsLiveTranscription(
+  speechProfile: AppSettings["voice"]["speechProfile"],
+): boolean {
+  return (
+    speechProfile === "appleSpeechAnalyzer" ||
+    speechProfile === "googleChirp3" ||
+    speechProfile === "openAiGpt4oTranscribe" ||
+    speechProfile === "openAiGpt4oMiniTranscribe"
+  );
 }
 
 function defaultVoiceModeProfiles(): VoiceModeProfile[] {
@@ -741,6 +785,7 @@ const VOICE_MODE_PRESET_DEFAULTS: Record<VoiceModePresetKey, VoiceModeProfile> =
     name: "デフォルト",
     description: "話した内容を自然な日本語文として整えます。",
     formattingEnabled: true,
+    liveTranscriptionEnabled: false,
     systemPrompt:
       "あなたは日本語の音声入力編集者です。音声認識結果を、ユーザーがそのまま貼り付けられる自然な日本語文に整形します。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。",
     userPrompt: `{{dictionary_section}}
@@ -763,6 +808,7 @@ const VOICE_MODE_PRESET_DEFAULTS: Record<VoiceModePresetKey, VoiceModeProfile> =
     name: "スピード",
     description: "整形せず、文字起こし結果をすぐに出力します。",
     formattingEnabled: false,
+    liveTranscriptionEnabled: true,
     systemPrompt:
       "あなたは日本語の音声入力編集者です。音声認識結果を必要最小限だけ整えます。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。",
     userPrompt: `{{dictionary_section}}
@@ -782,6 +828,7 @@ const VOICE_MODE_PRESET_DEFAULTS: Record<VoiceModePresetKey, VoiceModeProfile> =
     name: "AIプロンプト",
     description: "話した内容をAIに渡しやすいプロンプトへ整えます。",
     formattingEnabled: true,
+    liveTranscriptionEnabled: false,
     systemPrompt:
       "あなたはAIプロンプト設計者です。音声認識結果から、AIに渡しやすい明確で実行可能なプロンプトを作成します。出力はプロンプト本文のみ。前置き、説明、引用符、ラベルは出しません。",
     userPrompt: `{{dictionary_section}}
@@ -803,6 +850,7 @@ const VOICE_MODE_PRESET_DEFAULTS: Record<VoiceModePresetKey, VoiceModeProfile> =
     name: "カジュアル",
     description: "Slackなどに合う親しみやすい文体へ整えます。",
     formattingEnabled: true,
+    liveTranscriptionEnabled: false,
     systemPrompt:
       "あなたは日本語チャット文の編集者です。音声認識結果を、Slackなどのチャットにそのまま送れる親しみやすい文章へ整えます。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。",
     userPrompt: `{{dictionary_section}}
@@ -826,6 +874,7 @@ const VOICE_MODE_PRESET_DEFAULTS: Record<VoiceModePresetKey, VoiceModeProfile> =
     name: "フォーマル",
     description: "メール返信などに合うやや丁寧な文体へ整えます。",
     formattingEnabled: true,
+    liveTranscriptionEnabled: false,
     systemPrompt:
       "あなたは日本語ビジネス文の編集者です。音声認識結果を、メール返信などに適したやや丁寧な文章へ整えます。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。",
     userPrompt: `{{dictionary_section}}

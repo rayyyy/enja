@@ -162,17 +162,21 @@ export function Toggle({
   description,
   checked,
   onChange,
+  disabled = false,
   className = "",
 }: {
   label: string;
   description?: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
+  disabled?: boolean;
   className?: string;
 }) {
   return (
     <label
-      className={`flex cursor-pointer items-start justify-between gap-4 rounded-xl bg-neutral-100/70 px-4 py-3 transition hover:bg-neutral-100 ${className}`}
+      className={`flex items-start justify-between gap-4 rounded-xl bg-neutral-100/70 px-4 py-3 transition ${
+        disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:bg-neutral-100"
+      } ${className}`}
     >
       <span className="min-w-0">
         <span className="block text-sm font-medium text-neutral-900">{label}</span>
@@ -185,6 +189,7 @@ export function Toggle({
       <input
         type="checkbox"
         checked={checked}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
         className="mt-0.5 size-4 shrink-0 rounded text-blue-600 focus:ring-0 focus:ring-offset-0"
       />

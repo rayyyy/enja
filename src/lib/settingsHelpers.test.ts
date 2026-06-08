@@ -23,6 +23,7 @@ const baseSettings: AppSettings = {
         name: "デフォルト",
         description: "話した内容を自然な日本語文として整えます。",
         formattingEnabled: true,
+        liveTranscriptionEnabled: false,
         systemPrompt: "system",
         userPrompt: "{{transcript}}",
         deletable: false,
