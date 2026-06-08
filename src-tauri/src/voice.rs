@@ -28,7 +28,6 @@ use core_foundation_sys::base::{CFGetTypeID, CFTypeRef};
 use core_foundation_sys::string::CFStringGetTypeID;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
-use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -50,9 +49,6 @@ const SPEECH_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 const APPLE_SPEECH_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const APPLE_SPEECH_INSTALL_TIMEOUT: Duration = Duration::from_secs(900);
 const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
-const OPENAI_REALTIME_TRANSCRIPTION_MODEL: &str = "gpt-realtime-whisper";
-const OPENAI_REALTIME_TRANSCRIPTION_SAMPLE_RATE: u32 = 24_000;
-const OPENAI_REALTIME_TRANSCRIPTION_TIMEOUT: Duration = Duration::from_secs(3);
 const RECORDING_STOP_NOTIFY_TIMEOUT: Duration = Duration::from_millis(250);
 const AUDIO_INPUT_DEVICES_CHANGED_EVENT: &str = "audio-input-devices-changed";
 const VOICE_WINDOW_EDGE_MARGIN: f64 = 16.0;
@@ -410,7 +406,6 @@ struct VoiceModeProfileSnapshot {
 enum LiveTranscriptionProvider {
     AppleSpeechAnalyzer,
     GoogleChirp3,
-    OpenAiRealtimeWhisper,
 }
 
 enum AudioAux {
@@ -1206,10 +1201,9 @@ fn live_transcription_provider_for_speech_profile(
     match profile {
         SpeechProfile::AppleSpeechAnalyzer => Some(LiveTranscriptionProvider::AppleSpeechAnalyzer),
         SpeechProfile::GoogleChirp3 => Some(LiveTranscriptionProvider::GoogleChirp3),
-        SpeechProfile::OpenAiGpt4oTranscribe | SpeechProfile::OpenAiGpt4oMiniTranscribe => {
-            Some(LiveTranscriptionProvider::OpenAiRealtimeWhisper)
-        }
-        SpeechProfile::GeminiAudio => None,
+        SpeechProfile::OpenAiGpt4oTranscribe
+        | SpeechProfile::OpenAiGpt4oMiniTranscribe
+        | SpeechProfile::GeminiAudio => None,
     }
 }
 
@@ -1240,9 +1234,6 @@ fn start_live_transcriber(
         }
         LiveTranscriptionProvider::GoogleChirp3 => {
             start_google_live_transcriber(app, sample_rate, channels)
-        }
-        LiveTranscriptionProvider::OpenAiRealtimeWhisper => {
-            start_openai_live_transcriber(sample_rate, channels)
         }
     }
 }
@@ -1583,326 +1574,6 @@ async fn google_streaming_transcribe(
         Err("Google Speech-to-Textのライブ文字起こし結果が空でした。".to_string())
     } else {
         Ok(transcript)
-    }
-}
-
-fn start_openai_live_transcriber(
-    sample_rate: u32,
-    channels: u16,
-) -> Result<LiveTranscriber, String> {
-    let key = secrets::get_secret("openai")
-        .map_err(|_| "OpenAI APIキーを保存してください。".to_string())?;
-    if key.trim().is_empty() {
-        return Err("OpenAI APIキーを保存してください。".to_string());
-    }
-
-    let (sample_tx, sample_rx) = std::sync::mpsc::channel::<Vec<i16>>();
-    let join = std::thread::spawn(move || -> Result<String, String> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .map_err(|e| e.to_string())?;
-        runtime.block_on(openai_realtime_transcribe(
-            key,
-            sample_rx,
-            sample_rate,
-            channels,
-        ))
-    });
-
-    Ok(LiveTranscriber {
-        provider: LiveTranscriptionProvider::OpenAiRealtimeWhisper,
-        sample_tx: Some(sample_tx),
-        join: Some(join),
-    })
-}
-
-async fn openai_realtime_transcribe(
-    key: String,
-    sample_rx: std::sync::mpsc::Receiver<Vec<i16>>,
-    sample_rate: u32,
-    channels: u16,
-) -> Result<String, String> {
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    use tokio_tungstenite::tungstenite::http::HeaderValue;
-    use tokio_tungstenite::tungstenite::Message;
-
-    let mut request = "wss://api.openai.com/v1/realtime?model=gpt-realtime-whisper"
-        .into_client_request()
-        .map_err(|e| e.to_string())?;
-    request.headers_mut().insert(
-        "Authorization",
-        HeaderValue::from_str(&format!("Bearer {}", key.trim())).map_err(|e| e.to_string())?,
-    );
-
-    let (ws_stream, _) = tokio_tungstenite::connect_async(request)
-        .await
-        .map_err(|e| format!("OpenAI Realtimeへ接続できませんでした: {e}"))?;
-    let (mut write, mut read) = ws_stream.split();
-
-    let session_update = serde_json::json!({
-        "type": "session.update",
-        "session": {
-            "type": "transcription",
-            "audio": {
-                "input": {
-                    "format": {
-                        "type": "audio/pcm",
-                        "rate": OPENAI_REALTIME_TRANSCRIPTION_SAMPLE_RATE,
-                    },
-                    "transcription": {
-                        "model": OPENAI_REALTIME_TRANSCRIPTION_MODEL,
-                        "language": "ja",
-                        "delay": "minimal",
-                    },
-                    "turn_detection": null,
-                },
-            },
-        },
-    });
-    write
-        .send(Message::Text(session_update.to_string().into()))
-        .await
-        .map_err(|e| format!("OpenAI Realtimeへ初期設定を送信できませんでした: {e}"))?;
-
-    let latest_transcript = Arc::new(Mutex::new(String::new()));
-    let latest_transcript_for_receive = latest_transcript.clone();
-    let mut receive_task = tokio::spawn(async move {
-        while let Some(message) = read.next().await {
-            let message = message.map_err(|e| e.to_string())?;
-            if !message.is_text() {
-                continue;
-            }
-            let text = message.to_text().map_err(|e| e.to_string())?;
-            let value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
-            match value.get("type").and_then(|kind| kind.as_str()) {
-                Some("conversation.item.input_audio_transcription.delta") => {
-                    if let Some(delta) = value.get("delta").and_then(|delta| delta.as_str()) {
-                        append_openai_realtime_transcript(&latest_transcript_for_receive, delta);
-                    }
-                }
-                Some("conversation.item.input_audio_transcription.completed") => {
-                    let mut transcript = value
-                        .get("transcript")
-                        .and_then(|transcript| transcript.as_str())
-                        .unwrap_or("")
-                        .trim()
-                        .to_string();
-                    if transcript.is_empty() {
-                        transcript =
-                            openai_realtime_latest_transcript(&latest_transcript_for_receive);
-                    } else {
-                        set_openai_realtime_transcript(&latest_transcript_for_receive, &transcript);
-                    }
-                    if transcript.is_empty() {
-                        return Err("OpenAI Realtimeの文字起こし結果が空でした。".to_string());
-                    }
-                    return Ok(transcript);
-                }
-                Some("conversation.item.input_audio_transcription.failed") => {
-                    return Err(openai_realtime_error_message(&value));
-                }
-                Some("error") => {
-                    return Err(openai_realtime_error_message(&value));
-                }
-                _ => {}
-            }
-        }
-        let transcript = openai_realtime_latest_transcript(&latest_transcript_for_receive);
-        if transcript.is_empty() {
-            Err("OpenAI Realtimeの完了イベントを受信できませんでした。".to_string())
-        } else {
-            Ok(transcript)
-        }
-    });
-
-    let (audio_tx, mut audio_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<i16>>();
-    let bridge_join = std::thread::spawn(move || {
-        for samples in sample_rx {
-            if audio_tx.send(samples).is_err() {
-                break;
-            }
-        }
-    });
-
-    let mut converter = StreamingPcmConverter::new(
-        sample_rate,
-        channels,
-        OPENAI_REALTIME_TRANSCRIPTION_SAMPLE_RATE,
-    );
-    let mut sent_audio = false;
-
-    while let Some(samples) = audio_rx.recv().await {
-        let converted = converter.push(&samples);
-        if converted.is_empty() {
-            continue;
-        }
-        send_openai_audio_chunk(&mut write, &converted).await?;
-        sent_audio = true;
-    }
-
-    let converted = converter.finish();
-    if !converted.is_empty() {
-        send_openai_audio_chunk(&mut write, &converted).await?;
-        sent_audio = true;
-    }
-
-    let _ = bridge_join.join();
-
-    if !sent_audio {
-        receive_task.abort();
-        let _ = write.close().await;
-        return Err("OpenAI Realtimeへ送信する音声がありませんでした。".to_string());
-    }
-
-    write
-        .send(Message::Text(
-            serde_json::json!({ "type": "input_audio_buffer.commit" })
-                .to_string()
-                .into(),
-        ))
-        .await
-        .map_err(|e| format!("OpenAI Realtimeへcommitを送信できませんでした: {e}"))?;
-
-    let transcript = match tokio::time::timeout(
-        OPENAI_REALTIME_TRANSCRIPTION_TIMEOUT,
-        &mut receive_task,
-    )
-    .await
-    {
-        Ok(Ok(result)) => result?,
-        Ok(Err(err)) => return Err(format!("OpenAI Realtime受信タスクが停止しました: {err}")),
-        Err(_) => {
-            receive_task.abort();
-            let transcript = openai_realtime_latest_transcript(&latest_transcript);
-            if transcript.is_empty() {
-                let _ = write.close().await;
-                return Err("OpenAI Realtimeの完了待ちがタイムアウトしました。".to_string());
-            }
-            transcript
-        }
-    };
-
-    let _ = write.close().await;
-    Ok(transcript)
-}
-
-async fn send_openai_audio_chunk<S>(write: &mut S, samples: &[i16]) -> Result<(), String>
-where
-    S: futures_util::Sink<tokio_tungstenite::tungstenite::Message> + Unpin,
-    S::Error: std::fmt::Display,
-{
-    let mut bytes = Vec::with_capacity(samples.len() * std::mem::size_of::<i16>());
-    for sample in samples {
-        bytes.extend_from_slice(&sample.to_le_bytes());
-    }
-    let event = serde_json::json!({
-        "type": "input_audio_buffer.append",
-        "audio": base64::engine::general_purpose::STANDARD.encode(bytes),
-    });
-    write
-        .send(tokio_tungstenite::tungstenite::Message::Text(
-            event.to_string().into(),
-        ))
-        .await
-        .map_err(|e| format!("OpenAI Realtimeへ音声を送信できませんでした: {e}"))
-}
-
-fn append_openai_realtime_transcript(latest_transcript: &Arc<Mutex<String>>, delta: &str) {
-    if let Ok(mut transcript) = latest_transcript.lock() {
-        transcript.push_str(delta);
-    }
-}
-
-fn set_openai_realtime_transcript(latest_transcript: &Arc<Mutex<String>>, value: &str) {
-    if let Ok(mut transcript) = latest_transcript.lock() {
-        transcript.clear();
-        transcript.push_str(value);
-    }
-}
-
-fn openai_realtime_latest_transcript(latest_transcript: &Arc<Mutex<String>>) -> String {
-    latest_transcript
-        .lock()
-        .map(|transcript| transcript.trim().to_string())
-        .unwrap_or_default()
-}
-
-fn openai_realtime_error_message(value: &serde_json::Value) -> String {
-    value
-        .get("error")
-        .and_then(|error| error.get("message"))
-        .and_then(|message| message.as_str())
-        .map(|message| format!("OpenAI Realtime error: {message}"))
-        .unwrap_or_else(|| format!("OpenAI Realtime error: {value}"))
-}
-
-struct StreamingPcmConverter {
-    input_rate: f64,
-    channels: usize,
-    target_rate: f64,
-    buffer: Vec<f32>,
-    next_output_pos: f64,
-}
-
-impl StreamingPcmConverter {
-    fn new(input_rate: u32, channels: u16, target_rate: u32) -> Self {
-        Self {
-            input_rate: input_rate.max(1) as f64,
-            channels: channels.max(1) as usize,
-            target_rate: target_rate.max(1) as f64,
-            buffer: Vec::new(),
-            next_output_pos: 0.0,
-        }
-    }
-
-    fn push(&mut self, samples: &[i16]) -> Vec<i16> {
-        for frame in samples.chunks(self.channels) {
-            let mut mono = 0.0_f32;
-            for sample in frame {
-                mono += *sample as f32 / i16::MAX as f32;
-            }
-            self.buffer
-                .push((mono / frame.len().max(1) as f32).clamp(-1.0, 1.0));
-        }
-        self.drain(false)
-    }
-
-    fn finish(&mut self) -> Vec<i16> {
-        self.drain(true)
-    }
-
-    fn drain(&mut self, flush: bool) -> Vec<i16> {
-        if self.buffer.is_empty() {
-            return Vec::new();
-        }
-
-        let step = self.input_rate / self.target_rate;
-        let mut out = Vec::new();
-        let limit = if flush {
-            self.buffer.len().saturating_sub(1) as f64
-        } else {
-            self.buffer.len().saturating_sub(2) as f64
-        };
-
-        while self.next_output_pos <= limit {
-            let index = self.next_output_pos.floor() as usize;
-            let frac = (self.next_output_pos - index as f64) as f32;
-            let next_index = (index + 1).min(self.buffer.len() - 1);
-            let value = self.buffer[index] + (self.buffer[next_index] - self.buffer[index]) * frac;
-            out.push((value.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
-            self.next_output_pos += step;
-        }
-
-        let consumed = self.next_output_pos.floor() as usize;
-        if consumed > 0 {
-            let drain_to = consumed.min(self.buffer.len().saturating_sub(1));
-            self.buffer.drain(0..drain_to);
-            self.next_output_pos -= drain_to as f64;
-        }
-
-        out
     }
 }
 
@@ -3024,15 +2695,6 @@ async fn process_clip(
                         if let Err(err) =
                             usage::record_google_speech_to_text(app, clip.duration_secs)
                         {
-                            eprintln!("[enja] usage tracking failed: {err}");
-                        }
-                    }
-                    LiveTranscriptionProvider::OpenAiRealtimeWhisper => {
-                        if let Err(err) = usage::record_openai_transcription(
-                            app,
-                            OPENAI_REALTIME_TRANSCRIPTION_MODEL,
-                            clip.duration_secs,
-                        ) {
                             eprintln!("[enja] usage tracking failed: {err}");
                         }
                     }

@@ -137,7 +137,7 @@ const SPEECH_PROFILES: SpeechProfileOption[] = [
       "Enjaは録音WAVをOpenAI /v1/audio/transcriptions へ送ります。",
       "modelは gpt-4o-transcribe、languageは ja を指定します。",
       "辞書に登録した優先表記はpromptとして渡します。",
-      "音声モードでライブ文字起こしを有効にした場合は、録音中の先行文字起こしにOpenAI Realtimeのgpt-realtime-whisperを使い、停止後は最終本文を一括出力します。",
+      "ライブ文字起こしは現在OpenAI系プロバイダでは無効です。",
       "取得した文字起こしをGeminiの整形モデルへ渡し、最終文へ整えます。",
     ],
     docs: [
@@ -176,7 +176,7 @@ const SPEECH_PROFILES: SpeechProfileOption[] = [
       "Enjaは録音WAVをOpenAI /v1/audio/transcriptions へ送ります。",
       "modelは gpt-4o-mini-transcribe、languageは ja を指定します。",
       "辞書に登録した優先表記はpromptとして渡します。",
-      "音声モードでライブ文字起こしを有効にした場合は、録音中の先行文字起こしにOpenAI Realtimeのgpt-realtime-whisperを使い、停止後は最終本文を一括出力します。",
+      "ライブ文字起こしは現在OpenAI系プロバイダでは無効です。",
       "取得した文字起こしをGeminiの整形モデルへ渡し、最終文へ整えます。",
     ],
     docs: [

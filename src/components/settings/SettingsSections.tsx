@@ -625,7 +625,9 @@ function VoiceModeEditorDialog({
                 ? "録音中に文字起こしを先行し、停止後は最終本文を一括で出力します。"
                 : "現在の音声認識モデルではライブ文字起こしを利用できません。"
             }
-            checked={profile.liveTranscriptionEnabled}
+            checked={
+              liveTranscriptionAvailable && profile.liveTranscriptionEnabled
+            }
             disabled={!liveTranscriptionAvailable}
             onChange={(liveTranscriptionEnabled) =>
               onChange({ ...profile, liveTranscriptionEnabled })
@@ -751,10 +753,7 @@ function supportsLiveTranscription(
   speechProfile: AppSettings["voice"]["speechProfile"],
 ): boolean {
   return (
-    speechProfile === "appleSpeechAnalyzer" ||
-    speechProfile === "googleChirp3" ||
-    speechProfile === "openAiGpt4oTranscribe" ||
-    speechProfile === "openAiGpt4oMiniTranscribe"
+    speechProfile === "appleSpeechAnalyzer" || speechProfile === "googleChirp3"
   );
 }
 
