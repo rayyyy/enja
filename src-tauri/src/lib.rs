@@ -3,6 +3,7 @@ mod gemini;
 mod keyboard;
 #[cfg(target_os = "macos")]
 mod macos_show_on_activate;
+mod notes;
 mod prompts;
 mod secrets;
 mod settings;
@@ -12,6 +13,7 @@ mod voice;
 use dictionary::{BulkCreateResult, DictionaryEntry, DictionaryEntryInput};
 use gemini::{stream_translate, TranslateEvent};
 use keyboard::KeyboardTrigger;
+use notes::{StickyNote, StickyNoteInput, StoredNoteImage};
 use serde::Serialize;
 use settings::{
     load_settings, save_settings_to_disk, AppSettings, PromptCatalogItem, SettingsStore,
@@ -192,6 +194,47 @@ fn delete_dictionary_entry(app: tauri::AppHandle, id: String) -> Result<(), Stri
 }
 
 #[tauri::command]
+fn get_sticky_notes(app: tauri::AppHandle) -> Result<Vec<StickyNote>, String> {
+    notes::load_notes(&app)
+}
+
+#[tauri::command]
+fn create_sticky_note(app: tauri::AppHandle) -> Result<StickyNote, String> {
+    notes::create_note(&app)
+}
+
+#[tauri::command]
+fn update_sticky_note(app: tauri::AppHandle, note: StickyNoteInput) -> Result<StickyNote, String> {
+    notes::update_note(&app, note)
+}
+
+#[tauri::command]
+fn delete_sticky_note(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    notes::delete_note(&app, &id)
+}
+
+#[tauri::command]
+async fn show_sticky_note_window(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    notes::show_sticky_window(&app, &id)
+}
+
+#[tauri::command]
+fn hide_sticky_note_window(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    notes::hide_sticky_window(&app, &id)
+}
+
+#[tauri::command]
+fn save_sticky_note_image(
+    app: tauri::AppHandle,
+    note_id: String,
+    mime_type: String,
+    data_base64: String,
+    file_name: Option<String>,
+) -> Result<StoredNoteImage, String> {
+    notes::save_image(&app, &note_id, &mime_type, &data_base64, file_name)
+}
+
+#[tauri::command]
 fn undo_dictionary_learning(
     app: tauri::AppHandle,
     entry_id: String,
@@ -256,6 +299,16 @@ pub fn run() {
                     api.prevent_close();
                     let _ = window.hide();
                 }
+            } else if window.label().starts_with("sticky-") {
+                match event {
+                    tauri::WindowEvent::CloseRequested { .. } => {
+                        notes::handle_sticky_close(window);
+                    }
+                    tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                        notes::record_window_geometry(window);
+                    }
+                    _ => {}
+                }
             }
         })
         .setup(move |app| {
@@ -293,6 +346,9 @@ pub fn run() {
 
             // アプリ起動時は常にメインウィンドウを表示（以前は API キーがあると非表示のままだった）
             show_main_window(app.handle());
+            if let Err(e) = notes::restore_pinned_windows(app.handle()) {
+                eprintln!("[enja] sticky note restore failed: {e}");
+            }
 
             Ok(())
         })
@@ -310,6 +366,13 @@ pub fn run() {
             create_dictionary_entries,
             update_dictionary_entry,
             delete_dictionary_entry,
+            get_sticky_notes,
+            create_sticky_note,
+            update_sticky_note,
+            delete_sticky_note,
+            show_sticky_note_window,
+            hide_sticky_note_window,
+            save_sticky_note_image,
             undo_dictionary_learning,
             save_provider_secret,
             get_provider_status,

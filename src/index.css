@@ -27,6 +27,110 @@ body.voice-window #root {
   background: transparent;
 }
 
+body.sticky-window,
+body.sticky-window #root {
+  background: transparent;
+}
+
+.note-editor-prose {
+  min-height: 100%;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.note-editor-prose p {
+  margin: 0.42rem 0;
+}
+
+.note-editor-prose h1 {
+  margin: 0.72rem 0 0.36rem;
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1.22;
+}
+
+.note-editor-prose h2 {
+  margin: 0.68rem 0 0.34rem;
+  font-size: 1.08rem;
+  font-weight: 700;
+  line-height: 1.28;
+}
+
+.note-editor-prose ul,
+.note-editor-prose ol {
+  margin: 0.45rem 0;
+  padding-left: 1.35rem;
+}
+
+.note-editor-prose ul {
+  list-style: disc;
+}
+
+.note-editor-prose ol {
+  list-style: decimal;
+}
+
+.note-editor-prose blockquote {
+  margin: 0.55rem 0;
+  border-left: 3px solid rgb(82 82 82 / 0.22);
+  padding-left: 0.75rem;
+  color: rgb(82 82 82);
+}
+
+.note-editor-prose pre {
+  margin: 0.6rem 0;
+  overflow-x: auto;
+  border-radius: 0.375rem;
+  background: rgb(23 23 23 / 0.9);
+  padding: 0.65rem 0.75rem;
+  color: white;
+}
+
+.note-editor-prose code {
+  border-radius: 0.25rem;
+  background: rgb(23 23 23 / 0.08);
+  padding: 0.08rem 0.22rem;
+  font-size: 0.92em;
+}
+
+.note-editor-prose pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.note-editor-prose a {
+  color: rgb(37 99 235);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.note-editor-prose hr {
+  margin: 0.8rem 0;
+  border: 0;
+  border-top: 1px solid rgb(23 23 23 / 0.12);
+}
+
+.note-editor-prose .note-editor-image,
+.note-editor-prose img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.375rem;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
+}
+
+.note-editor-prose .ProseMirror-selectednode,
+.note-editor-prose img.ProseMirror-selectednode {
+  outline: 2px solid rgb(37 99 235 / 0.7);
+}
+
+.note-editor-prose p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  color: rgb(115 115 115 / 0.58);
+  pointer-events: none;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 4px;
