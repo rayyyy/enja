@@ -1,5 +1,4 @@
-import { useEffect, useRef } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useRef, type MouseEvent as ReactMouseEvent } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Editor } from "@tiptap/react";
 import { EditorContent, useEditor } from "@tiptap/react";
@@ -10,21 +9,6 @@ import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
 import Typography from "@tiptap/extension-typography";
-import {
-  Bold,
-  Code,
-  Heading1,
-  Heading2,
-  ImagePlus,
-  Italic,
-  LinkIcon,
-  List,
-  ListOrdered,
-  Quote,
-  Redo2,
-  Strikethrough,
-  Undo2,
-} from "lucide-react";
 import { saveStickyNoteImage } from "../../lib/commands";
 import {
   normalizeRichTextNode,
@@ -36,16 +20,13 @@ type RichNoteEditorProps = {
   noteId: string;
   content: RichTextNode;
   onChange: (content: RichTextNode) => void;
-  compact?: boolean;
 };
 
 export function RichNoteEditor({
   noteId,
   content,
   onChange,
-  compact = false,
 }: RichNoteEditorProps) {
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<Editor | null>(null);
   const lastContentRef = useRef(JSON.stringify(normalizeRichTextNode(content)));
 
@@ -170,6 +151,13 @@ export function RichNoteEditor({
     },
   });
 
+  function focusEditorFromBlankArea(event: ReactMouseEvent<HTMLDivElement>) {
+    const target = event.target;
+    if (!(target instanceof Element) || target.closest(".ProseMirror")) return;
+    event.preventDefault();
+    editor?.chain().focus("end").run();
+  }
+
   useEffect(() => {
     editorRef.current = editor;
     return () => {
@@ -188,187 +176,14 @@ export function RichNoteEditor({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <EditorToolbar
-        editor={editor}
-        compact={compact}
-        onPickImage={() => fileInputRef.current?.click()}
-      />
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/png,image/jpeg,image/gif,image/webp"
-        className="hidden"
-        onChange={(event) => {
-          const file = event.currentTarget.files?.[0];
-          event.currentTarget.value = "";
-          if (file) void insertImageFile(file);
-        }}
-      />
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <EditorContent editor={editor} />
+      <div
+        className="min-h-0 flex-1 overflow-y-auto"
+        onMouseDown={focusEditorFromBlankArea}
+      >
+        <EditorContent editor={editor} className="min-h-full" />
       </div>
     </div>
   );
-}
-
-function EditorToolbar({
-  editor,
-  compact,
-  onPickImage,
-}: {
-  editor: Editor | null;
-  compact: boolean;
-  onPickImage: () => void;
-}) {
-  function setLink() {
-    if (!editor) return;
-    if (editor.isActive("link")) {
-      editor.chain().focus().unsetLink().run();
-      return;
-    }
-    const href = window.prompt("URL");
-    if (!href) return;
-    editor.chain().focus().setLink({ href }).run();
-  }
-
-  return (
-    <div
-      className={`flex shrink-0 items-center gap-1 border-b border-black/5 px-3 ${
-        compact ? "h-9 overflow-x-auto" : "h-10"
-      }`}
-    >
-      <ToolbarButton
-        label="元に戻す"
-        disabled={!editor}
-        onClick={() => editor?.chain().focus().undo().run()}
-      >
-        <Undo2 size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        label="やり直す"
-        disabled={!editor}
-        onClick={() => editor?.chain().focus().redo().run()}
-      >
-        <Redo2 size={15} />
-      </ToolbarButton>
-      <Divider />
-      <ToolbarButton
-        label="太字"
-        active={editor?.isActive("bold")}
-        disabled={!editor}
-        onClick={() => editor?.chain().focus().toggleBold().run()}
-      >
-        <Bold size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        label="斜体"
-        active={editor?.isActive("italic")}
-        disabled={!editor}
-        onClick={() => editor?.chain().focus().toggleItalic().run()}
-      >
-        <Italic size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        label="取り消し線"
-        active={editor?.isActive("strike")}
-        disabled={!editor}
-        onClick={() => editor?.chain().focus().toggleStrike().run()}
-      >
-        <Strikethrough size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        label="コード"
-        active={editor?.isActive("code")}
-        disabled={!editor}
-        onClick={() => editor?.chain().focus().toggleCode().run()}
-      >
-        <Code size={15} />
-      </ToolbarButton>
-      <Divider />
-      <ToolbarButton
-        label="見出し1"
-        active={editor?.isActive("heading", { level: 1 })}
-        disabled={!editor}
-        onClick={() => editor?.chain().focus().toggleHeading({ level: 1 }).run()}
-      >
-        <Heading1 size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        label="見出し2"
-        active={editor?.isActive("heading", { level: 2 })}
-        disabled={!editor}
-        onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}
-      >
-        <Heading2 size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        label="箇条書き"
-        active={editor?.isActive("bulletList")}
-        disabled={!editor}
-        onClick={() => editor?.chain().focus().toggleBulletList().run()}
-      >
-        <List size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        label="番号付きリスト"
-        active={editor?.isActive("orderedList")}
-        disabled={!editor}
-        onClick={() => editor?.chain().focus().toggleOrderedList().run()}
-      >
-        <ListOrdered size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        label="引用"
-        active={editor?.isActive("blockquote")}
-        disabled={!editor}
-        onClick={() => editor?.chain().focus().toggleBlockquote().run()}
-      >
-        <Quote size={15} />
-      </ToolbarButton>
-      <Divider />
-      <ToolbarButton label="リンク" disabled={!editor} onClick={setLink}>
-        <LinkIcon size={15} />
-      </ToolbarButton>
-      <ToolbarButton label="画像" disabled={!editor} onClick={onPickImage}>
-        <ImagePlus size={15} />
-      </ToolbarButton>
-    </div>
-  );
-}
-
-function ToolbarButton({
-  label,
-  active = false,
-  disabled = false,
-  onClick,
-  children,
-}: {
-  label: string;
-  active?: boolean;
-  disabled?: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      disabled={disabled}
-      onClick={onClick}
-      className={`grid size-7 shrink-0 place-items-center rounded-md transition-colors disabled:pointer-events-none disabled:opacity-40 ${
-        active
-          ? "bg-neutral-900 text-white"
-          : "text-neutral-500 hover:bg-black/5 hover:text-neutral-800"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Divider() {
-  return <span className="mx-1 h-4 w-px shrink-0 bg-black/10" />;
 }
 
 function imageFilesFromClipboard(event: ClipboardEvent) {
@@ -427,39 +242,10 @@ function markdownToEditorHtml(markdown: string) {
 }
 
 function normalizeMarkdownForPaste(markdown: string) {
-  const normalizedBullets = markdown.replace(
+  return markdown.replace(
     /^(\s*)[・•●]\s*/gm,
     "$1- ",
   );
-  const lines = normalizedBullets.split(/\r?\n/);
-  const out: string[] = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const previous = out[out.length - 1] ?? "";
-    if (
-      line.trim() &&
-      isListLine(previous) &&
-      !isListLine(line) &&
-      !isIndentedLine(line) &&
-      !isMarkdownBlockBoundary(line)
-    ) {
-      out.push("");
-    }
-    out.push(line);
-  }
-  return out.join("\n");
-}
-
-function isListLine(line: string) {
-  return /^\s{0,3}(?:[-*+]\s+\S|\d+[.)]\s+\S)/.test(line);
-}
-
-function isIndentedLine(line: string) {
-  return /^(?: {2,}|\t)/.test(line);
-}
-
-function isMarkdownBlockBoundary(line: string) {
-  return /^\s{0,3}(?:#{1,6}\s+|>\s+|```|---\s*$)/.test(line);
 }
 
 function preserveBlankParagraphs(markdown: string) {

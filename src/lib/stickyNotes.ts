@@ -53,6 +53,12 @@ export function extractPlainText(doc: unknown): string {
   return collectText(node).replace(/\s+/g, " ").trim();
 }
 
+export function deriveNoteTitle(doc: unknown): string {
+  const node = normalizeRichTextNode(doc);
+  const title = firstTextLine(node).replace(/\s+/g, " ").trim();
+  return title ? title.slice(0, 80) : "無題のメモ";
+}
+
 export function noteToMarkdown(doc: unknown): string {
   const node = normalizeRichTextNode(doc);
   return renderBlocks(node.content ?? []).trim();
@@ -62,6 +68,16 @@ function collectText(node: RichTextNode): string {
   if (node.text) return node.text;
   if (node.type === "image") return " 画像 ";
   return (node.content ?? []).map(collectText).join(" ");
+}
+
+function firstTextLine(node: RichTextNode): string {
+  if (node.text) return node.text;
+  if (node.type === "image") return "画像";
+  for (const child of node.content ?? []) {
+    const value = firstTextLine(child);
+    if (value.trim()) return value;
+  }
+  return "";
 }
 
 function renderBlocks(nodes: RichTextNode[], depth = 0): string {
@@ -87,9 +103,7 @@ function renderBlocks(nodes: RichTextNode[], depth = 0): string {
     if (!output) {
       output = block.value;
     } else if (previous) {
-      output += `${blockSeparator(previous, block.node)}${"\n".repeat(
-        pendingBlankBlocks,
-      )}${block.value}`;
+      output += `${blockSeparator()}${"\n".repeat(pendingBlankBlocks)}${block.value}`;
     }
     previous = block.node;
     pendingBlankBlocks = 0;
@@ -204,15 +218,8 @@ function renderImage(node: RichTextNode): string {
   return src ? `![${alt}](${src})` : "";
 }
 
-function blockSeparator(previous: RichTextNode, next: RichTextNode) {
-  if (isListBlock(previous) && !isListBlock(next)) {
-    return "\n\n";
-  }
+function blockSeparator() {
   return "\n";
-}
-
-function isListBlock(node: RichTextNode) {
-  return node.type === "bulletList" || node.type === "orderedList";
 }
 
 function isBlankBlock(node: RichTextNode) {

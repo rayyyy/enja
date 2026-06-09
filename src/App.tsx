@@ -1,7 +1,12 @@
 import { lazy, Suspense, useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { getProviderStatus, getSettings, hideWindow } from "./lib/commands";
+import {
+  getProviderStatus,
+  getSettings,
+  hideStickyNoteWindow,
+  hideWindow,
+} from "./lib/commands";
 import { startTranslation } from "./lib/startTranslation";
 import { useAppStore } from "./stores/useAppStore";
 import { LeftPanel } from "./components/LeftPanel";
@@ -53,21 +58,33 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const stickyNoteId = windowLabel.startsWith("sticky-")
+      ? windowLabel.slice("sticky-".length)
+      : null;
+
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") {
         e.preventDefault();
+        if (stickyNoteId) {
+          void hideStickyNoteWindow(stickyNoteId);
+          return;
+        }
         void hideWindow();
         return;
       }
-      // Cmd+W: hide overlay (also after Cmd+C trigger)
+      // Cmd+W: close sticky windows, otherwise hide the main overlay.
       if (e.metaKey && (e.key === "w" || e.key === "W")) {
         e.preventDefault();
+        if (stickyNoteId) {
+          void hideStickyNoteWindow(stickyNoteId);
+          return;
+        }
         void hideWindow();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [windowLabel]);
 
   if (windowLabel === "voice") {
     return <VoiceOverlay />;

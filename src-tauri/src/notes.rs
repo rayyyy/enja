@@ -6,8 +6,8 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 const DEFAULT_NOTE_WIDTH: f64 = 420.0;
 const DEFAULT_NOTE_HEIGHT: f64 = 520.0;
-const MIN_NOTE_WIDTH: f64 = 300.0;
-const MIN_NOTE_HEIGHT: f64 = 260.0;
+const MIN_NOTE_WIDTH: f64 = 180.0;
+const MIN_NOTE_HEIGHT: f64 = 120.0;
 const NOTE_COLORS: [&str; 5] = ["lemon", "mint", "sky", "rose", "paper"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,7 +76,7 @@ pub fn create_note<R: Runtime>(app: &AppHandle<R>) -> Result<StickyNote, String>
     let now = now_millis();
     let note = StickyNote {
         id: format!("note-{now}"),
-        title: "新しいメモ".to_string(),
+        title: "無題のメモ".to_string(),
         content: default_content(),
         color: "lemon".to_string(),
         pinned: false,

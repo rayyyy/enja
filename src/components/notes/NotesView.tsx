@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   Check,
-  Copy,
   Languages,
   Pin,
   PinOff,
@@ -11,7 +10,6 @@ import {
   Settings,
   StickyNote as StickyNoteIcon,
   Trash2,
-  X,
 } from "lucide-react";
 import {
   createStickyNote,
@@ -22,11 +20,11 @@ import {
   updateStickyNote,
 } from "../../lib/commands";
 import {
+  deriveNoteTitle,
   extractPlainText,
   normalizeRichTextNode,
   noteColorClass,
   noteColorPresets,
-  noteToMarkdown,
 } from "../../lib/stickyNotes";
 import { useAppStore } from "../../stores/useAppStore";
 import type { StickyNote } from "../../types";
@@ -61,7 +59,9 @@ export function NotesView() {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return notes;
     return notes.filter((note) => {
-      const haystack = `${note.title} ${extractPlainText(note.content)}`.toLowerCase();
+      const haystack = `${deriveNoteTitle(note.content)} ${extractPlainText(
+        note.content,
+      )}`.toLowerCase();
       return haystack.includes(normalized);
     });
   }, [notes, query]);
@@ -188,7 +188,7 @@ export function StickyNoteWindow({ noteId }: { noteId: string }) {
   return (
     <NoteEditorPanel
       note={note}
-      compact
+      showToolbar={false}
       onPatch={(patch) => patchNote(note.id, patch)}
       onDelete={() => void removeNote(note.id)}
       onShowPinned={() => undefined}
@@ -203,24 +203,16 @@ function NoteEditorPanel({
   onDelete,
   onShowPinned,
   onHidePinned,
-  compact = false,
+  showToolbar = true,
 }: {
   note: StickyNote;
-  onPatch: (patch: Partial<Pick<StickyNote, "title" | "content" | "color">>) => void;
+  onPatch: (patch: Partial<Pick<StickyNote, "content" | "color">>) => void;
   onDelete: () => void;
   onShowPinned: () => void;
   onHidePinned: () => void;
-  compact?: boolean;
+  showToolbar?: boolean;
 }) {
-  const [copied, setCopied] = useState(false);
   const content = normalizeRichTextNode(note.content);
-
-  function copyMarkdown() {
-    void navigator.clipboard.writeText(noteToMarkdown(note.content)).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
-    });
-  }
 
   return (
     <div
@@ -229,89 +221,60 @@ function NoteEditorPanel({
         true,
       )}`}
     >
-      <div
-        className={`shrink-0 border-b border-black/5 px-4 ${
-          compact ? "pt-8 pb-2" : "pt-3 pb-3"
-        }`}
-      >
-        <div className="flex items-center gap-2">
-          <input
-            value={note.title}
-            onChange={(event) => onPatch({ title: event.target.value })}
-            className="min-w-0 flex-1 bg-transparent text-[16px] font-semibold text-neutral-900 placeholder:text-neutral-400 focus:outline-none"
-            placeholder="無題のメモ"
-          />
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              title={note.pinned ? "最前面を解除" : "最前面に表示"}
-              aria-label={note.pinned ? "最前面を解除" : "最前面に表示"}
-              onClick={note.pinned ? onHidePinned : onShowPinned}
-              className={`grid size-8 place-items-center rounded-md transition-colors ${
-                note.pinned
-                  ? "bg-neutral-900 text-white"
-                  : "text-neutral-500 hover:bg-black/5 hover:text-neutral-800"
-              }`}
-            >
-              {note.pinned ? <PinOff size={15} /> : <Pin size={15} />}
-            </button>
-            <button
-              type="button"
-              title="Markdownコピー"
-              aria-label="Markdownコピー"
-              onClick={copyMarkdown}
-              className="grid size-8 place-items-center rounded-md text-neutral-500 transition-colors hover:bg-black/5 hover:text-neutral-800"
-            >
-              {copied ? <Check size={15} /> : <Copy size={15} />}
-            </button>
-            <button
-              type="button"
-              title="削除"
-              aria-label="削除"
-              onClick={() => {
-                if (window.confirm("このメモを削除しますか？")) onDelete();
-              }}
-              className="grid size-8 place-items-center rounded-md text-neutral-500 transition-colors hover:bg-red-500 hover:text-white"
-            >
-              <Trash2 size={15} />
-            </button>
+      {showToolbar ? (
+        <div className="shrink-0 border-b border-black/5 px-4 pt-3 pb-3">
+          <div className="flex items-center gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-1">
+              {noteColorPresets.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  title={preset.label}
+                  aria-label={preset.label}
+                  onClick={() => onPatch({ color: preset.id })}
+                  className={`grid size-6 place-items-center rounded-full border transition ${
+                    note.color === preset.id
+                      ? "border-neutral-900"
+                      : "border-black/10 hover:border-neutral-500"
+                  }`}
+                  style={{ backgroundColor: preset.swatch }}
+                >
+                  {note.color === preset.id ? <Check size={12} /> : null}
+                </button>
+              ))}
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              <button
+                type="button"
+                title={note.pinned ? "最前面を解除" : "最前面に表示"}
+                aria-label={note.pinned ? "最前面を解除" : "最前面に表示"}
+                onClick={note.pinned ? onHidePinned : onShowPinned}
+                className={`grid size-8 place-items-center rounded-md transition-colors ${
+                  note.pinned
+                    ? "bg-neutral-900 text-white"
+                    : "text-neutral-500 hover:bg-black/5 hover:text-neutral-800"
+                }`}
+              >
+                {note.pinned ? <PinOff size={15} /> : <Pin size={15} />}
+              </button>
+              <button
+                type="button"
+                title="削除"
+                aria-label="削除"
+                onClick={() => {
+                  if (window.confirm("このメモを削除しますか？")) onDelete();
+                }}
+                className="grid size-8 place-items-center rounded-md text-neutral-500 transition-colors hover:bg-red-500 hover:text-white"
+              >
+                <Trash2 size={15} />
+              </button>
+            </div>
           </div>
         </div>
-        <div className="mt-2 flex items-center gap-1">
-          {noteColorPresets.map((preset) => (
-            <button
-              key={preset.id}
-              type="button"
-              title={preset.label}
-              aria-label={preset.label}
-              onClick={() => onPatch({ color: preset.id })}
-              className={`grid size-6 place-items-center rounded-full border transition ${
-                note.color === preset.id
-                  ? "border-neutral-900"
-                  : "border-black/10 hover:border-neutral-500"
-              }`}
-              style={{ backgroundColor: preset.swatch }}
-            >
-              {note.color === preset.id ? <Check size={12} /> : null}
-            </button>
-          ))}
-          {compact ? (
-            <button
-              type="button"
-              title="閉じる"
-              aria-label="閉じる"
-              onClick={onHidePinned}
-              className="ml-auto grid size-6 place-items-center rounded-md text-neutral-500 transition-colors hover:bg-black/5 hover:text-neutral-800"
-            >
-              <X size={14} />
-            </button>
-          ) : null}
-        </div>
-      </div>
+      ) : null}
       <RichNoteEditor
         noteId={note.id}
         content={content}
-        compact={compact}
         onChange={(next) => onPatch({ content: next as Record<string, unknown> })}
       />
     </div>
@@ -330,6 +293,7 @@ function NoteListItem({
   onTogglePinned: () => void;
 }) {
   const preview = extractPlainText(note.content) || "本文なし";
+  const title = deriveNoteTitle(note.content);
   return (
     <div
       role="button"
@@ -353,7 +317,7 @@ function NoteListItem({
       />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[13px] font-medium text-neutral-800">
-          {note.title}
+          {title}
         </span>
         <span className="mt-0.5 block truncate text-[11px] text-neutral-500">
           {preview}
@@ -454,24 +418,39 @@ function useStickyNotes({ createWhenEmpty }: { createWhenEmpty: boolean }) {
 
   function patchNote(
     id: string,
-    patch: Partial<Pick<StickyNote, "title" | "content" | "color">>,
+    patch: Partial<Pick<StickyNote, "content" | "color">>,
   ) {
     setNotes((current) => {
       const target = current.find((note) => note.id === id);
       if (!target) return current;
+      const nextContent = patch.content ?? target.content;
+      const nextColor = patch.color ?? target.color;
+      const contentChanged =
+        patch.content !== undefined &&
+        serializeNoteContent(nextContent) !== serializeNoteContent(target.content);
+      const colorChanged = patch.color !== undefined && nextColor !== target.color;
+      if (!contentChanged && !colorChanged) return current;
+
       const next: StickyNote = {
         ...target,
-        ...patch,
+        content: nextContent,
+        color: nextColor,
+        title: deriveNoteTitle(nextContent),
         updatedAt: Date.now(),
       };
       scheduleSave(next);
-      return current.map((note) => (note.id === id ? next : note));
+      return sortNotesByUpdatedAt(
+        current.map((note) => (note.id === id ? next : note)),
+      );
     });
   }
 
   async function createNote() {
     const note = await createStickyNote();
-    setNotes((current) => [note, ...current]);
+    setNotes((current) => {
+      if (current.some((candidate) => candidate.id === note.id)) return current;
+      return [note, ...current];
+    });
     return note;
   }
 
@@ -506,4 +485,12 @@ function formatDate(value: number) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function serializeNoteContent(content: unknown) {
+  return JSON.stringify(normalizeRichTextNode(content));
+}
+
+function sortNotesByUpdatedAt(notes: StickyNote[]) {
+  return [...notes].sort((a, b) => b.updatedAt - a.updatedAt);
 }
