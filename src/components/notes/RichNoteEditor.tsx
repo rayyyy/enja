@@ -171,7 +171,7 @@ export function RichNoteEditor({
     const serialized = JSON.stringify(normalized);
     if (serialized === lastContentRef.current || editor.isFocused) return;
     lastContentRef.current = serialized;
-    editor.commands.setContent(normalized as never);
+    editor.commands.setContent(normalized as never, { emitUpdate: false });
   }, [content, editor]);
 
   return (

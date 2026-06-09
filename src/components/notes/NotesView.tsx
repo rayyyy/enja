@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   Check,
@@ -30,6 +36,16 @@ import { useAppStore } from "../../stores/useAppStore";
 import type { StickyNote } from "../../types";
 import { RichNoteEditor } from "./RichNoteEditor";
 
+type NoteContextMenuState = {
+  noteId: string;
+  x: number;
+  y: number;
+} | null;
+
+const NOTE_CONTEXT_MENU_MARGIN = 8;
+const NOTE_CONTEXT_MENU_WIDTH = 132;
+const NOTE_CONTEXT_MENU_HEIGHT = 42;
+
 export function NotesView() {
   const setView = useAppStore((s) => s.setView);
   const {
@@ -43,6 +59,7 @@ export function NotesView() {
   } = useStickyNotes({ createWhenEmpty: true });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [contextMenu, setContextMenu] = useState<NoteContextMenuState>(null);
 
   useEffect(() => {
     if (!loaded) return;
@@ -67,6 +84,58 @@ export function NotesView() {
   }, [notes, query]);
 
   const selectedNote = notes.find((note) => note.id === selectedId) ?? null;
+  const contextMenuNote = contextMenu
+    ? notes.find((note) => note.id === contextMenu.noteId) ?? null
+    : null;
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    if (notes.some((note) => note.id === contextMenu.noteId)) return;
+    setContextMenu(null);
+  }, [contextMenu, notes]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+
+    function closeContextMenu() {
+      setContextMenu(null);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") closeContextMenu();
+    }
+
+    function handleContextMenu(event: MouseEvent) {
+      if (!event.defaultPrevented) closeContextMenu();
+    }
+
+    window.addEventListener("click", closeContextMenu);
+    window.addEventListener("blur", closeContextMenu);
+    window.addEventListener("resize", closeContextMenu);
+    window.addEventListener("scroll", closeContextMenu, true);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("contextmenu", handleContextMenu);
+    return () => {
+      window.removeEventListener("click", closeContextMenu);
+      window.removeEventListener("blur", closeContextMenu);
+      window.removeEventListener("resize", closeContextMenu);
+      window.removeEventListener("scroll", closeContextMenu, true);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("contextmenu", handleContextMenu);
+    };
+  }, [contextMenu]);
+
+  function openNoteContextMenu(
+    note: StickyNote,
+    event: ReactMouseEvent<HTMLDivElement>,
+  ) {
+    event.preventDefault();
+    setSelectedId(note.id);
+    setContextMenu({
+      noteId: note.id,
+      ...clampContextMenuPosition(event.clientX, event.clientY),
+    });
+  }
 
   return (
     <div className="flex min-h-0 flex-1 bg-white">
@@ -112,6 +181,7 @@ export function NotesView() {
               onTogglePinned={() =>
                 note.pinned ? void hidePinned(note.id) : void showPinned(note.id)
               }
+              onOpenContextMenu={(event) => openNoteContextMenu(note, event)}
             />
           ))}
           {filteredNotes.length === 0 ? (
@@ -158,6 +228,29 @@ export function NotesView() {
           </div>
         )}
       </main>
+
+      {contextMenu && contextMenuNote ? (
+        <div
+          role="menu"
+          aria-label="メモの操作"
+          onContextMenu={(event) => event.preventDefault()}
+          className="fixed z-50 w-32 rounded-md border border-neutral-200 bg-white py-1 shadow-lg"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setContextMenu(null);
+              void removeNote(contextMenuNote.id);
+            }}
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-red-600 transition-colors hover:bg-red-50"
+          >
+            <Trash2 size={14} />
+            削除
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -284,11 +377,13 @@ function NoteListItem({
   selected,
   onSelect,
   onTogglePinned,
+  onOpenContextMenu,
 }: {
   note: StickyNote;
   selected: boolean;
   onSelect: () => void;
   onTogglePinned: () => void;
+  onOpenContextMenu: (event: ReactMouseEvent<HTMLDivElement>) => void;
 }) {
   const preview = extractPlainText(note.content) || "本文なし";
   const title = deriveNoteTitle(note.content);
@@ -297,11 +392,17 @@ function NoteListItem({
       role="button"
       tabIndex={0}
       onClick={onSelect}
+      onDoubleClick={(event) => {
+        event.preventDefault();
+        onTogglePinned();
+      }}
+      onContextMenu={onOpenContextMenu}
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         onSelect();
       }}
+      title={note.pinned ? "固定中" : "未固定"}
       className={`mb-1 flex w-full cursor-pointer items-start gap-3 rounded-md border px-3 py-2 text-left transition-colors ${
         selected
           ? "border-neutral-300 bg-white shadow-sm"
@@ -325,27 +426,14 @@ function NoteListItem({
         </span>
       </span>
       <span
-        role="button"
-        tabIndex={0}
-        title={note.pinned ? "最前面を解除" : "最前面に表示"}
-        aria-label={note.pinned ? "最前面を解除" : "最前面に表示"}
-        onClick={(event) => {
-          event.stopPropagation();
-          onTogglePinned();
-        }}
-        onKeyDown={(event) => {
-          if (event.key !== "Enter" && event.key !== " ") return;
-          event.preventDefault();
-          event.stopPropagation();
-          onTogglePinned();
-        }}
-        className={`grid size-7 shrink-0 place-items-center rounded-md transition-colors ${
-          note.pinned
-            ? "bg-neutral-900 text-white"
-            : "text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
+        role="img"
+        title={note.pinned ? "固定中" : "未固定"}
+        aria-label={note.pinned ? "固定中" : "未固定"}
+        className={`mt-0.5 grid size-6 shrink-0 place-items-center rounded-md ${
+          note.pinned ? "text-neutral-900" : "text-neutral-300"
         }`}
       >
-        {note.pinned ? <PinOff size={14} /> : <Pin size={14} />}
+        {note.pinned ? <Pin size={14} fill="currentColor" /> : <PinOff size={14} />}
       </span>
     </div>
   );
@@ -435,12 +523,11 @@ function useStickyNotes({ createWhenEmpty }: { createWhenEmpty: boolean }) {
         content: nextContent,
         color: nextColor,
         title: deriveNoteTitle(nextContent),
-        updatedAt: Date.now(),
+        updatedAt: contentChanged ? Date.now() : target.updatedAt,
       };
       scheduleSave(next);
-      return sortNotesByUpdatedAt(
-        current.map((note) => (note.id === id ? next : note)),
-      );
+      const nextNotes = current.map((note) => (note.id === id ? next : note));
+      return contentChanged ? sortNotesByUpdatedAt(nextNotes) : nextNotes;
     });
   }
 
@@ -504,4 +591,20 @@ function serializeNoteContent(content: unknown) {
 
 function sortNotesByUpdatedAt(notes: StickyNote[]) {
   return [...notes].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+function clampContextMenuPosition(x: number, y: number) {
+  const maxX = Math.max(
+    NOTE_CONTEXT_MENU_MARGIN,
+    window.innerWidth - NOTE_CONTEXT_MENU_WIDTH - NOTE_CONTEXT_MENU_MARGIN,
+  );
+  const maxY = Math.max(
+    NOTE_CONTEXT_MENU_MARGIN,
+    window.innerHeight - NOTE_CONTEXT_MENU_HEIGHT - NOTE_CONTEXT_MENU_MARGIN,
+  );
+
+  return {
+    x: Math.min(Math.max(x, NOTE_CONTEXT_MENU_MARGIN), maxX),
+    y: Math.min(Math.max(y, NOTE_CONTEXT_MENU_MARGIN), maxY),
+  };
 }

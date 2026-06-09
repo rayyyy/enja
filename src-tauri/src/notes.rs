@@ -68,7 +68,9 @@ pub fn load_notes<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<StickyNote>, Str
 
     let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let notes: Vec<StickyNote> = serde_json::from_str(&data).map_err(|e| e.to_string())?;
-    Ok(notes.into_iter().map(normalize_note).collect())
+    let mut notes: Vec<StickyNote> = notes.into_iter().map(normalize_note).collect();
+    sort_notes(&mut notes);
+    Ok(notes)
 }
 
 pub fn create_note<R: Runtime>(app: &AppHandle<R>) -> Result<StickyNote, String> {
@@ -100,12 +102,27 @@ pub fn update_note<R: Runtime>(
     };
 
     let mut note = notes[index].clone();
-    note.title = normalize_title(&input.title);
-    note.content = normalize_content(input.content);
-    note.color = normalize_color(&input.color);
-    note.updated_at = now_millis();
+    let next_title = normalize_title(&input.title);
+    let next_content = normalize_content(input.content);
+    let next_color = normalize_color(&input.color);
+    let content_changed = note.content != next_content;
+    let title_changed = note.title != next_title;
+    let color_changed = note.color != next_color;
+
+    if !content_changed && !title_changed && !color_changed {
+        return Ok(note);
+    }
+
+    note.title = next_title;
+    note.content = next_content;
+    note.color = next_color;
+    if content_changed {
+        note.updated_at = now_millis();
+    }
     notes[index] = note.clone();
-    sort_notes(&mut notes);
+    if content_changed {
+        sort_notes(&mut notes);
+    }
     save_notes(app, &notes)?;
     if let Some(window) = app.get_webview_window(&sticky_window_label(&note.id)) {
         let _ = window.set_title(&note.title);
