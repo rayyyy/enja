@@ -453,6 +453,7 @@ function NoteEditorPanel({
         </div>
       ) : null}
       <RichNoteEditor
+        key={note.id}
         noteId={note.id}
         content={content}
         onChange={(next) => onPatch({ content: next as Record<string, unknown> })}
