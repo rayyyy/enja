@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Enja main capability",
-  "windows": ["main", "voice"],
+  "windows": ["main", "voice", "sticky-*"],
   "permissions": [
     "core:default",
     "core:event:default",

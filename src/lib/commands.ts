@@ -13,6 +13,9 @@ import type {
   ShortcutAction,
   SpeechProfile,
   SpeechSetupCheck,
+  StickyNote,
+  StickyNoteInput,
+  StoredNoteImage,
   TranslateEvent,
   VoiceMode,
 } from "../types";
@@ -95,6 +98,41 @@ export async function updateDictionaryEntry(
 
 export async function deleteDictionaryEntry(id: string): Promise<void> {
   return invoke("delete_dictionary_entry", { id });
+}
+
+export async function getStickyNotes(): Promise<StickyNote[]> {
+  return invoke<StickyNote[]>("get_sticky_notes");
+}
+
+export async function createStickyNote(): Promise<StickyNote> {
+  return invoke<StickyNote>("create_sticky_note");
+}
+
+export async function updateStickyNote(
+  note: StickyNoteInput,
+): Promise<StickyNote> {
+  return invoke<StickyNote>("update_sticky_note", { note });
+}
+
+export async function deleteStickyNote(id: string): Promise<void> {
+  return invoke("delete_sticky_note", { id });
+}
+
+export async function showStickyNoteWindow(id: string): Promise<void> {
+  return invoke("show_sticky_note_window", { id });
+}
+
+export async function hideStickyNoteWindow(id: string): Promise<void> {
+  return invoke("hide_sticky_note_window", { id });
+}
+
+export async function saveStickyNoteImage(params: {
+  noteId: string;
+  mimeType: string;
+  dataBase64: string;
+  fileName?: string | null;
+}): Promise<StoredNoteImage> {
+  return invoke<StoredNoteImage>("save_sticky_note_image", params);
 }
 
 export async function undoDictionaryLearning(

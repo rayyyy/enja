@@ -40,6 +40,9 @@ mod imp {
         let Some(h) = HANDLE.get() else {
             return;
         };
+        if has_visible_auxiliary_window(h) {
+            return;
+        }
         if let Some(w) = h.get_webview_window("main") {
             if let Ok(false) = w.is_visible() {
                 let _ = w.show();
@@ -47,6 +50,16 @@ mod imp {
                 let _ = w.set_focus();
             }
         }
+    }
+
+    fn has_visible_auxiliary_window(h: &AppHandle) -> bool {
+        h.webview_windows().into_iter().any(|(label, window)| {
+            is_auxiliary_window(&label) && window.is_visible().unwrap_or(false)
+        })
+    }
+
+    fn is_auxiliary_window(label: &str) -> bool {
+        label == "voice" || label.starts_with("sticky-")
     }
 }
 

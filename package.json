@@ -20,6 +20,14 @@
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "@tiptap/extension-image": "^3.26.0",
+    "@tiptap/extension-link": "^3.26.0",
+    "@tiptap/extension-placeholder": "^3.26.0",
+    "@tiptap/extension-typography": "^3.26.0",
+    "@tiptap/react": "^3.26.0",
+    "@tiptap/starter-kit": "^3.26.0",
+    "lucide-react": "^1.17.0",
+    "marked": "^18.0.5",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "zustand": "^5.0.12"

@@ -155,6 +155,39 @@ export type DictionaryBulkCreateResult = {
   skipped: number;
 };
 
+export type StickyNoteColor = "lemon" | "mint" | "sky" | "rose" | "paper";
+
+export type StickyNoteWindowState = {
+  x: number | null;
+  y: number | null;
+  width: number;
+  height: number;
+};
+
+export type StickyNote = {
+  id: string;
+  title: string;
+  content: Record<string, unknown>;
+  color: StickyNoteColor;
+  pinned: boolean;
+  window: StickyNoteWindowState;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type StickyNoteInput = {
+  id: string;
+  title: string;
+  content: Record<string, unknown>;
+  color: StickyNoteColor;
+};
+
+export type StoredNoteImage = {
+  path: string;
+  fileName: string;
+  mimeType: string;
+};
+
 export type ProviderStatus = {
   gemini: boolean;
   openai: boolean;
