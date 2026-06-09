@@ -128,6 +128,10 @@ function renderBlock(node: RichTextNode, depth: number, index: number): string {
       return renderList(node.content ?? [], depth, true);
     case "listItem":
       return renderListItem(node, depth, false, index);
+    case "taskList":
+      return renderTaskList(node.content ?? [], depth);
+    case "taskItem":
+      return renderTaskItem(node, depth, index);
     case "blockquote":
       return renderBlocks(node.content ?? [], depth)
         .split("\n")
@@ -193,6 +197,32 @@ function renderListItem(
 ) {
   const indent = "  ".repeat(depth);
   const marker = ordered ? `${index + 1}.` : "-";
+  const children = node.content ?? [];
+  const first = children[0];
+  const firstLine =
+    first?.type === "paragraph"
+      ? renderInline(first.content ?? [])
+      : renderBlock(first ?? { type: "paragraph" }, depth + 1, index);
+  const rest = children
+    .slice(1)
+    .map((child, childIndex) => renderBlock(child, depth + 1, childIndex))
+    .filter(Boolean)
+    .map((line) =>
+      line
+        .split("\n")
+        .map((part) => `${indent}  ${part}`)
+        .join("\n"),
+    );
+  return [`${indent}${marker} ${firstLine}`, ...rest].join("\n");
+}
+
+function renderTaskList(nodes: RichTextNode[], depth: number) {
+  return nodes.map((node, index) => renderTaskItem(node, depth, index)).join("\n");
+}
+
+function renderTaskItem(node: RichTextNode, depth: number, index: number) {
+  const indent = "  ".repeat(depth);
+  const marker = node.attrs?.checked ? "- [x]" : "- [ ]";
   const children = node.content ?? [];
   const first = children[0];
   const firstLine =

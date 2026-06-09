@@ -8,6 +8,8 @@ import StarterKit from "@tiptap/starter-kit";
 import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
+import TaskItem from "@tiptap/extension-task-item";
+import TaskList from "@tiptap/extension-task-list";
 import Typography from "@tiptap/extension-typography";
 import { saveStickyNoteImage } from "../../lib/commands";
 import {
@@ -95,6 +97,17 @@ export function RichNoteEditor({
       Placeholder.configure({
         placeholder: "メモを書く",
       }),
+      TaskList.configure({
+        HTMLAttributes: {
+          class: "note-editor-task-list",
+        },
+      }),
+      TaskItem.configure({
+        nested: true,
+        HTMLAttributes: {
+          class: "note-editor-task-item",
+        },
+      }),
       Typography,
     ],
     content: normalizeRichTextNode(content) as never,
@@ -115,12 +128,10 @@ export function RichNoteEditor({
         return true;
       },
       handleDrop: (_view, event) => {
-        const files = Array.from(event.dataTransfer?.files ?? []).filter((file) =>
-          file.type.startsWith("image/"),
-        );
+        const files = Array.from(event.dataTransfer?.files ?? []);
         if (!files.length) return false;
         event.preventDefault();
-        for (const file of files) {
+        for (const file of files.filter((file) => file.type.startsWith("image/"))) {
           void insertImageFile(file).catch((error) => {
             console.error("[enja] sticky note image drop failed", error);
           });
@@ -297,6 +308,8 @@ function sanitizeMarkdownHtml(html: string) {
   const template = document.createElement("template");
   template.innerHTML = html;
 
+  normalizeMarkdownTaskLists(template.content);
+
   for (const element of Array.from(
     template.content.querySelectorAll("script,style,iframe,object,embed"),
   )) {
@@ -324,6 +337,61 @@ function sanitizeMarkdownHtml(html: string) {
   }
 
   return template.innerHTML;
+}
+
+function normalizeMarkdownTaskLists(root: ParentNode) {
+  for (const list of Array.from(root.querySelectorAll("ul"))) {
+    const items = directListItems(list);
+    if (!items.some(taskCheckboxFromListItem)) continue;
+
+    list.setAttribute("data-type", "taskList");
+    for (const item of items) {
+      const checkbox = taskCheckboxFromListItem(item);
+      item.setAttribute("data-type", "taskItem");
+      item.setAttribute("data-checked", checkbox?.checked ? "true" : "false");
+
+      if (checkbox) {
+        const parent = checkbox.parentElement;
+        checkbox.remove();
+        trimLeadingWhitespace(parent ?? item);
+      }
+    }
+  }
+}
+
+function directListItems(list: Element) {
+  return Array.from(list.children).filter(
+    (child): child is HTMLLIElement => child instanceof HTMLLIElement,
+  );
+}
+
+function taskCheckboxFromListItem(item: HTMLLIElement) {
+  const firstElement = item.firstElementChild;
+  if (firstElement instanceof HTMLInputElement && firstElement.type === "checkbox") {
+    return firstElement;
+  }
+
+  if (firstElement instanceof HTMLParagraphElement) {
+    const paragraphFirst = firstElement.firstElementChild;
+    if (
+      paragraphFirst instanceof HTMLInputElement &&
+      paragraphFirst.type === "checkbox"
+    ) {
+      return paragraphFirst;
+    }
+  }
+
+  return null;
+}
+
+function trimLeadingWhitespace(element: Element) {
+  const first = element.firstChild;
+  if (!first || first.nodeType !== Node.TEXT_NODE) return;
+
+  first.textContent = first.textContent?.replace(/^\s+/, "") ?? "";
+  if (!first.textContent) {
+    first.remove();
+  }
 }
 
 function normalizeMarkdownImageElement(element: HTMLImageElement) {

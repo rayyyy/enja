@@ -90,6 +90,26 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [windowLabel]);
 
+  useEffect(() => {
+    function preventFileNavigation(event: DragEvent) {
+      if (!dragHasFiles(event) || dragTargetIsRichEditor(event.target)) return;
+
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "none";
+      }
+    }
+
+    window.addEventListener("dragenter", preventFileNavigation, true);
+    window.addEventListener("dragover", preventFileNavigation, true);
+    window.addEventListener("drop", preventFileNavigation, true);
+    return () => {
+      window.removeEventListener("dragenter", preventFileNavigation, true);
+      window.removeEventListener("dragover", preventFileNavigation, true);
+      window.removeEventListener("drop", preventFileNavigation, true);
+    };
+  }, []);
+
   if (windowLabel === "voice") {
     return <VoiceOverlay />;
   }
@@ -128,6 +148,20 @@ function App() {
       )}
     </div>
   );
+}
+
+function dragHasFiles(event: DragEvent) {
+  return Array.from(event.dataTransfer?.types ?? []).includes("Files");
+}
+
+function dragTargetIsRichEditor(target: EventTarget | null) {
+  const element =
+    target instanceof Element
+      ? target
+      : target instanceof Node
+        ? target.parentElement
+        : null;
+  return Boolean(element?.closest(".ProseMirror"));
 }
 
 export default App;

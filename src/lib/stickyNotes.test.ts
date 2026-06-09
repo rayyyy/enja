@@ -62,6 +62,41 @@ test("noteToMarkdown keeps copied blocks compact", () => {
   );
 });
 
+test("noteToMarkdown renders task list checkboxes", () => {
+  const doc: RichTextNode = {
+    type: "doc",
+    content: [
+      {
+        type: "taskList",
+        content: [
+          {
+            type: "taskItem",
+            attrs: { checked: false },
+            content: [
+              {
+                type: "paragraph",
+                content: [{ type: "text", text: "買い物" }],
+              },
+            ],
+          },
+          {
+            type: "taskItem",
+            attrs: { checked: true },
+            content: [
+              {
+                type: "paragraph",
+                content: [{ type: "text", text: "完了" }],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+
+  expect(noteToMarkdown(doc)).toBe("- [ ] 買い物\n- [x] 完了");
+});
+
 test("deriveNoteTitle uses the first body line", () => {
   const doc: RichTextNode = {
     type: "doc",
