@@ -32,6 +32,8 @@ function App() {
   const hydrateFromSettings = useAppStore((s) => s.hydrateFromSettings);
 
   useEffect(() => {
+    if (windowLabel !== "main") return;
+
     void Promise.all([getSettings(), getProviderStatus().catch(() => null)]).then(
       ([settings, providerStatus]) => {
         hydrateFromSettings(settings);
@@ -40,9 +42,11 @@ function App() {
         }
       },
     );
-  }, [hydrateFromSettings]);
+  }, [hydrateFromSettings, windowLabel]);
 
   useEffect(() => {
+    if (windowLabel !== "main") return;
+
     const unlistenPromise = listen<string>("enja-trigger", (event) => {
       const text = event.payload;
       useAppStore.getState().resetTranslation();
@@ -55,7 +59,7 @@ function App() {
     return () => {
       void unlistenPromise.then((fn) => fn());
     };
-  }, []);
+  }, [windowLabel]);
 
   useEffect(() => {
     const stickyNoteId = windowLabel.startsWith("sticky-")

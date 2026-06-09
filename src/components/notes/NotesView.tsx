@@ -261,9 +261,7 @@ function NoteEditorPanel({
                 type="button"
                 title="削除"
                 aria-label="削除"
-                onClick={() => {
-                  if (window.confirm("このメモを削除しますか？")) onDelete();
-                }}
+                onClick={onDelete}
                 className="grid size-8 place-items-center rounded-md text-neutral-500 transition-colors hover:bg-red-500 hover:text-white"
               >
                 <Trash2 size={15} />
@@ -357,6 +355,7 @@ function useStickyNotes({ createWhenEmpty }: { createWhenEmpty: boolean }) {
   const [notes, setNotes] = useState<StickyNote[]>([]);
   const [loaded, setLoaded] = useState(false);
   const creatingRef = useRef(false);
+  const deletingIdsRef = useRef(new Set<string>());
   const saveTimersRef = useRef(new Map<string, number>());
 
   useEffect(() => {
@@ -455,8 +454,20 @@ function useStickyNotes({ createWhenEmpty }: { createWhenEmpty: boolean }) {
   }
 
   async function removeNote(id: string) {
-    await deleteStickyNote(id);
-    setNotes((current) => current.filter((note) => note.id !== id));
+    if (deletingIdsRef.current.has(id)) return;
+    deletingIdsRef.current.add(id);
+    const pendingSave = saveTimersRef.current.get(id);
+    if (pendingSave) {
+      window.clearTimeout(pendingSave);
+      saveTimersRef.current.delete(id);
+    }
+
+    try {
+      await deleteStickyNote(id);
+      setNotes((current) => current.filter((note) => note.id !== id));
+    } finally {
+      deletingIdsRef.current.delete(id);
+    }
   }
 
   async function showPinned(id: string) {

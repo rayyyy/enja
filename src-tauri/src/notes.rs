@@ -136,11 +136,10 @@ pub fn show_sticky_window<R: Runtime>(app: &AppHandle<R>, id: &str) -> Result<()
         return Err("メモが見つかりません。".to_string());
     };
     notes[index].pinned = true;
-    notes[index].updated_at = now_millis();
     let note = notes[index].clone();
     save_notes(app, &notes)?;
-    open_sticky_window(app, &note)?;
     emit_notes_changed(app, &notes);
+    open_sticky_window(app, &note)?;
     Ok(())
 }
 
@@ -266,8 +265,10 @@ fn set_note_pinned<R: Runtime>(app: &AppHandle<R>, id: &str, pinned: bool) -> Re
     let Some(index) = notes.iter().position(|note| note.id == id) else {
         return Err("メモが見つかりません。".to_string());
     };
+    if notes[index].pinned == pinned {
+        return Ok(());
+    }
     notes[index].pinned = pinned;
-    notes[index].updated_at = now_millis();
     save_notes(app, &notes)?;
     emit_notes_changed(app, &notes);
     Ok(())
