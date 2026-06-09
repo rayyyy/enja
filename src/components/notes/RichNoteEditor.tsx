@@ -22,19 +22,33 @@ type RichNoteEditorProps = {
   onChange: (content: RichTextNode) => void;
 };
 
+const MAX_IMAGE_FILE_BYTES = 20 * 1024 * 1024;
+
 export function RichNoteEditor({
   noteId,
   content,
   onChange,
 }: RichNoteEditorProps) {
   const editorRef = useRef<Editor | null>(null);
-  const lastContentRef = useRef(JSON.stringify(normalizeRichTextNode(content)));
+  const currentNoteIdRef = useRef(noteId);
+  const lastNoteIdRef = useRef(noteId);
+  const onChangeRef = useRef(onChange);
+  const lastContentRef = useRef<string | null>(null);
+  currentNoteIdRef.current = noteId;
+  onChangeRef.current = onChange;
+  if (lastContentRef.current === null) {
+    lastContentRef.current = JSON.stringify(normalizeRichTextNode(content));
+  }
 
   async function insertImageFile(file: File) {
     if (!file.type.startsWith("image/")) return;
+    if (file.size > MAX_IMAGE_FILE_BYTES) {
+      console.error("[enja] sticky note image is too large", file.name);
+      return;
+    }
     const dataBase64 = await fileToDataUrl(file);
     const saved = await saveStickyNoteImage({
-      noteId,
+      noteId: currentNoteIdRef.current,
       mimeType: file.type,
       dataBase64,
       fileName: file.name || null,
@@ -88,7 +102,9 @@ export function RichNoteEditor({
         if (!files.length) return false;
         event.preventDefault();
         for (const file of files) {
-          void insertImageFile(file);
+          void insertImageFile(file).catch((error) => {
+            console.error("[enja] sticky note image paste failed", error);
+          });
         }
         return true;
       },
@@ -99,7 +115,9 @@ export function RichNoteEditor({
         if (!files.length) return false;
         event.preventDefault();
         for (const file of files) {
-          void insertImageFile(file);
+          void insertImageFile(file).catch((error) => {
+            console.error("[enja] sticky note image drop failed", error);
+          });
         }
         return true;
       },
@@ -146,8 +164,9 @@ export function RichNoteEditor({
     },
     onUpdate: ({ editor }) => {
       const next = editor.getJSON() as RichTextNode;
+      lastNoteIdRef.current = currentNoteIdRef.current;
       lastContentRef.current = JSON.stringify(next);
-      onChange(next);
+      onChangeRef.current(next);
     },
   });
 
@@ -169,10 +188,13 @@ export function RichNoteEditor({
     if (!editor) return;
     const normalized = normalizeRichTextNode(content);
     const serialized = JSON.stringify(normalized);
-    if (serialized === lastContentRef.current || editor.isFocused) return;
+    const noteChanged = noteId !== lastNoteIdRef.current;
+    if (!noteChanged && serialized === lastContentRef.current) return;
+    if (!noteChanged && editor.isFocused) return;
+    lastNoteIdRef.current = noteId;
     lastContentRef.current = serialized;
     editor.commands.setContent(normalized as never, { emitUpdate: false });
-  }, [content, editor]);
+  }, [content, editor, noteId]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">

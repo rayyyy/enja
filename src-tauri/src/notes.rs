@@ -1,14 +1,22 @@
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 const DEFAULT_NOTE_WIDTH: f64 = 420.0;
 const DEFAULT_NOTE_HEIGHT: f64 = 520.0;
 const MIN_NOTE_WIDTH: f64 = 180.0;
 const MIN_NOTE_HEIGHT: f64 = 120.0;
+const MAX_STICKY_NOTE_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+const WINDOW_GEOMETRY_SAVE_DELAY_MS: u64 = 250;
 const NOTE_COLORS: [&str; 5] = ["lemon", "mint", "sky", "rose", "paper"];
+static GEOMETRY_SAVE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static GEOMETRY_SAVE_TOKENS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,22 +70,14 @@ impl Default for StickyNoteWindowState {
 
 pub fn load_notes<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<StickyNote>, String> {
     let path = notes_path(app)?;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-
-    let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let notes: Vec<StickyNote> = serde_json::from_str(&data).map_err(|e| e.to_string())?;
-    let mut notes: Vec<StickyNote> = notes.into_iter().map(normalize_note).collect();
-    sort_notes(&mut notes);
-    Ok(notes)
+    load_notes_from_path(&path)
 }
 
 pub fn create_note<R: Runtime>(app: &AppHandle<R>) -> Result<StickyNote, String> {
     let mut notes = load_notes(app)?;
     let now = now_millis();
     let note = StickyNote {
-        id: format!("note-{now}"),
+        id: unique_note_id(&notes, now),
         title: "無題のメモ".to_string(),
         content: default_content(),
         color: "lemon".to_string(),
@@ -152,20 +152,19 @@ pub fn show_sticky_window<R: Runtime>(app: &AppHandle<R>, id: &str) -> Result<()
     let Some(index) = notes.iter().position(|note| note.id == id) else {
         return Err("メモが見つかりません。".to_string());
     };
-    notes[index].pinned = true;
     let note = notes[index].clone();
+    open_sticky_window(app, &note)?;
+    notes[index].pinned = true;
     save_notes(app, &notes)?;
     emit_notes_changed(app, &notes);
-    open_sticky_window(app, &note)?;
     Ok(())
 }
 
 pub fn hide_sticky_window<R: Runtime>(app: &AppHandle<R>, id: &str) -> Result<(), String> {
-    set_note_pinned(app, id, false)?;
     if let Some(window) = app.get_webview_window(&sticky_window_label(id)) {
-        let _ = window.close();
+        window.close().map_err(|e| e.to_string())?;
     }
-    Ok(())
+    set_note_pinned(app, id, false)
 }
 
 pub fn restore_pinned_windows<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
@@ -186,6 +185,9 @@ pub fn save_image<R: Runtime>(
 ) -> Result<StoredNoteImage, String> {
     let extension =
         extension_for_mime(mime_type).ok_or_else(|| "対応していない画像形式です。".to_string())?;
+    if !load_notes(app)?.iter().any(|note| note.id == note_id) {
+        return Err("メモが見つかりません。".to_string());
+    }
     let payload = data_base64
         .rsplit_once(',')
         .map(|(_, encoded)| encoded)
@@ -193,7 +195,14 @@ pub fn save_image<R: Runtime>(
     let bytes = general_purpose::STANDARD
         .decode(payload)
         .map_err(|e| e.to_string())?;
-    let dir = images_dir(app)?.join(sanitize_path_part(note_id));
+    if bytes.len() > MAX_STICKY_NOTE_IMAGE_BYTES {
+        return Err("画像サイズが大きすぎます。".to_string());
+    }
+    let note_dir = sanitize_path_part(note_id);
+    if note_dir.is_empty() {
+        return Err("メモIDが不正です。".to_string());
+    }
+    let dir = images_dir(app)?.join(note_dir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let now = now_millis();
     let base_file_name = file_name
@@ -215,6 +224,13 @@ pub fn record_window_geometry<R: Runtime>(window: &tauri::Window<R>) {
         return;
     };
     let app = window.app_handle();
+    let path = match notes_path(&app) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("[enja] sticky note geometry path failed: {err}");
+            return;
+        }
+    };
     let scale = window.scale_factor().unwrap_or(1.0).max(0.1);
     let position = window.outer_position().ok();
     let size = window.outer_size().ok();
@@ -227,9 +243,7 @@ pub fn record_window_geometry<R: Runtime>(window: &tauri::Window<R>) {
         width: (f64::from(size.width) / scale).max(MIN_NOTE_WIDTH),
         height: (f64::from(size.height) / scale).max(MIN_NOTE_HEIGHT),
     };
-    if let Err(err) = update_window_state(app, &id, state) {
-        eprintln!("[enja] sticky note geometry save failed: {err}");
-    }
+    schedule_window_state_save(path, id, state);
 }
 
 pub fn handle_sticky_close<R: Runtime>(window: &tauri::Window<R>) {
@@ -291,21 +305,72 @@ fn set_note_pinned<R: Runtime>(app: &AppHandle<R>, id: &str, pinned: bool) -> Re
     Ok(())
 }
 
-fn update_window_state<R: Runtime>(
-    app: &AppHandle<R>,
+fn update_window_state_at_path(
+    path: &Path,
     id: &str,
     state: StickyNoteWindowState,
 ) -> Result<(), String> {
-    let mut notes = load_notes(app)?;
+    let mut notes = load_notes_from_path(path)?;
     let Some(index) = notes.iter().position(|note| note.id == id) else {
         return Ok(());
     };
     notes[index].window = state;
-    save_notes(app, &notes)
+    save_notes_to_path(path, &notes)
+}
+
+fn schedule_window_state_save(path: PathBuf, id: String, state: StickyNoteWindowState) {
+    let token = GEOMETRY_SAVE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut tokens) = geometry_save_tokens().lock() {
+        tokens.insert(id.clone(), token);
+    }
+
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(WINDOW_GEOMETRY_SAVE_DELAY_MS)).await;
+
+        let should_save = geometry_save_tokens()
+            .lock()
+            .map(|tokens| tokens.get(&id).copied() == Some(token))
+            .unwrap_or(false);
+        if !should_save {
+            return;
+        }
+
+        if let Ok(mut tokens) = geometry_save_tokens().lock() {
+            if tokens.get(&id).copied() == Some(token) {
+                tokens.remove(&id);
+            } else {
+                return;
+            }
+        }
+
+        if let Err(err) = update_window_state_at_path(&path, &id, state) {
+            eprintln!("[enja] sticky note geometry save failed: {err}");
+        }
+    });
+}
+
+fn geometry_save_tokens() -> &'static Mutex<HashMap<String, u64>> {
+    GEOMETRY_SAVE_TOKENS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn save_notes<R: Runtime>(app: &AppHandle<R>, notes: &[StickyNote]) -> Result<(), String> {
     let path = notes_path(app)?;
+    save_notes_to_path(&path, notes)
+}
+
+fn load_notes_from_path(path: &Path) -> Result<Vec<StickyNote>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let notes: Vec<StickyNote> = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+    let mut notes: Vec<StickyNote> = notes.into_iter().map(normalize_note).collect();
+    sort_notes(&mut notes);
+    Ok(notes)
+}
+
+fn save_notes_to_path(path: &Path, notes: &[StickyNote]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -377,6 +442,22 @@ fn sort_notes(notes: &mut [StickyNote]) {
     notes.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
 }
 
+fn unique_note_id(notes: &[StickyNote], now: u64) -> String {
+    let base = format!("note-{now}");
+    if !notes.iter().any(|note| note.id == base) {
+        return base;
+    }
+
+    let mut suffix = 1;
+    loop {
+        let candidate = format!("{base}-{suffix}");
+        if !notes.iter().any(|note| note.id == candidate) {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
 fn sticky_window_label(id: &str) -> String {
     format!("sticky-{id}")
 }
@@ -435,4 +516,33 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unique_note_id_adds_suffix_when_timestamp_collides() {
+        let notes = vec![
+            test_note("note-1000"),
+            test_note("note-1000-1"),
+            test_note("note-999"),
+        ];
+
+        assert_eq!(unique_note_id(&notes, 1000), "note-1000-2");
+    }
+
+    fn test_note(id: &str) -> StickyNote {
+        StickyNote {
+            id: id.to_string(),
+            title: "test".to_string(),
+            content: default_content(),
+            color: "lemon".to_string(),
+            pinned: false,
+            window: StickyNoteWindowState::default(),
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
 }

@@ -42,6 +42,13 @@ type NoteContextMenuState = {
   y: number;
 } | null;
 
+type NoteListRow = {
+  note: StickyNote;
+  title: string;
+  preview: string;
+  searchText: string;
+};
+
 const NOTE_CONTEXT_MENU_MARGIN = 8;
 const NOTE_CONTEXT_MENU_WIDTH = 132;
 const NOTE_CONTEXT_MENU_HEIGHT = 42;
@@ -67,6 +74,26 @@ export function NotesView() {
     setFocusedNoteId(id);
   }
 
+  function createAndSelectNote() {
+    setContextMenu(null);
+    void createNote()
+      .then((note) => selectNote(note.id))
+      .catch((error) => {
+        console.error("[enja] sticky note create failed", error);
+      });
+  }
+
+  function deleteNote(id: string) {
+    setContextMenu(null);
+    const nextSelectedId =
+      selectedId === id
+        ? notes.find((note) => note.id !== id)?.id ?? null
+        : selectedId;
+    setSelectedId(nextSelectedId);
+    setFocusedNoteId(nextSelectedId);
+    void removeNote(id);
+  }
+
   useEffect(() => {
     if (!loaded) return;
     if (notes.length === 0) {
@@ -84,16 +111,26 @@ export function NotesView() {
     setFocusedNoteId(selectedId);
   }, [focusedNoteId, notes, selectedId]);
 
-  const filteredNotes = useMemo(() => {
+  const noteRows = useMemo<NoteListRow[]>(
+    () =>
+      notes.map((note) => {
+        const title = deriveNoteTitle(note.content);
+        const plainText = extractPlainText(note.content);
+        return {
+          note,
+          title,
+          preview: plainText || "本文なし",
+          searchText: `${note.title} ${title} ${plainText}`.toLowerCase(),
+        };
+      }),
+    [notes],
+  );
+
+  const filteredRows = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    if (!normalized) return notes;
-    return notes.filter((note) => {
-      const haystack = `${deriveNoteTitle(note.content)} ${extractPlainText(
-        note.content,
-      )}`.toLowerCase();
-      return haystack.includes(normalized);
-    });
-  }, [notes, query]);
+    if (!normalized) return noteRows;
+    return noteRows.filter((row) => row.searchText.includes(normalized));
+  }, [noteRows, query]);
 
   const selectedNote = notes.find((note) => note.id === selectedId) ?? null;
   const contextMenuNote = contextMenu
@@ -147,14 +184,15 @@ export function NotesView() {
       const key = event.key.toLowerCase();
       if (key === "n") {
         event.preventDefault();
-        setContextMenu(null);
-        void createNote().then((note) => selectNote(note.id));
+        createAndSelectNote();
         return;
       }
 
       if (event.key !== "Backspace" && event.key !== "Delete") {
         return;
       }
+
+      if (isEditableShortcutTarget(event.target)) return;
 
       const targetId =
         focusedNoteId && notes.some((note) => note.id === focusedNoteId)
@@ -163,15 +201,7 @@ export function NotesView() {
       if (!targetId) return;
 
       event.preventDefault();
-      setContextMenu(null);
-
-      const nextSelectedId =
-        selectedId === targetId
-          ? notes.find((note) => note.id !== targetId)?.id ?? null
-          : selectedId;
-      setSelectedId(nextSelectedId);
-      setFocusedNoteId(nextSelectedId);
-      void removeNote(targetId);
+      deleteNote(targetId);
     }
 
     window.addEventListener("keydown", handleKeyDown, true);
@@ -205,9 +235,7 @@ export function NotesView() {
               type="button"
               title="新規メモ"
               aria-label="新規メモ"
-              onClick={() => {
-                void createNote().then((note) => selectNote(note.id));
-              }}
+              onClick={createAndSelectNote}
               className="grid size-8 place-items-center rounded-md bg-neutral-900 text-white shadow-sm transition-colors hover:bg-neutral-700"
             >
               <Plus size={16} />
@@ -225,10 +253,12 @@ export function NotesView() {
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
-          {filteredNotes.map((note) => (
+          {filteredRows.map(({ note, title, preview }) => (
             <NoteListItem
               key={note.id}
               note={note}
+              title={title}
+              preview={preview}
               selected={note.id === selectedId}
               onSelect={() => selectNote(note.id)}
               onFocus={() => setFocusedNoteId(note.id)}
@@ -238,7 +268,7 @@ export function NotesView() {
               onOpenContextMenu={(event) => openNoteContextMenu(note, event)}
             />
           ))}
-          {filteredNotes.length === 0 ? (
+          {filteredRows.length === 0 ? (
             <p className="px-3 py-8 text-center text-xs text-neutral-400">
               メモがありません
             </p>
@@ -276,7 +306,7 @@ export function NotesView() {
             <NoteEditorPanel
               note={selectedNote}
               onPatch={(patch) => patchNote(selectedNote.id, patch)}
-              onDelete={() => void removeNote(selectedNote.id)}
+              onDelete={() => deleteNote(selectedNote.id)}
               onShowPinned={() => void showPinned(selectedNote.id)}
               onHidePinned={() => void hidePinned(selectedNote.id)}
             />
@@ -301,7 +331,7 @@ export function NotesView() {
             role="menuitem"
             onClick={() => {
               setContextMenu(null);
-              void removeNote(contextMenuNote.id);
+              deleteNote(contextMenuNote.id);
             }}
             className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-red-600 transition-colors hover:bg-red-50"
           >
@@ -433,6 +463,8 @@ function NoteEditorPanel({
 
 function NoteListItem({
   note,
+  title,
+  preview,
   selected,
   onSelect,
   onFocus,
@@ -440,14 +472,14 @@ function NoteListItem({
   onOpenContextMenu,
 }: {
   note: StickyNote;
+  title: string;
+  preview: string;
   selected: boolean;
   onSelect: () => void;
   onFocus: () => void;
   onTogglePinned: () => void;
   onOpenContextMenu: (event: ReactMouseEvent<HTMLDivElement>) => void;
 }) {
-  const preview = extractPlainText(note.content) || "本文なし";
-  const title = deriveNoteTitle(note.content);
   return (
     <div
       role="button"
@@ -511,16 +543,25 @@ function useStickyNotes({ createWhenEmpty }: { createWhenEmpty: boolean }) {
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const loadedNotes = await getStickyNotes();
-      if (cancelled) return;
-      if (loadedNotes.length === 0 && createWhenEmpty && !creatingRef.current) {
-        creatingRef.current = true;
-        const note = await createStickyNote();
-        if (!cancelled) setNotes([note]);
-      } else {
-        setNotes(loadedNotes);
+      try {
+        const loadedNotes = await getStickyNotes();
+        if (cancelled) return;
+        if (loadedNotes.length === 0 && createWhenEmpty && !creatingRef.current) {
+          creatingRef.current = true;
+          try {
+            const note = await createStickyNote();
+            if (!cancelled) setNotes([note]);
+          } finally {
+            creatingRef.current = false;
+          }
+        } else {
+          setNotes(loadedNotes);
+        }
+      } catch (error) {
+        console.error("[enja] sticky notes load failed", error);
+      } finally {
+        if (!cancelled) setLoaded(true);
       }
-      if (!cancelled) setLoaded(true);
     }
     void load();
     return () => {
@@ -560,6 +601,8 @@ function useStickyNotes({ createWhenEmpty }: { createWhenEmpty: boolean }) {
         title: note.title,
         content: note.content,
         color: note.color,
+      }).catch((error) => {
+        console.error("[enja] sticky note save failed", error);
       });
     }, 450);
     saveTimersRef.current.set(note.id, timer);
@@ -614,17 +657,27 @@ function useStickyNotes({ createWhenEmpty }: { createWhenEmpty: boolean }) {
     try {
       await deleteStickyNote(id);
       setNotes((current) => current.filter((note) => note.id !== id));
+    } catch (error) {
+      console.error("[enja] sticky note delete failed", error);
     } finally {
       deletingIdsRef.current.delete(id);
     }
   }
 
   async function showPinned(id: string) {
-    await showStickyNoteWindow(id);
+    try {
+      await showStickyNoteWindow(id);
+    } catch (error) {
+      console.error("[enja] sticky note show failed", error);
+    }
   }
 
   async function hidePinned(id: string) {
-    await hideStickyNoteWindow(id);
+    try {
+      await hideStickyNoteWindow(id);
+    } catch (error) {
+      console.error("[enja] sticky note hide failed", error);
+    }
   }
 
   return {
@@ -669,4 +722,20 @@ function clampContextMenuPosition(x: number, y: number) {
     x: Math.min(Math.max(x, NOTE_CONTEXT_MENU_MARGIN), maxX),
     y: Math.min(Math.max(y, NOTE_CONTEXT_MENU_MARGIN), maxY),
   };
+}
+
+function isEditableShortcutTarget(target: EventTarget | null) {
+  if (!(target instanceof Element)) return false;
+  const editable = target.closest(
+    "input, textarea, select, [contenteditable='true'], .ProseMirror",
+  );
+  if (!editable) return false;
+  if (
+    editable instanceof HTMLInputElement ||
+    editable instanceof HTMLTextAreaElement ||
+    editable instanceof HTMLSelectElement
+  ) {
+    return !editable.disabled;
+  }
+  return true;
 }
