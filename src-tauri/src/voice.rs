@@ -199,6 +199,7 @@ enum VoiceWindowLayout {
     Compact,
     Expanded,
     Notice,
+    CheatSheet,
 }
 
 impl VoiceWindowLayout {
@@ -207,6 +208,7 @@ impl VoiceWindowLayout {
             Self::Compact => (292.0, 42.0),
             Self::Expanded => (840.0, 420.0),
             Self::Notice => (460.0, 64.0),
+            Self::CheatSheet => (480.0, 162.0),
         }
     }
 
@@ -214,12 +216,13 @@ impl VoiceWindowLayout {
         match self {
             Self::Expanded => 260.0,
             Self::Notice => 58.0,
+            Self::CheatSheet => 148.0,
             Self::Compact => 40.0,
         }
     }
 
     fn focusable(self) -> bool {
-        self != Self::Compact
+        matches!(self, Self::Expanded | Self::Notice)
     }
 }
 
@@ -3746,6 +3749,16 @@ pub fn hide_voice_notice_after_undo(app: &tauri::AppHandle) {
     });
 }
 
+pub fn show_shortcut_cheat_sheet(app: &tauri::AppHandle) {
+    show_voice_window_with_layout(app, VoiceWindowLayout::CheatSheet);
+    emit_state(app, "cheatSheet", None, None, None);
+}
+
+pub fn hide_shortcut_cheat_sheet(app: &tauri::AppHandle) {
+    emit_state(app, "idle", None, None, None);
+    hide_voice_window(app);
+}
+
 fn next_voice_state_seq() -> u64 {
     VOICE_STATE_SEQ.fetch_add(1, Ordering::SeqCst)
 }
@@ -4231,6 +4244,19 @@ struct AxFocusedText {
 }
 
 #[cfg(target_os = "macos")]
+struct VerifiedPaste {
+    target: AxFocusedText,
+    after_paste: AxTextSnapshot,
+    insertion: VerifiedPasteInsertion,
+}
+
+#[cfg(target_os = "macos")]
+enum VerifiedPasteInsertion {
+    Changed(TextRange),
+    SameTextReplacement,
+}
+
+#[cfg(target_os = "macos")]
 impl AxFocusedText {
     fn capture() -> Option<Self> {
         let focused = AxFocusedElement::capture()?;
@@ -4239,6 +4265,14 @@ impl AxFocusedText {
             element: focused.element,
             snapshot,
         })
+    }
+
+    fn capture_for_paste_target(target: &PasteTargetInfo) -> Option<Self> {
+        let focused = Self::capture()?;
+        if target.pid.is_some_and(|pid| focused.snapshot.pid != pid) {
+            return None;
+        }
+        Some(focused)
     }
 }
 
@@ -4356,19 +4390,19 @@ fn paste_text_with_dictionary_learning(
     text: &str,
     preferred_target: Option<&PasteTargetInfo>,
 ) -> bool {
-    if !should_attempt_paste(preferred_target) {
+    let Some(paste) = perform_verified_clipboard_paste(text, preferred_target) else {
         return false;
-    }
+    };
 
-    let learning_target = AxFocusedText::capture();
-    let ok = perform_clipboard_paste(text);
-
-    if ok {
-        if let Some(target) = learning_target {
-            start_dictionary_learning_watch(app.clone(), target);
-        }
+    if let VerifiedPasteInsertion::Changed(inserted_range) = paste.insertion {
+        start_dictionary_learning_watch(
+            app.clone(),
+            paste.target,
+            paste.after_paste,
+            inserted_range,
+        );
     }
-    ok
+    true
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -4381,17 +4415,12 @@ fn paste_text_with_dictionary_learning(
 }
 
 #[cfg(target_os = "macos")]
-fn start_dictionary_learning_watch(app: tauri::AppHandle, target: AxFocusedText) {
-    let Some(after_paste) = target.element.read_text_snapshot() else {
-        return;
-    };
-    if after_paste.pid != target.snapshot.pid {
-        return;
-    }
-    let Some(inserted_range) = inserted_range_from_snapshots(&target.snapshot, &after_paste) else {
-        return;
-    };
-
+fn start_dictionary_learning_watch(
+    app: tauri::AppHandle,
+    target: AxFocusedText,
+    after_paste: AxTextSnapshot,
+    inserted_range: TextRange,
+) {
     std::thread::spawn(move || {
         let baseline = after_paste;
         let mut quiescence = DictionaryLearningQuiescence::new(&baseline.value);
@@ -4630,12 +4659,90 @@ fn utf16_len_chars(chars: &[char]) -> usize {
     chars.iter().map(|ch| ch.len_utf16()).sum()
 }
 
+fn utf16_range_text(value: &str, range: TextRange) -> Option<String> {
+    let start = utf16_offset_to_byte_index(value, range.location)?;
+    let end = utf16_offset_to_byte_index(value, range.end())?;
+    if start > end {
+        return None;
+    }
+    Some(value[start..end].to_string())
+}
+
+fn utf16_offset_to_byte_index(value: &str, offset: usize) -> Option<usize> {
+    let mut utf16_offset = 0usize;
+    for (byte_index, ch) in value.char_indices() {
+        if utf16_offset == offset {
+            return Some(byte_index);
+        }
+        utf16_offset = utf16_offset.saturating_add(ch.len_utf16());
+        if utf16_offset > offset {
+            return None;
+        }
+    }
+    if utf16_offset == offset {
+        Some(value.len())
+    } else {
+        None
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn paste_text(text: &str, preferred_target: Option<&PasteTargetInfo>) -> bool {
-    if !should_attempt_paste(preferred_target) {
+    perform_verified_clipboard_paste(text, preferred_target).is_some()
+}
+
+#[cfg(target_os = "macos")]
+fn perform_verified_clipboard_paste(
+    text: &str,
+    preferred_target: Option<&PasteTargetInfo>,
+) -> Option<VerifiedPaste> {
+    let target = resolve_paste_target_info(preferred_target)?;
+    // If macOS cannot expose the target text, fall back to manual copy instead
+    // of treating a posted Cmd+V event as a successful insertion.
+    let focused = AxFocusedText::capture_for_paste_target(&target)?;
+    if !perform_clipboard_paste(text) {
+        return None;
+    }
+    let after_paste = focused.element.read_text_snapshot()?;
+    let insertion = verify_paste_insertion(&focused.snapshot, &after_paste, text)?;
+    Some(VerifiedPaste {
+        target: focused,
+        after_paste,
+        insertion,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn verify_paste_insertion(
+    before: &AxTextSnapshot,
+    after: &AxTextSnapshot,
+    text: &str,
+) -> Option<VerifiedPasteInsertion> {
+    if after.pid != before.pid {
+        return None;
+    }
+    if let Some(range) = inserted_range_from_snapshots(before, after) {
+        return Some(VerifiedPasteInsertion::Changed(range));
+    }
+    if unchanged_selection_replacement_matches_text(before, after, text) {
+        return Some(VerifiedPasteInsertion::SameTextReplacement);
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn unchanged_selection_replacement_matches_text(
+    before: &AxTextSnapshot,
+    after: &AxTextSnapshot,
+    text: &str,
+) -> bool {
+    if text.is_empty() || before.value != after.value || before.selected_range.length == 0 {
         return false;
     }
-    perform_clipboard_paste(text)
+    if before.selected_range == after.selected_range {
+        return false;
+    }
+    utf16_range_text(&before.value, before.selected_range).is_some_and(|selected| selected == text)
 }
 
 #[cfg(target_os = "macos")]
@@ -4740,11 +4847,6 @@ fn post_command_key(keycode: u16) -> bool {
         CFRelease(source.cast_const());
         true
     }
-}
-
-#[cfg(target_os = "macos")]
-fn should_attempt_paste(preferred_target: Option<&PasteTargetInfo>) -> bool {
-    resolve_paste_target_info(preferred_target).is_some()
 }
 
 #[cfg(target_os = "macos")]
@@ -5364,6 +5466,68 @@ mod tests {
     }
 
     #[test]
+    fn utf16_range_text_reads_ranges_with_surrogates() {
+        let value = "絵文字🙂タイプレス";
+        let range = TextRange {
+            location: "絵文字🙂".encode_utf16().count(),
+            length: "タイプレス".encode_utf16().count(),
+        };
+
+        assert_eq!(
+            utf16_range_text(value, range).as_deref(),
+            Some("タイプレス")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn verified_paste_accepts_changed_value() {
+        let before = ax_text_snapshot("hello ", 6, 0);
+        let after = ax_text_snapshot("hello world", 11, 0);
+
+        let Some(VerifiedPasteInsertion::Changed(range)) =
+            verify_paste_insertion(&before, &after, "world")
+        else {
+            panic!("expected changed insertion");
+        };
+
+        assert_eq!(range.location, 6);
+        assert_eq!(range.length, "world".encode_utf16().count());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn verified_paste_accepts_identical_selected_text_replacement() {
+        let selected = "タイプレス";
+        let before = ax_text_snapshot(selected, 0, selected.encode_utf16().count());
+        let after = ax_text_snapshot(selected, selected.encode_utf16().count(), 0);
+
+        assert!(matches!(
+            verify_paste_insertion(&before, &after, selected),
+            Some(VerifiedPasteInsertion::SameTextReplacement)
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn verified_paste_rejects_unchanged_cursor_value() {
+        let before = ax_text_snapshot("hello", 5, 0);
+        let after = ax_text_snapshot("hello", 5, 0);
+
+        assert!(verify_paste_insertion(&before, &after, "world").is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn verified_paste_rejects_same_text_when_selection_did_not_move() {
+        let selected = "タイプレス";
+        let before = ax_text_snapshot(selected, 0, selected.encode_utf16().count());
+        let after = ax_text_snapshot(selected, 0, selected.encode_utf16().count());
+
+        assert!(verify_paste_insertion(&before, &after, selected).is_none());
+    }
+
+    #[test]
     fn dictionary_learning_quiescence_waits_while_value_changes() {
         let mut state = DictionaryLearningQuiescence::new("タイプレス");
 
@@ -5631,6 +5795,22 @@ mod tests {
             correction,
             ("タイプレス".to_string(), "Typeless".to_string())
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    fn ax_text_snapshot(
+        value: &str,
+        selection_location: usize,
+        selection_length: usize,
+    ) -> AxTextSnapshot {
+        AxTextSnapshot {
+            pid: 4242,
+            value: value.to_string(),
+            selected_range: TextRange {
+                location: selection_location,
+                length: selection_length,
+            },
+        }
     }
 
     fn paste_target(role: &str, subrole: &str, attributes: &[&str]) -> PasteTargetInfo {

@@ -359,6 +359,12 @@ fn handle_keyboard_trigger(app: tauri::AppHandle, trigger: KeyboardTrigger) {
         KeyboardTrigger::PolishSelection => {
             start_shortcut_action(app, ShortcutStartAction::PolishSelection);
         }
+        KeyboardTrigger::ShortcutCheatSheetShow => {
+            voice::show_shortcut_cheat_sheet(&app);
+        }
+        KeyboardTrigger::ShortcutCheatSheetHide => {
+            voice::hide_shortcut_cheat_sheet(&app);
+        }
         KeyboardTrigger::VoiceModeCycle => {
             if let Some(manager) = app.try_state::<VoiceManager>() {
                 if let Err(err) = manager.cycle_mode_profile(app.clone()) {

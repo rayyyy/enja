@@ -18,7 +18,9 @@ type DictionaryNotice = VoiceDictionaryLearningEvent & {
 };
 
 export function VoiceOverlay() {
+  const voiceDictationShortcut = useAppStore((s) => s.voiceDictationShortcut);
   const voiceAskShortcut = useAppStore((s) => s.voiceAskShortcut);
+  const polishSelectionShortcut = useAppStore((s) => s.polishSelectionShortcut);
   const [state, setState] = useState<VoiceStateEvent>({
     state: "preparing",
     mode: "dictation",
@@ -67,7 +69,8 @@ export function VoiceOverlay() {
         next.state === "preparing" ||
         next.state === "recording" ||
         next.state === "stopping" ||
-        next.state === "processing"
+        next.state === "processing" ||
+        next.state === "cheatSheet"
       ) {
         setResult(null);
       }
@@ -135,6 +138,7 @@ export function VoiceOverlay() {
     state.state === "recording" ||
     state.state === "stopping" ||
     state.state === "processing";
+  const isCheatSheet = state.state === "cheatSheet";
 
   const bars = Array.from({ length: BARS }, (_, i) => {
     const wave =
@@ -243,6 +247,84 @@ export function VoiceOverlay() {
               Undo
             </button>
           ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  if (isCheatSheet) {
+    const items = [
+      {
+        badge: "Fn",
+        title: "音声入力",
+        shortcut: "D",
+        detail: `通常: ${voiceDictationShortcut.label}`,
+        active: true,
+      },
+      {
+        badge: "Ask",
+        title: "音声指示",
+        shortcut: "Space",
+        detail: `通常: ${voiceAskShortcut.label}`,
+        active: true,
+      },
+      {
+        badge: "文",
+        title: "選択文を推敲",
+        shortcut: "P",
+        detail: `通常: ${polishSelectionShortcut.label}`,
+        active: true,
+      },
+      {
+        badge: "翻",
+        title: "翻訳",
+        shortcut: "C",
+        detail: "通常: Cmd C C",
+        active: true,
+      },
+    ];
+
+    return (
+      <div className="flex h-full w-full items-end justify-center bg-transparent p-0">
+        <div className="flex h-full w-full flex-col overflow-hidden rounded-md border border-white/10 bg-neutral-950/[0.97] text-white shadow-[0_10px_26px_rgba(0,0,0,0.32)] backdrop-blur-xl">
+          <header className="flex h-8 shrink-0 items-center justify-between gap-3 border-white/10 border-b px-3">
+            <div className="min-w-0">
+              <h1 className="truncate text-[12px] font-semibold text-white/92">
+                ショートカット
+              </h1>
+            </div>
+          </header>
+          <div className="grid min-h-0 flex-1 grid-cols-2 gap-1 overflow-hidden p-2">
+            {items.map((item) => (
+              <div
+                key={item.title}
+                className={`grid h-[42px] min-w-0 grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-1.5 rounded border px-2 ${
+                  item.active
+                    ? "border-sky-300/30 bg-sky-300/10"
+                    : "border-white/10 bg-white/[0.045]"
+                }`}
+              >
+                <span
+                  className={`flex size-6 shrink-0 items-center justify-center rounded text-[10px] font-bold ${
+                    item.active
+                      ? "bg-sky-200 text-neutral-950"
+                      : "bg-white/10 text-white/78"
+                  }`}
+                >
+                  {item.badge}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[11px] font-semibold text-white">
+                    {item.title}
+                  </p>
+                  <p className="truncate text-[9px] text-white/42">{item.detail}</p>
+                </div>
+                <kbd className="max-w-[4.75rem] shrink-0 truncate rounded bg-white/10 px-1.5 py-0.5 text-[9px] font-semibold text-white/82">
+                  {item.shortcut}
+                </kbd>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     );

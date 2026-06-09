@@ -24,6 +24,8 @@ pub enum KeyboardTrigger {
     /// The configured shortcut for polishing the currently selected text
     /// without starting a recording session.
     PolishSelection,
+    ShortcutCheatSheetShow,
+    ShortcutCheatSheetHide,
     /// Control was tapped by itself. Voice mode cycling decides whether it is
     /// currently meaningful.
     VoiceModeCycle,
@@ -72,6 +74,7 @@ mod macos {
     /// real-world chord typing robust against the user releasing Fn a few
     /// milliseconds before pressing Space.
     const FN_SPACE_GRACE_MS: u64 = 80;
+    const FN_HOLD_CHEAT_SHEET_MS: u64 = 500;
 
     // --- FFI types -----------------------------------------------------------
 
@@ -112,6 +115,8 @@ mod macos {
     const EVENT_MASK: u64 = (1 << 10) | (1 << 11) | (1 << 12);
 
     const KEYCODE_C: i64 = 8;
+    const KEYCODE_D: i64 = 2;
+    const KEYCODE_P: i64 = 35;
     const KEYCODE_SPACE: i64 = 49;
     const KEYCODE_ESCAPE: i64 = 53;
     const KEYCODE_FUNCTION: i64 = 63;
@@ -182,6 +187,9 @@ mod macos {
         /// from "Fn tap" to "Fn+Space".
         fn_recent_release: bool,
         voice_overlay_visible: bool,
+        fn_hold_generation: u64,
+        fn_hold_cheat_sheet_visible: bool,
+        fn_hold_cheat_sheet_used: bool,
         /// Monotonically bumped whenever a pending FunctionTap must be
         /// invalidated (Fn re-press, Space chord in grace window, Escape,
         /// etc.). A scheduled tap only fires if its captured token still
@@ -272,11 +280,21 @@ mod macos {
                 if state.control_down {
                     state.control_chord_used = true;
                 }
+                if let Some(trigger) = cheat_sheet_trigger_for_key(state, keycode) {
+                    hide_fn_hold_cheat_sheet(state);
+                    let _ = state.tx.send(trigger);
+                    return std::ptr::null_mut();
+                }
+                if keycode == KEYCODE_ESCAPE && state.fn_hold_cheat_sheet_visible {
+                    hide_fn_hold_cheat_sheet(state);
+                    return std::ptr::null_mut();
+                }
                 if keycode == KEYCODE_ESCAPE {
                     // Any pending FunctionTap should be dropped — the user is
                     // explicitly cancelling.
                     let should_swallow = state.voice_overlay_visible;
                     invalidate_pending_fn_tap(state);
+                    invalidate_pending_fn_hold_cheat_sheet(state);
                     reset_fn_tap_sequence(state);
                     let _ = state.tx.send(KeyboardTrigger::Escape);
                     if should_swallow {
@@ -287,9 +305,13 @@ mod macos {
                 if keycode == KEYCODE_SPACE && (state.fn_down || state.fn_recent_release) {
                     // Treat as Fn+Space whether Fn is currently held *or* was
                     // released within the grace window.
+                    if state.fn_hold_cheat_sheet_visible {
+                        hide_fn_hold_cheat_sheet(state);
+                    }
                     if state.fn_recent_release {
                         invalidate_pending_fn_tap(state);
                     }
+                    invalidate_pending_fn_hold_cheat_sheet(state);
                     reset_fn_tap_sequence(state);
                     state.fn_chord_used = true;
                     let shortcut = ShortcutBinding::fn_space();
@@ -303,7 +325,11 @@ mod macos {
                     return std::ptr::null_mut();
                 }
                 if state.fn_down {
+                    if state.fn_hold_cheat_sheet_visible {
+                        hide_fn_hold_cheat_sheet(state);
+                    }
                     state.fn_chord_used = true;
+                    invalidate_pending_fn_hold_cheat_sheet(state);
                     reset_fn_tap_sequence(state);
                 }
                 if let Some(trigger) =
@@ -342,6 +368,18 @@ mod macos {
         }
 
         event
+    }
+
+    fn cheat_sheet_trigger_for_key(state: &ListenerState, keycode: i64) -> Option<KeyboardTrigger> {
+        if !state.fn_hold_cheat_sheet_visible {
+            return None;
+        }
+        match keycode {
+            KEYCODE_D => Some(KeyboardTrigger::VoiceDictationStart),
+            KEYCODE_P => Some(KeyboardTrigger::PolishSelection),
+            KEYCODE_C => Some(KeyboardTrigger::CmdCopyDouble),
+            _ => None,
+        }
     }
 
     fn is_function_keycode(keycode: i64) -> bool {
@@ -493,9 +531,20 @@ mod macos {
         state.fn_chord_used = false;
         state.fn_space_down = false;
         invalidate_pending_fn_tap(state);
+        state.fn_hold_cheat_sheet_used = false;
+        schedule_fn_hold_cheat_sheet(state);
     }
 
     fn handle_fn_released(state: &mut ListenerState) {
+        invalidate_pending_fn_hold_cheat_sheet(state);
+        if state.fn_hold_cheat_sheet_visible || state.fn_hold_cheat_sheet_used {
+            hide_fn_hold_cheat_sheet(state);
+            state.fn_hold_cheat_sheet_used = false;
+            state.fn_space_combo = false;
+            state.fn_chord_used = false;
+            return;
+        }
+
         if state.fn_space_combo || state.fn_chord_used {
             // The Fn hold already included another key, so a bare Fn tap should
             // not fire on release.
@@ -527,6 +576,50 @@ mod macos {
                 let _ = tx.send(trigger);
             }
         });
+    }
+
+    fn schedule_fn_hold_cheat_sheet(state: &mut ListenerState) {
+        if state.voice_overlay_visible {
+            return;
+        }
+        state.fn_hold_generation = state.fn_hold_generation.wrapping_add(1);
+        let token = state.fn_hold_generation;
+        let tx = state.tx.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(FN_HOLD_CHEAT_SHEET_MS));
+            let mut should_show = false;
+            if let Ok(mut guard) = LISTENER_STATE.lock() {
+                if let Some(state) = guard.as_mut() {
+                    should_show = state.fn_hold_generation == token
+                        && state.fn_down
+                        && !state.fn_chord_used
+                        && !state.fn_space_combo
+                        && !state.voice_overlay_visible
+                        && state.capture_action.is_none();
+                    if should_show {
+                        state.fn_hold_cheat_sheet_visible = true;
+                        state.fn_hold_cheat_sheet_used = true;
+                        state.voice_overlay_visible = true;
+                    }
+                }
+            }
+            if should_show {
+                let _ = tx.send(KeyboardTrigger::ShortcutCheatSheetShow);
+            }
+        });
+    }
+
+    fn invalidate_pending_fn_hold_cheat_sheet(state: &mut ListenerState) {
+        state.fn_hold_generation = state.fn_hold_generation.wrapping_add(1);
+    }
+
+    fn hide_fn_hold_cheat_sheet(state: &mut ListenerState) {
+        invalidate_pending_fn_hold_cheat_sheet(state);
+        if state.fn_hold_cheat_sheet_visible {
+            state.fn_hold_cheat_sheet_visible = false;
+            state.voice_overlay_visible = false;
+            let _ = state.tx.send(KeyboardTrigger::ShortcutCheatSheetHide);
+        }
     }
 
     fn invalidate_pending_fn_tap(state: &mut ListenerState) {
@@ -670,6 +763,7 @@ mod macos {
         state.fn_space_combo = false;
         state.fn_chord_used = state.fn_down;
         invalidate_pending_fn_tap(state);
+        invalidate_pending_fn_hold_cheat_sheet(state);
         reset_fn_tap_sequence(state);
         reset_function_sources(state);
         let _ = state
@@ -687,6 +781,7 @@ mod macos {
         state.fn_space_combo = false;
         state.fn_chord_used = state.fn_down;
         invalidate_pending_fn_tap(state);
+        invalidate_pending_fn_hold_cheat_sheet(state);
         reset_fn_tap_sequence(state);
         reset_function_sources(state);
         let _ = state
@@ -880,6 +975,9 @@ mod macos {
                 fn_space_down: false,
                 fn_recent_release: false,
                 voice_overlay_visible: false,
+                fn_hold_generation: 0,
+                fn_hold_cheat_sheet_visible: false,
+                fn_hold_cheat_sheet_used: false,
                 fn_release_generation: 0,
                 fn_recent_release_at: None,
                 last_fn_tap: None,
@@ -1151,6 +1249,43 @@ mod macos {
         }
 
         #[test]
+        fn cheat_sheet_layer_keys_resolve_to_actions() {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut state = state_with_tx(tx);
+            state.fn_hold_cheat_sheet_visible = true;
+
+            assert!(matches!(
+                cheat_sheet_trigger_for_key(&state, KEYCODE_D),
+                Some(KeyboardTrigger::VoiceDictationStart)
+            ));
+            assert!(matches!(
+                cheat_sheet_trigger_for_key(&state, KEYCODE_P),
+                Some(KeyboardTrigger::PolishSelection)
+            ));
+            assert!(matches!(
+                cheat_sheet_trigger_for_key(&state, KEYCODE_C),
+                Some(KeyboardTrigger::CmdCopyDouble)
+            ));
+        }
+
+        #[test]
+        fn fn_release_after_cheat_sheet_does_not_emit_function_tap() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut state = state_with_tx(tx);
+            state.fn_down = true;
+            state.fn_hold_cheat_sheet_visible = true;
+            state.fn_hold_cheat_sheet_used = true;
+
+            handle_fn_released(&mut state);
+
+            assert!(matches!(
+                rx.recv_timeout(Duration::from_millis(20)).expect("trigger"),
+                KeyboardTrigger::ShortcutCheatSheetHide
+            ));
+            assert!(rx.recv_timeout(Duration::from_millis(20)).is_err());
+        }
+
+        #[test]
         fn shortcut_capture_emits_fn_double_tap() {
             let (tx, rx) = std::sync::mpsc::channel();
             let mut state = state_with_tx(tx);
@@ -1273,6 +1408,9 @@ mod macos {
                     fn_space_down: false,
                     fn_recent_release: false,
                     voice_overlay_visible: false,
+                    fn_hold_generation: 0,
+                    fn_hold_cheat_sheet_visible: false,
+                    fn_hold_cheat_sheet_used: false,
                     fn_release_generation: 0,
                     fn_recent_release_at: None,
                     last_fn_tap: None,
@@ -1305,6 +1443,8 @@ mod macos {
                 state.runtime = runtime;
                 invalidate_pending_fn_tap(state);
                 invalidate_pending_capture_fn_tap(state);
+                invalidate_pending_fn_hold_cheat_sheet(state);
+                hide_fn_hold_cheat_sheet(state);
                 reset_fn_tap_sequence(state);
                 reset_function_sources(state);
             }
@@ -1323,6 +1463,8 @@ mod macos {
         state.fn_chord_used = false;
         invalidate_pending_fn_tap(state);
         invalidate_pending_capture_fn_tap(state);
+        invalidate_pending_fn_hold_cheat_sheet(state);
+        hide_fn_hold_cheat_sheet(state);
         reset_fn_tap_sequence(state);
         reset_function_sources(state);
         Ok(())
@@ -1335,6 +1477,8 @@ mod macos {
             state.capture_fn_down = false;
             invalidate_pending_fn_tap(state);
             invalidate_pending_capture_fn_tap(state);
+            invalidate_pending_fn_hold_cheat_sheet(state);
+            hide_fn_hold_cheat_sheet(state);
             reset_fn_tap_sequence(state);
             reset_function_sources(state);
         }

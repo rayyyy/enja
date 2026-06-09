@@ -225,7 +225,8 @@ export type VoiceStateEvent = {
     | "processing"
     | "inserted"
     | "fallback"
-    | "error";
+    | "error"
+    | "cheatSheet";
   mode: VoiceMode | null;
   modeProfileId: string | null;
   modeProfileName: string | null;
