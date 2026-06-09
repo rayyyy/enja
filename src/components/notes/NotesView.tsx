@@ -66,6 +66,7 @@ export function NotesView() {
   } = useStickyNotes({ createWhenEmpty: true });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [focusedNoteId, setFocusedNoteId] = useState<string | null>(null);
+  const [editorFocusNoteId, setEditorFocusNoteId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [contextMenu, setContextMenu] = useState<NoteContextMenuState>(null);
 
@@ -77,7 +78,10 @@ export function NotesView() {
   function createAndSelectNote() {
     setContextMenu(null);
     void createNote()
-      .then((note) => selectNote(note.id))
+      .then((note) => {
+        setEditorFocusNoteId(note.id);
+        selectNote(note.id);
+      })
       .catch((error) => {
         console.error("[enja] sticky note create failed", error);
       });
@@ -305,10 +309,12 @@ export function NotesView() {
           >
             <NoteEditorPanel
               note={selectedNote}
+              autoFocusEditor={editorFocusNoteId === selectedNote.id}
               onPatch={(patch) => patchNote(selectedNote.id, patch)}
               onDelete={() => deleteNote(selectedNote.id)}
               onShowPinned={() => void showPinned(selectedNote.id)}
               onHidePinned={() => void hidePinned(selectedNote.id)}
+              onEditorAutoFocused={() => setEditorFocusNoteId(null)}
             />
           </div>
         ) : (
@@ -385,14 +391,18 @@ function NoteEditorPanel({
   onDelete,
   onShowPinned,
   onHidePinned,
+  onEditorAutoFocused,
   showToolbar = true,
+  autoFocusEditor = false,
 }: {
   note: StickyNote;
   onPatch: (patch: Partial<Pick<StickyNote, "content" | "color">>) => void;
   onDelete: () => void;
   onShowPinned: () => void;
   onHidePinned: () => void;
+  onEditorAutoFocused?: () => void;
   showToolbar?: boolean;
+  autoFocusEditor?: boolean;
 }) {
   const content = normalizeRichTextNode(note.content);
 
@@ -456,7 +466,9 @@ function NoteEditorPanel({
         key={note.id}
         noteId={note.id}
         content={content}
+        autoFocus={autoFocusEditor}
         onChange={(next) => onPatch({ content: next as Record<string, unknown> })}
+        onAutoFocusComplete={onEditorAutoFocused}
       />
     </div>
   );

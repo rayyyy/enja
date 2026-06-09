@@ -19,7 +19,9 @@ import {
 type RichNoteEditorProps = {
   noteId: string;
   content: RichTextNode;
+  autoFocus?: boolean;
   onChange: (content: RichTextNode) => void;
+  onAutoFocusComplete?: () => void;
 };
 
 const MAX_IMAGE_FILE_BYTES = 20 * 1024 * 1024;
@@ -27,15 +29,19 @@ const MAX_IMAGE_FILE_BYTES = 20 * 1024 * 1024;
 export function RichNoteEditor({
   noteId,
   content,
+  autoFocus = false,
   onChange,
+  onAutoFocusComplete,
 }: RichNoteEditorProps) {
   const editorRef = useRef<Editor | null>(null);
   const currentNoteIdRef = useRef(noteId);
   const lastNoteIdRef = useRef(noteId);
   const onChangeRef = useRef(onChange);
+  const onAutoFocusCompleteRef = useRef(onAutoFocusComplete);
   const lastContentRef = useRef<string | null>(null);
   currentNoteIdRef.current = noteId;
   onChangeRef.current = onChange;
+  onAutoFocusCompleteRef.current = onAutoFocusComplete;
   if (lastContentRef.current === null) {
     lastContentRef.current = JSON.stringify(normalizeRichTextNode(content));
   }
@@ -195,6 +201,16 @@ export function RichNoteEditor({
     lastContentRef.current = serialized;
     editor.commands.setContent(normalized as never, { emitUpdate: false });
   }, [content, editor, noteId]);
+
+  useEffect(() => {
+    if (!editor || !autoFocus) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      editor.chain().focus("end").run();
+      onAutoFocusCompleteRef.current?.();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [autoFocus, editor]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
