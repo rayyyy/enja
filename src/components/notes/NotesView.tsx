@@ -58,19 +58,31 @@ export function NotesView() {
     hidePinned,
   } = useStickyNotes({ createWhenEmpty: true });
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [focusedNoteId, setFocusedNoteId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [contextMenu, setContextMenu] = useState<NoteContextMenuState>(null);
+
+  function selectNote(id: string | null) {
+    setSelectedId(id);
+    setFocusedNoteId(id);
+  }
 
   useEffect(() => {
     if (!loaded) return;
     if (notes.length === 0) {
-      setSelectedId(null);
+      selectNote(null);
       return;
     }
     if (!selectedId || !notes.some((note) => note.id === selectedId)) {
-      setSelectedId(notes[0].id);
+      selectNote(notes[0].id);
     }
   }, [loaded, notes, selectedId]);
+
+  useEffect(() => {
+    if (!focusedNoteId) return;
+    if (notes.some((note) => note.id === focusedNoteId)) return;
+    setFocusedNoteId(selectedId);
+  }, [focusedNoteId, notes, selectedId]);
 
   const filteredNotes = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -125,12 +137,53 @@ export function NotesView() {
     };
   }, [contextMenu]);
 
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.repeat) return;
+      if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === "n") {
+        event.preventDefault();
+        setContextMenu(null);
+        void createNote().then((note) => selectNote(note.id));
+        return;
+      }
+
+      if (event.key !== "Backspace" && event.key !== "Delete") {
+        return;
+      }
+
+      const targetId =
+        focusedNoteId && notes.some((note) => note.id === focusedNoteId)
+          ? focusedNoteId
+          : selectedId;
+      if (!targetId) return;
+
+      event.preventDefault();
+      setContextMenu(null);
+
+      const nextSelectedId =
+        selectedId === targetId
+          ? notes.find((note) => note.id !== targetId)?.id ?? null
+          : selectedId;
+      setSelectedId(nextSelectedId);
+      setFocusedNoteId(nextSelectedId);
+      void removeNote(targetId);
+    }
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
+  }, [createNote, focusedNoteId, notes, removeNote, selectedId]);
+
   function openNoteContextMenu(
     note: StickyNote,
     event: ReactMouseEvent<HTMLDivElement>,
   ) {
     event.preventDefault();
-    setSelectedId(note.id);
+    selectNote(note.id);
     setContextMenu({
       noteId: note.id,
       ...clampContextMenuPosition(event.clientX, event.clientY),
@@ -153,7 +206,7 @@ export function NotesView() {
               title="新規メモ"
               aria-label="新規メモ"
               onClick={() => {
-                void createNote().then((note) => setSelectedId(note.id));
+                void createNote().then((note) => selectNote(note.id));
               }}
               className="grid size-8 place-items-center rounded-md bg-neutral-900 text-white shadow-sm transition-colors hover:bg-neutral-700"
             >
@@ -177,7 +230,8 @@ export function NotesView() {
               key={note.id}
               note={note}
               selected={note.id === selectedId}
-              onSelect={() => setSelectedId(note.id)}
+              onSelect={() => selectNote(note.id)}
+              onFocus={() => setFocusedNoteId(note.id)}
               onTogglePinned={() =>
                 note.pinned ? void hidePinned(note.id) : void showPinned(note.id)
               }
@@ -215,13 +269,18 @@ export function NotesView() {
 
       <main className="min-w-0 flex-1">
         {selectedNote ? (
-          <NoteEditorPanel
-            note={selectedNote}
-            onPatch={(patch) => patchNote(selectedNote.id, patch)}
-            onDelete={() => void removeNote(selectedNote.id)}
-            onShowPinned={() => void showPinned(selectedNote.id)}
-            onHidePinned={() => void hidePinned(selectedNote.id)}
-          />
+          <div
+            className="h-full min-h-0"
+            onFocusCapture={() => setFocusedNoteId(selectedNote.id)}
+          >
+            <NoteEditorPanel
+              note={selectedNote}
+              onPatch={(patch) => patchNote(selectedNote.id, patch)}
+              onDelete={() => void removeNote(selectedNote.id)}
+              onShowPinned={() => void showPinned(selectedNote.id)}
+              onHidePinned={() => void hidePinned(selectedNote.id)}
+            />
+          </div>
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-neutral-400">
             メモを選択
@@ -376,12 +435,14 @@ function NoteListItem({
   note,
   selected,
   onSelect,
+  onFocus,
   onTogglePinned,
   onOpenContextMenu,
 }: {
   note: StickyNote;
   selected: boolean;
   onSelect: () => void;
+  onFocus: () => void;
   onTogglePinned: () => void;
   onOpenContextMenu: (event: ReactMouseEvent<HTMLDivElement>) => void;
 }) {
@@ -392,6 +453,7 @@ function NoteListItem({
       role="button"
       tabIndex={0}
       onClick={onSelect}
+      onFocus={onFocus}
       onDoubleClick={(event) => {
         event.preventDefault();
         onTogglePinned();
@@ -403,7 +465,7 @@ function NoteListItem({
         onSelect();
       }}
       title={note.pinned ? "固定中" : "未固定"}
-      className={`mb-1 flex w-full cursor-pointer items-start gap-3 rounded-md border px-3 py-2 text-left transition-colors ${
+      className={`mb-1 flex w-full cursor-pointer items-start gap-3 rounded-md border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 ${
         selected
           ? "border-neutral-300 bg-white shadow-sm"
           : "border-transparent hover:bg-white/80"
