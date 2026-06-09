@@ -17,7 +17,7 @@ export type FinalizationModel =
   | "gemini35Flash"
   | "gemini31FlashLite";
 
-export type ShortcutAction = "voiceDictation" | "voiceAsk";
+export type ShortcutAction = "voiceDictation" | "voiceAsk" | "polishSelection";
 
 export type ShortcutModifiers = {
   command: boolean;
@@ -101,6 +101,7 @@ export type VoiceSettings = {
 export type ShortcutSettings = {
   voiceDictation: ShortcutBinding;
   voiceAsk: ShortcutBinding;
+  polishSelection: ShortcutBinding;
 };
 
 export type PromptSettings = {

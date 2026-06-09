@@ -66,6 +66,16 @@ export function ShortcutSettingsSection({
           onCancel={onCancel}
           onReset={() => onReset("voiceAsk", DEFAULT_SHORTCUTS.voiceAsk)}
         />
+        <ShortcutRow
+          label="選択テキストを推敲"
+          shortcut={shortcuts.polishSelection}
+          capturing={capturingAction === "polishSelection"}
+          onCapture={() => onCapture("polishSelection")}
+          onCancel={onCancel}
+          onReset={() =>
+            onReset("polishSelection", DEFAULT_SHORTCUTS.polishSelection)
+          }
+        />
       </SettingsFieldGroup>
 
       <label className="flex flex-col gap-1.5 text-sm sm:col-span-2 sm:max-w-xs">
@@ -919,6 +929,19 @@ const DEFAULT_SHORTCUTS: Record<ShortcutAction, ShortcutBinding> = {
       control: false,
       shift: false,
       function: true,
+    },
+  },
+  polishSelection: {
+    keyCode: 35,
+    key: "p",
+    label: "Ctrl Option P",
+    tapCount: 1,
+    modifiers: {
+      command: false,
+      option: true,
+      control: true,
+      shift: false,
+      function: false,
     },
   },
 };

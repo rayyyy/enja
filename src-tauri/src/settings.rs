@@ -67,6 +67,7 @@ impl FinalizationModel {
 pub enum ShortcutAction {
     VoiceDictation,
     VoiceAsk,
+    PolishSelection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -117,6 +118,19 @@ impl ShortcutBinding {
             "Space".to_string(),
             ShortcutModifiers {
                 function: true,
+                ..ShortcutModifiers::default()
+            },
+        )
+    }
+
+    pub fn ctrl_option_p() -> Self {
+        Self::from_parts(
+            Some(35),
+            "p".to_string(),
+            "P".to_string(),
+            ShortcutModifiers {
+                control: true,
+                option: true,
                 ..ShortcutModifiers::default()
             },
         )
@@ -709,6 +723,8 @@ fn soften_dictionary_prompt_rules(prompt: &str) -> String {
 pub struct ShortcutSettings {
     pub voice_dictation: ShortcutBinding,
     pub voice_ask: ShortcutBinding,
+    #[serde(default = "default_polish_selection_shortcut")]
+    pub polish_selection: ShortcutBinding,
 }
 
 impl Default for ShortcutSettings {
@@ -716,8 +732,13 @@ impl Default for ShortcutSettings {
         Self {
             voice_dictation: ShortcutBinding::fn_key(),
             voice_ask: ShortcutBinding::fn_space(),
+            polish_selection: default_polish_selection_shortcut(),
         }
     }
+}
+
+fn default_polish_selection_shortcut() -> ShortcutBinding {
+    ShortcutBinding::ctrl_option_p()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -768,19 +789,29 @@ impl AppSettings {
         self.app.double_tap_threshold_ms = self.app.double_tap_threshold_ms.clamp(100, 2000);
         self.shortcuts.voice_dictation.normalize();
         self.shortcuts.voice_ask.normalize();
+        self.shortcuts.polish_selection.normalize();
         self.prompts.overrides.sanitize();
         self.voice.ensure_mode_profiles(&self.prompts.overrides);
     }
 
     pub fn validate_shortcuts(&self) -> Result<(), String> {
-        validate_shortcut("音声入力開始", &self.shortcuts.voice_dictation)?;
-        validate_shortcut("選択テキストへの音声指示", &self.shortcuts.voice_ask)?;
-        if self
-            .shortcuts
-            .voice_dictation
-            .conflicts_with(&self.shortcuts.voice_ask)
-        {
-            return Err("音声入力と音声指示に同じショートカットは設定できません。".to_string());
+        let shortcuts = [
+            ("音声入力開始", &self.shortcuts.voice_dictation),
+            ("選択テキストへの音声指示", &self.shortcuts.voice_ask),
+            ("選択テキストの推敲", &self.shortcuts.polish_selection),
+        ];
+        for (label, shortcut) in shortcuts.iter().copied() {
+            validate_shortcut(label, shortcut)?;
+        }
+        for i in 0..shortcuts.len() {
+            for j in (i + 1)..shortcuts.len() {
+                if shortcuts[i].1.conflicts_with(shortcuts[j].1) {
+                    return Err(format!(
+                        "{}と{}に同じショートカットは設定できません。",
+                        shortcuts[i].0, shortcuts[j].0
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -877,6 +908,7 @@ mod tests {
         assert_eq!(settings.app.double_tap_threshold_ms, 400);
         assert_eq!(settings.shortcuts.voice_dictation.label, "Fn");
         assert_eq!(settings.shortcuts.voice_dictation.tap_count, 1);
+        assert_eq!(settings.shortcuts.polish_selection.label, "Ctrl Option P");
         assert_eq!(settings.voice.active_mode_profile_id, DEFAULT_VOICE_MODE_ID);
         assert_eq!(settings.voice.mode_profiles.len(), 5);
         assert_eq!(settings.voice.mode_profiles[1].id, "speed");
@@ -1058,5 +1090,56 @@ mod tests {
         settings.shortcuts.voice_ask = ShortcutBinding::fn_double_tap();
 
         assert!(settings.validate_shortcuts().is_err());
+    }
+
+    #[test]
+    fn shortcut_validation_rejects_polish_conflicts() {
+        let mut settings = AppSettings::default();
+        settings.shortcuts.polish_selection = settings.shortcuts.voice_ask.clone();
+
+        assert!(settings.validate_shortcuts().is_err());
+    }
+
+    #[test]
+    fn missing_polish_shortcut_migrates_to_default() {
+        let json = r#"{
+            "shortcuts": {
+                "voiceDictation": {
+                    "keyCode": null,
+                    "key": "fn",
+                    "label": "Fn",
+                    "tapCount": 1,
+                    "modifiers": {
+                        "command": false,
+                        "option": false,
+                        "control": false,
+                        "shift": false,
+                        "function": false
+                    }
+                },
+                "voiceAsk": {
+                    "keyCode": 49,
+                    "key": "space",
+                    "label": "Fn Space",
+                    "tapCount": 1,
+                    "modifiers": {
+                        "command": false,
+                        "option": false,
+                        "control": false,
+                        "shift": false,
+                        "function": true
+                    }
+                }
+            }
+        }"#;
+        let mut settings: AppSettings = serde_json::from_str(json).expect("settings");
+
+        settings.sanitize();
+
+        assert!(settings
+            .shortcuts
+            .polish_selection
+            .is_same_shortcut(&ShortcutBinding::ctrl_option_p()));
+        assert!(settings.validate_shortcuts().is_ok());
     }
 }

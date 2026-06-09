@@ -60,6 +60,19 @@ const baseSettings: AppSettings = {
         function: true,
       },
     },
+    polishSelection: {
+      keyCode: 35,
+      key: "p",
+      label: "Ctrl Option P",
+      tapCount: 1,
+      modifiers: {
+        command: false,
+        option: true,
+        control: true,
+        shift: false,
+        function: false,
+      },
+    },
   },
   prompts: {
     overrides: {

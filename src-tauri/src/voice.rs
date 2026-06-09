@@ -86,6 +86,7 @@ const GOOGLE_SPEECH_DICTIONARY_BOOST: f32 = 8.0;
 const MIN_LEARNED_CORRECTION_CHARS: usize = 2;
 const MAX_LEARNED_CORRECTION_CHARS: usize = 40;
 const MIN_FULL_INSERT_REWRITE_CHARS: usize = 12;
+const POLISH_SELECTION_INSTRUCTION: &str = "推敲して";
 #[cfg(target_os = "macos")]
 const PASTE_RESTORE_DELAY_MS: u64 = 420;
 #[cfg(target_os = "macos")]
@@ -855,6 +856,36 @@ impl VoiceManager {
         Ok(())
     }
 
+    pub fn polish_selection(&self, app: tauri::AppHandle) -> Result<(), String> {
+        let mut guard = self.active.lock().map_err(|e| e.to_string())?;
+        if guard.is_some() {
+            return Ok(());
+        }
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        *guard = Some(SessionState::Processing {
+            cancelled: cancelled.clone(),
+        });
+        drop(guard);
+
+        show_voice_window(&app, false);
+        emit_state(
+            &app,
+            "preparing",
+            Some(VoiceMode::Ask),
+            None,
+            Some("選択テキストを取得しています…".to_string()),
+        );
+
+        tauri::async_runtime::spawn(async move {
+            if let Err(err) = polish_selected_text(app, cancelled).await {
+                eprintln!("[enja] polish selection failed: {err}");
+            }
+        });
+
+        Ok(())
+    }
+
     pub fn is_active(&self) -> bool {
         self.active.lock().is_ok_and(|guard| guard.is_some())
     }
@@ -1024,6 +1055,106 @@ async fn wait_processing_cancelled(cancelled: ProcessingCancel) {
     while !is_processing_cancelled(&cancelled) {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+}
+
+async fn polish_selected_text(
+    app: tauri::AppHandle,
+    cancelled: ProcessingCancel,
+) -> Result<(), String> {
+    let paste_target = capture_paste_target();
+    let selected_text = tokio::task::spawn_blocking(capture_selected_text)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if is_processing_cancelled(&cancelled) {
+        clear_processing_session_for_app(&app, &cancelled);
+        return Ok(());
+    }
+
+    if selected_text.trim().is_empty() {
+        if clear_processing_session_for_app(&app, &cancelled) {
+            show_voice_window(&app, true);
+            emit_state(
+                &app,
+                "error",
+                Some(VoiceMode::Ask),
+                None,
+                Some("テキストを選択してから実行してください。".to_string()),
+            );
+        }
+        return Ok(());
+    }
+
+    emit_state(
+        &app,
+        "processing",
+        Some(VoiceMode::Ask),
+        None,
+        Some("選択テキストを整えています…".to_string()),
+    );
+
+    let result = tokio::select! {
+        result = finalize_selected_text_instruction(&app, &selected_text) => result,
+        _ = wait_processing_cancelled(cancelled.clone()) => {
+            clear_processing_session_for_app(&app, &cancelled);
+            return Ok(());
+        }
+    };
+
+    if is_processing_cancelled(&cancelled) || !clear_processing_session_for_app(&app, &cancelled) {
+        return Ok(());
+    }
+
+    match result {
+        Ok(text) => {
+            let inserted = paste_text(&text, paste_target.as_ref());
+            if inserted {
+                emit_result(
+                    &app,
+                    VoiceResultEvent {
+                        text,
+                        inserted: true,
+                        reason: None,
+                    },
+                );
+                hide_voice_window_after(app, Duration::from_millis(280));
+            } else {
+                show_voice_window(&app, true);
+                emit_state(
+                    &app,
+                    "fallback",
+                    Some(VoiceMode::Ask),
+                    None,
+                    Some("入力先が見つからなかったため、コピー用に表示しています。".to_string()),
+                );
+                emit_result(
+                    &app,
+                    VoiceResultEvent {
+                        text,
+                        inserted: false,
+                        reason: Some("入力先が見つかりませんでした。".to_string()),
+                    },
+                );
+            }
+            Ok(())
+        }
+        Err(message) => {
+            show_voice_window(&app, true);
+            emit_state(
+                &app,
+                "error",
+                Some(VoiceMode::Ask),
+                None,
+                Some(message.clone()),
+            );
+            Err(message)
+        }
+    }
+}
+
+fn clear_processing_session_for_app(app: &tauri::AppHandle, cancelled: &ProcessingCancel) -> bool {
+    app.try_state::<VoiceManager>()
+        .is_some_and(|manager| manager.clear_processing_session(cancelled))
 }
 
 fn clear_starting_session(app: &tauri::AppHandle, cancelled: &Arc<Mutex<bool>>) -> bool {
@@ -2728,6 +2859,24 @@ async fn process_clip(
         mode_profile_id,
         selected_text,
         &transcript,
+    )
+    .await
+}
+
+async fn finalize_selected_text_instruction(
+    app: &tauri::AppHandle,
+    selected_text: &str,
+) -> Result<String, String> {
+    let settings = crate::settings::load_settings(app)?;
+    let entries = dictionary::load_dictionary(app)?;
+    finalize_text(
+        app,
+        &settings,
+        &entries,
+        VoiceMode::Ask,
+        "",
+        selected_text,
+        POLISH_SELECTION_INSTRUCTION,
     )
     .await
 }

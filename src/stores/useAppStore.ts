@@ -32,6 +32,20 @@ const defaultVoiceAskShortcut: ShortcutBinding = {
   },
 };
 
+const defaultPolishSelectionShortcut: ShortcutBinding = {
+  keyCode: 35,
+  key: "p",
+  label: "Ctrl Option P",
+  tapCount: 1,
+  modifiers: {
+    command: false,
+    option: true,
+    control: true,
+    shift: false,
+    function: false,
+  },
+};
+
 interface AppState {
   view: View;
   inputText: string;
@@ -44,6 +58,7 @@ interface AppState {
   targetLanguageDraft: UiLanguage;
   voiceDictationShortcut: ShortcutBinding;
   voiceAskShortcut: ShortcutBinding;
+  polishSelectionShortcut: ShortcutBinding;
   hasTranslated: boolean;
 
   setView: (v: View) => void;
@@ -71,6 +86,7 @@ export const useAppStore = create<AppState>((set) => ({
   targetLanguageDraft: "ja",
   voiceDictationShortcut: defaultVoiceDictationShortcut,
   voiceAskShortcut: defaultVoiceAskShortcut,
+  polishSelectionShortcut: defaultPolishSelectionShortcut,
   hasTranslated: false,
 
   setView: (v) => set({ view: v }),
@@ -103,6 +119,7 @@ export const useAppStore = create<AppState>((set) => ({
       targetLanguageDraft: settings.translation.targetLanguage,
       voiceDictationShortcut: settings.shortcuts.voiceDictation,
       voiceAskShortcut: settings.shortcuts.voiceAsk,
+      polishSelectionShortcut: settings.shortcuts.polishSelection,
     }),
   setHasTranslated: (v) => set({ hasTranslated: v }),
 }));

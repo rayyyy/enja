@@ -297,6 +297,21 @@ const SETTINGS_SECTIONS: { id: SettingsSection; label: string }[] = [
 
 type PromptField = keyof PromptOverrides;
 
+function withShortcut(
+  shortcuts: AppSettings["shortcuts"],
+  action: ShortcutAction,
+  shortcut: ShortcutBinding,
+): AppSettings["shortcuts"] {
+  switch (action) {
+    case "voiceDictation":
+      return { ...shortcuts, voiceDictation: shortcut };
+    case "voiceAsk":
+      return { ...shortcuts, voiceAsk: shortcut };
+    case "polishSelection":
+      return { ...shortcuts, polishSelection: shortcut };
+  }
+}
+
 export function SettingsView() {
   const { setView, hydrateFromSettings } = useAppStore();
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -401,15 +416,10 @@ export function SettingsView() {
       setCapturingAction((current) => (current === action ? null : current));
       setSettings((prev) => {
         if (!prev) return prev;
-        return action === "voiceDictation"
-          ? {
-              ...prev,
-              shortcuts: { ...prev.shortcuts, voiceDictation: shortcut },
-            }
-          : {
-              ...prev,
-              shortcuts: { ...prev.shortcuts, voiceAsk: shortcut },
-            };
+        return {
+          ...prev,
+          shortcuts: withShortcut(prev.shortcuts, action, shortcut),
+        };
       });
     });
     const cancelled = listen<ShortcutCaptureCancelledEvent>(
@@ -460,10 +470,7 @@ export function SettingsView() {
       prev
         ? {
             ...prev,
-            shortcuts:
-              action === "voiceDictation"
-                ? { ...prev.shortcuts, voiceDictation: shortcut }
-                : { ...prev.shortcuts, voiceAsk: shortcut },
+            shortcuts: withShortcut(prev.shortcuts, action, shortcut),
           }
         : prev,
     );

@@ -22,6 +22,11 @@ use tauri::{Emitter, Manager, Runtime, State};
 use tauri_plugin_autostart::ManagerExt;
 use voice::{AppleSpeechStatus, AudioInputDevice, SpeechSetupCheck, VoiceManager, VoiceMode};
 
+enum ShortcutStartAction {
+    Voice(VoiceMode),
+    PolishSelection,
+}
+
 fn show_main_window<R: Runtime>(app: &impl Manager<R>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -340,28 +345,19 @@ fn handle_keyboard_trigger(app: tauri::AppHandle, trigger: KeyboardTrigger) {
                 .is_some_and(|manager| manager.is_active());
             if voice_active {
                 stop_voice_session_async(app);
-            } else if let Some(mode) =
-                voice_start_mode_for_shortcut(&app, &ShortcutBinding::fn_key())
+            } else if let Some(action) = start_action_for_shortcut(&app, &ShortcutBinding::fn_key())
             {
-                if let Some(manager) = app.try_state::<VoiceManager>() {
-                    let _ = manager.start_session(app.clone(), mode);
-                }
+                start_shortcut_action(app, action);
             }
         }
         KeyboardTrigger::VoiceDictationStart => {
-            if let Some(manager) = app.try_state::<VoiceManager>() {
-                if !manager.is_active() {
-                    let _ = manager.start_session(app.clone(), VoiceMode::Dictation);
-                }
-            }
+            start_shortcut_action(app, ShortcutStartAction::Voice(VoiceMode::Dictation));
         }
         KeyboardTrigger::FunctionSpace => {
-            let Some(manager) = app.try_state::<VoiceManager>() else {
-                return;
-            };
-            if !manager.is_active() {
-                let _ = manager.start_session(app.clone(), VoiceMode::Ask);
-            }
+            start_shortcut_action(app, ShortcutStartAction::Voice(VoiceMode::Ask));
+        }
+        KeyboardTrigger::PolishSelection => {
+            start_shortcut_action(app, ShortcutStartAction::PolishSelection);
         }
         KeyboardTrigger::VoiceModeCycle => {
             if let Some(manager) = app.try_state::<VoiceManager>() {
@@ -399,10 +395,27 @@ fn stop_voice_session_async(app: tauri::AppHandle) {
     });
 }
 
-fn voice_start_mode_for_shortcut(
+fn start_shortcut_action(app: tauri::AppHandle, action: ShortcutStartAction) {
+    let Some(manager) = app.try_state::<VoiceManager>() else {
+        return;
+    };
+    if manager.is_active() {
+        return;
+    }
+    match action {
+        ShortcutStartAction::Voice(mode) => {
+            let _ = manager.start_session(app.clone(), mode);
+        }
+        ShortcutStartAction::PolishSelection => {
+            let _ = manager.polish_selection(app.clone());
+        }
+    }
+}
+
+fn start_action_for_shortcut(
     app: &tauri::AppHandle,
     shortcut: &ShortcutBinding,
-) -> Option<VoiceMode> {
+) -> Option<ShortcutStartAction> {
     app.try_state::<SettingsStore>()
         .map(|store| {
             let settings = store.get();
@@ -411,9 +424,15 @@ fn voice_start_mode_for_shortcut(
                 .voice_dictation
                 .is_same_shortcut(shortcut)
             {
-                Some(VoiceMode::Dictation)
+                Some(ShortcutStartAction::Voice(VoiceMode::Dictation))
             } else if settings.shortcuts.voice_ask.is_same_shortcut(shortcut) {
-                Some(VoiceMode::Ask)
+                Some(ShortcutStartAction::Voice(VoiceMode::Ask))
+            } else if settings
+                .shortcuts
+                .polish_selection
+                .is_same_shortcut(shortcut)
+            {
+                Some(ShortcutStartAction::PolishSelection)
             } else {
                 None
             }

@@ -21,6 +21,9 @@ pub enum KeyboardTrigger {
     VoiceDictationStart,
     /// Space was pressed while Fn was held — Ask mode.
     FunctionSpace,
+    /// The configured shortcut for polishing the currently selected text
+    /// without starting a recording session.
+    PolishSelection,
     /// Control was tapped by itself. Voice mode cycling decides whether it is
     /// currently meaningful.
     VoiceModeCycle,
@@ -40,6 +43,7 @@ pub struct KeyboardRuntimeSettings {
     pub double_tap_threshold_ms: u64,
     pub voice_dictation_shortcut: ShortcutBinding,
     pub voice_ask_shortcut: ShortcutBinding,
+    pub polish_selection_shortcut: ShortcutBinding,
 }
 
 impl From<&AppSettings> for KeyboardRuntimeSettings {
@@ -48,6 +52,7 @@ impl From<&AppSettings> for KeyboardRuntimeSettings {
             double_tap_threshold_ms: settings.app.double_tap_threshold_ms,
             voice_dictation_shortcut: settings.shortcuts.voice_dictation.clone(),
             voice_ask_shortcut: settings.shortcuts.voice_ask.clone(),
+            polish_selection_shortcut: settings.shortcuts.polish_selection.clone(),
         }
     }
 }
@@ -712,6 +717,8 @@ mod macos {
             Some(KeyboardTrigger::VoiceDictationStart)
         } else if shortcut.is_same_shortcut(&state.runtime.voice_ask_shortcut) {
             Some(KeyboardTrigger::FunctionSpace)
+        } else if shortcut.is_same_shortcut(&state.runtime.polish_selection_shortcut) {
+            Some(KeyboardTrigger::PolishSelection)
         } else {
             None
         }
@@ -856,6 +863,7 @@ mod macos {
                     double_tap_threshold_ms: 400,
                     voice_dictation_shortcut: ShortcutBinding::fn_key(),
                     voice_ask_shortcut: ShortcutBinding::fn_space(),
+                    polish_selection_shortcut: ShortcutBinding::ctrl_option_p(),
                 },
                 meta_down: false,
                 control_down: false,
@@ -896,6 +904,10 @@ mod macos {
             assert!(matches!(
                 start_trigger_for_shortcut(&state, &ShortcutBinding::fn_space()),
                 Some(KeyboardTrigger::FunctionSpace)
+            ));
+            assert!(matches!(
+                start_trigger_for_shortcut(&state, &ShortcutBinding::ctrl_option_p()),
+                Some(KeyboardTrigger::PolishSelection)
             ));
         }
 
