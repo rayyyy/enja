@@ -24,9 +24,6 @@ pub(crate) const PASTE_VERIFY_TIMEOUT_MS: u64 = 600;
 pub(crate) const PASTE_SNAPSHOT_RETRY_DELAY_MS: u64 = 80;
 
 #[cfg(target_os = "macos")]
-pub(crate) const PASTE_ACTIVATE_SETTLE_MS: u64 = 80;
-
-#[cfg(target_os = "macos")]
 pub(crate) const MANUAL_ACCESSIBILITY_POLL_ATTEMPTS: usize = 10;
 
 #[cfg(target_os = "macos")]
@@ -141,29 +138,10 @@ pub(crate) fn capture_selected_text() -> String {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn read_accessibility_selected_text() -> Option<String> {
-    let script = r#"
-tell application "System Events"
-  try
-    set frontApp to first application process whose frontmost is true
-    set focusedElement to value of attribute "AXFocusedUIElement" of frontApp
-    set selectedText to value of attribute "AXSelectedText" of focusedElement
-    if selectedText is missing value then return ""
-    return selectedText as text
-  on error
-    return ""
-  end try
-end tell
-"#;
-    let output = std::process::Command::new("osascript")
-        .args(["-e", script])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout)
-        .trim_end_matches(['\r', '\n'])
-        .to_string();
+    // osascript(System Events)経由は起動・直列処理で数百 ms かかるため、
+    // ネイティブ AX 呼び出しで直接 AXSelectedText を読む。
+    let focused = AxFocusedElement::capture()?;
+    let text = copy_ax_string_attribute(focused.element.raw, "AXSelectedText")?;
     if text.trim().is_empty() {
         None
     } else {
@@ -493,19 +471,13 @@ pub(crate) enum PasteAttempt {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn paste_text(text: &str, preferred_target: Option<&PasteTargetInfo>) -> bool {
-    !matches!(
-        perform_verified_clipboard_paste(text, preferred_target),
-        PasteAttempt::Failed
-    )
+pub(crate) fn paste_text(text: &str) -> bool {
+    !matches!(perform_verified_clipboard_paste(text), PasteAttempt::Failed)
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn perform_verified_clipboard_paste(
-    text: &str,
-    preferred_target: Option<&PasteTargetInfo>,
-) -> PasteAttempt {
-    let Some(target) = resolve_paste_target_info(preferred_target) else {
+pub(crate) fn perform_verified_clipboard_paste(text: &str) -> PasteAttempt {
+    let Some(target) = resolve_paste_target_info() else {
         return PasteAttempt::Failed;
     };
 
@@ -623,7 +595,7 @@ pub(crate) fn unchanged_selection_replacement_matches_text(
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn paste_text(_text: &str, _preferred_target: Option<&PasteTargetInfo>) -> bool {
+pub(crate) fn paste_text(_text: &str) -> bool {
     false
 }
 
@@ -713,16 +685,11 @@ pub(crate) fn post_command_key(keycode: u16) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn resolve_paste_target_info(
-    preferred_target: Option<&PasteTargetInfo>,
-) -> Option<PasteTargetInfo> {
+pub(crate) fn resolve_paste_target_info() -> Option<PasteTargetInfo> {
+    // ルールは一つ: 確定時にカーソル(フォーカス)がある編集可能要素に貼る。
+    // 解決できなければ None を返し、呼び出し側がコピー用ダイアログを出す。
     let own_pid = std::process::id() as i32;
-    // 原則: 確定時にカーソルがある場所へ貼る。Enja 自身のメモも対象。
     let target = current_paste_target_info();
-    let current_missing = target.is_none();
-    let current_is_own = target
-        .as_ref()
-        .is_some_and(|target| target.pid == Some(own_pid));
     if target.as_ref().is_some_and(is_verified_paste_candidate) {
         return target;
     }
@@ -750,40 +717,7 @@ pub(crate) fn resolve_paste_target_info(
         }
     }
 
-    fallback.or_else(|| {
-        // 保険: カーソル位置を貼り付け先として解決できなかった場合のみ、
-        // 録音開始時に狙っていた要素へ戻す。
-        let preferred =
-            preferred_target.filter(|target| is_attemptable_paste_target(target, own_pid))?;
-
-        // フォーカスが Enja のオーバーレイ等(編集不能な自プロセス要素)に
-        // 落ちている場合、Cmd+V が Enja に向かわないよう開始時のアプリを
-        // 前面へ戻してから貼り付ける。
-        if current_is_own && preferred.pid != Some(own_pid) {
-            let pid = preferred.pid?;
-            if !activate_application_pid(pid) {
-                return None;
-            }
-            std::thread::sleep(Duration::from_millis(PASTE_ACTIVATE_SETTLE_MS));
-            let target = current_paste_target_info();
-            if target.as_ref().is_some_and(is_verified_paste_candidate) {
-                return target;
-            }
-            if target
-                .as_ref()
-                .is_some_and(|target| is_fallback_paste_candidate(target, own_pid))
-            {
-                return target;
-            }
-            return Some(preferred.clone());
-        }
-
-        if current_missing {
-            Some(preferred.clone())
-        } else {
-            None
-        }
-    })
+    fallback
 }
 
 #[cfg(target_os = "macos")]
@@ -835,28 +769,6 @@ end tell
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| PasteTargetInfo::from_osascript_output(&String::from_utf8_lossy(&o.stdout)))
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn activate_application_pid(pid: i32) -> bool {
-    let script = format!(
-        r#"
-tell application "System Events"
-  try
-    set frontmost of first application process whose unix id is {pid} to true
-    return "ok"
-  on error
-    return ""
-  end try
-end tell
-"#
-    );
-    std::process::Command::new("osascript")
-        .args(["-e", &script])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .is_some_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "ok")
 }
 
 pub(crate) fn manual_accessibility_retry_pid(
@@ -976,10 +888,6 @@ pub(crate) fn is_verified_paste_candidate(target: &PasteTargetInfo) -> bool {
     is_pasteable_target(target)
 }
 
-pub(crate) fn is_attemptable_paste_target(target: &PasteTargetInfo, own_pid: i32) -> bool {
-    is_pasteable_target(target) || is_fallback_paste_candidate(target, own_pid)
-}
-
 pub(crate) fn is_fallback_paste_candidate(target: &PasteTargetInfo, own_pid: i32) -> bool {
     is_web_content_paste_candidate(target) || is_ambiguous_external_paste_candidate(target, own_pid)
 }
@@ -1056,7 +964,6 @@ mod tests {
 
         assert!(is_pasteable_target(&target));
         assert!(is_verified_paste_candidate(&target));
-        assert!(is_attemptable_paste_target(&target, 100));
     }
 
     #[test]
@@ -1136,7 +1043,7 @@ mod tests {
         };
 
         assert!(is_ambiguous_external_paste_candidate(&target, 100));
-        assert!(is_attemptable_paste_target(&target, 100));
+        assert!(is_fallback_paste_candidate(&target, 100));
     }
 
     #[test]
@@ -1152,7 +1059,6 @@ mod tests {
 
         assert!(!is_ambiguous_external_paste_candidate(&target, 100));
         assert!(!is_fallback_paste_candidate(&target, 100));
-        assert!(!is_attemptable_paste_target(&target, 100));
     }
 
     #[test]
@@ -1165,7 +1071,6 @@ mod tests {
         };
 
         assert!(!is_fallback_paste_candidate(&target, 100));
-        assert!(!is_attemptable_paste_target(&target, 100));
     }
 
     #[test]

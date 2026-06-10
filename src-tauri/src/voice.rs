@@ -105,8 +105,9 @@ type ProcessingCancel = Arc<AtomicBool>;
 struct ActiveSession {
     mode: VoiceMode,
     mode_profile_id: String,
-    selected_text: String,
-    paste_target: Option<PasteTargetInfo>,
+    /// Ask モードの選択テキスト取得(AX 直読みか Cmd+C 合成)。録音開始を
+    /// ブロックしないようバックグラウンドで走らせ、確定時に合流する。
+    selected_text_task: Option<tokio::task::JoinHandle<String>>,
     screen_context: VoiceScreenContext,
     screen_context_ocr_rx: Option<oneshot::Receiver<Option<VoiceScreenContextOcr>>>,
     recorder: Recorder,
@@ -219,8 +220,7 @@ impl VoiceManager {
         let ActiveSession {
             mode,
             mode_profile_id,
-            selected_text,
-            paste_target,
+            selected_text_task,
             screen_context,
             screen_context_ocr_rx,
             recorder,
@@ -262,9 +262,19 @@ impl VoiceManager {
                 }
             })
         });
-        let (clip, screen_context) = tokio::join!(
+        let selected_text_future = async {
+            match selected_text_task {
+                Some(handle) => handle.await.unwrap_or_else(|e| {
+                    eprintln!("[enja] 選択テキスト取得タスクが失敗: {e}");
+                    String::new()
+                }),
+                None => String::new(),
+            }
+        };
+        let (clip, screen_context, selected_text) = tokio::join!(
             finish_task,
-            resolve_voice_screen_context(screen_context, screen_context_ocr_rx)
+            resolve_voice_screen_context(screen_context, screen_context_ocr_rx),
+            selected_text_future
         );
         let clip = clip.unwrap_or_else(|e| Err(e.to_string()));
 
@@ -315,9 +325,9 @@ impl VoiceManager {
         match result {
             Ok(text) => {
                 let inserted = if mode == VoiceMode::Dictation {
-                    paste_text_with_dictionary_learning(&app, &text, paste_target.as_ref())
+                    paste_text_with_dictionary_learning(&app, &text)
                 } else {
-                    paste_text(&text, paste_target.as_ref())
+                    paste_text(&text)
                 };
                 if inserted {
                     emit_result(
@@ -534,19 +544,14 @@ async fn finish_start_session(
     // 呼び出し)を録音中に済ませておく。結果は cache 側が保持する。
     prefetch_google_speech_token(&settings, mode);
 
-    // 以下 3 つは互いに独立なので並行に走らせる。どれも同期 I/O のため
+    // Ask の選択テキスト取得(AX 直読み。失敗時は Cmd+C 合成で最大 700ms)は
+    // 録音開始をブロックしないようバックグラウンドへ逃し、確定時に合流する。
+    let selected_text_task =
+        (mode == VoiceMode::Ask).then(|| tokio::task::spawn_blocking(capture_selected_text));
+
+    // 画面文脈の取得(AX 走査+osascript)と音声パイプライン準備(システム音声の
+    // ミュート/分離)は互いに独立なので並行に走らせる。どちらも同期 I/O のため
     // spawn_blocking に出し、async ワーカーを塞がない。
-    // - Ask の選択テキスト取得(AX 失敗時は Cmd+C 合成で最大 700ms 待つため、
-    //   直列に置くと Fn+Space の開始が体感で重くなる)
-    // - 画面文脈の取得(osascript+AX 走査)
-    // - 音声パイプライン準備(システム音声のミュート/分離)
-    let selected_text_task = tokio::task::spawn_blocking(move || {
-        if mode == VoiceMode::Ask {
-            capture_selected_text()
-        } else {
-            String::new()
-        }
-    });
     let app_for_context = app.clone();
     let settings_for_context = settings.clone();
     let target_for_context = paste_target.clone();
@@ -562,31 +567,15 @@ async fn finish_start_session(
     let pipeline_task =
         tokio::task::spawn_blocking(move || prepare_audio_pipeline(&settings_for_pipeline));
 
-    let (selected_text, screen_context_capture, pipeline) =
-        tokio::join!(selected_text_task, context_task, pipeline_task);
-    let stop_pipeline_aux = |pipeline: &mut Result<(Option<AudioAux>, PipelineMode), _>| {
-        if let Ok((aux, _)) = pipeline {
-            if let Some(aux) = aux.take() {
-                aux.stop();
-            }
-        }
-    };
-    let mut pipeline = pipeline;
+    let (screen_context_capture, pipeline) = tokio::join!(context_task, pipeline_task);
     // join 失敗で Starting 状態を残すと以後のセッションが開始できなくなる。
-    let selected_text = match selected_text {
-        Ok(text) => text,
-        Err(e) => {
-            let err = e.to_string();
-            stop_pipeline_aux(&mut pipeline);
-            fail_start_session(&app, mode, &cancelled, err.clone());
-            return Err(err);
-        }
-    };
     let screen_context_capture = match screen_context_capture {
         Ok(capture) => capture,
         Err(e) => {
             let err = e.to_string();
-            stop_pipeline_aux(&mut pipeline);
+            if let Ok((Some(aux), _)) = pipeline {
+                aux.stop();
+            }
             fail_start_session(&app, mode, &cancelled, err.clone());
             return Err(err);
         }
@@ -694,8 +683,7 @@ async fn finish_start_session(
     *guard = Some(SessionState::Active(Box::new(ActiveSession {
         mode,
         mode_profile_id: starting_mode_profile_id.clone(),
-        selected_text,
-        paste_target,
+        selected_text_task,
         screen_context: screen_context_capture.context,
         screen_context_ocr_rx: screen_context_capture.ocr_rx,
         recorder,
@@ -822,7 +810,7 @@ async fn polish_selected_text(
 
     match result {
         Ok(text) => {
-            let inserted = paste_text(&text, paste_target.as_ref());
+            let inserted = paste_text(&text);
             if inserted {
                 emit_result(
                     &app,
