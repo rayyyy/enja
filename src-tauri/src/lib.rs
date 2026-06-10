@@ -76,6 +76,14 @@ fn get_prompt_catalog() -> Vec<PromptCatalogItem> {
     prompts::catalog()
 }
 
+/// 自プロセスの WebView で編集可能要素への paste イベントを観測したことを
+/// 記録する。音声入力の貼り付けが Enja 自身のウィンドウ(メモ等)に向いた
+/// ときの挿入検証チャネルになる。
+#[tauri::command]
+fn record_editable_paste() {
+    voice::record_own_editable_paste();
+}
+
 #[tauri::command]
 fn start_shortcut_capture(action: ShortcutAction) -> Result<(), String> {
     keyboard::begin_shortcut_capture(action)
@@ -381,6 +389,7 @@ pub fn run() {
             get_apple_speech_status,
             install_apple_speech_model,
             get_prompt_catalog,
+            record_editable_paste,
             start_shortcut_capture,
             cancel_shortcut_capture
         ])

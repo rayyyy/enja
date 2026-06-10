@@ -1,4 +1,12 @@
-import { useState } from "react";
+import {
+  memo,
+  useCallback,
+  useMemo,
+  useState,
+  type Dispatch,
+  type DragEvent,
+  type SetStateAction,
+} from "react";
 import { Monitor, Moon, Sun } from "lucide-react";
 import {
   setThemePreference,
@@ -33,7 +41,7 @@ export type ProviderSecretsDraft = {
   googleServiceAccount: string;
 };
 
-export function ShortcutSettingsSection({
+export const ShortcutSettingsSection = memo(function ShortcutSettingsSection({
   shortcuts,
   doubleTapThresholdMs,
   capturingAction,
@@ -97,9 +105,9 @@ export function ShortcutSettingsSection({
       </label>
     </SettingsSectionPanel>
   );
-}
+});
 
-export function PromptSettingsSection({
+export const PromptSettingsSection = memo(function PromptSettingsSection({
   promptCatalog,
   overrides,
   onChange,
@@ -120,13 +128,13 @@ export function PromptSettingsSection({
             field={field}
             defaultValue={field.defaultText}
             customValue={overrides[field.key]}
-            onChange={(value) => onChange(field.key, value)}
+            onChange={onChange}
           />
         ))}
       </div>
     </SettingsSectionPanel>
   );
-}
+});
 
 type VoiceModeEditorState = {
   kind: "create" | "edit";
@@ -136,7 +144,7 @@ type VoiceModeEditorState = {
   error: string | null;
 };
 
-export function VoiceModeSettingsSection({
+export const VoiceModeSettingsSection = memo(function VoiceModeSettingsSection({
   voice,
   onChange,
 }: {
@@ -146,7 +154,10 @@ export function VoiceModeSettingsSection({
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [editor, setEditor] = useState<VoiceModeEditorState | null>(null);
-  const profiles = orderedVoiceModeProfiles(voice.modeProfiles);
+  const profiles = useMemo(
+    () => orderedVoiceModeProfiles(voice.modeProfiles),
+    [voice.modeProfiles],
+  );
   const activeId =
     profiles.some((profile) => profile.id === voice.activeModeProfileId)
       ? voice.activeModeProfileId
@@ -155,38 +166,46 @@ export function VoiceModeSettingsSection({
     voice.speechProfile,
   );
 
-  function commitProfiles(nextProfiles: VoiceModeProfile[], nextActiveId = activeId) {
-    const normalized = withVoiceModeOrder(nextProfiles);
-    const resolvedActiveId = normalized.some((profile) => profile.id === nextActiveId)
-      ? nextActiveId
-      : "default";
-    onChange({
-      modeProfiles: normalized,
-      activeModeProfileId: resolvedActiveId,
-    });
-  }
+  const commitProfiles = useCallback(
+    (nextProfiles: VoiceModeProfile[], nextActiveId = activeId) => {
+      const normalized = withVoiceModeOrder(nextProfiles);
+      const resolvedActiveId = normalized.some(
+        (profile) => profile.id === nextActiveId,
+      )
+        ? nextActiveId
+        : "default";
+      onChange({
+        modeProfiles: normalized,
+        activeModeProfileId: resolvedActiveId,
+      });
+    },
+    [activeId, onChange],
+  );
 
-  function dropProfile(targetId: string) {
-    if (!draggingId || draggingId === targetId) {
+  const dropProfile = useCallback(
+    (targetId: string) => {
+      if (!draggingId || draggingId === targetId) {
+        setDraggingId(null);
+        setDragOverId(null);
+        return;
+      }
+      const dragged = profiles.find((profile) => profile.id === draggingId);
+      if (!dragged) {
+        setDraggingId(null);
+        setDragOverId(null);
+        return;
+      }
+      const next = profiles.filter((profile) => profile.id !== draggingId);
+      const targetIndex = next.findIndex((profile) => profile.id === targetId);
+      next.splice(targetIndex < 0 ? next.length : targetIndex, 0, dragged);
+      commitProfiles(next);
       setDraggingId(null);
       setDragOverId(null);
-      return;
-    }
-    const dragged = profiles.find((profile) => profile.id === draggingId);
-    if (!dragged) {
-      setDraggingId(null);
-      setDragOverId(null);
-      return;
-    }
-    const next = profiles.filter((profile) => profile.id !== draggingId);
-    const targetIndex = next.findIndex((profile) => profile.id === targetId);
-    next.splice(targetIndex < 0 ? next.length : targetIndex, 0, dragged);
-    commitProfiles(next);
-    setDraggingId(null);
-    setDragOverId(null);
-  }
+    },
+    [commitProfiles, draggingId, profiles],
+  );
 
-  function openEditor(profile: VoiceModeProfile) {
+  const openEditor = useCallback((profile: VoiceModeProfile) => {
     setEditor({
       kind: "edit",
       originalId: profile.id,
@@ -194,7 +213,7 @@ export function VoiceModeSettingsSection({
       confirmDelete: false,
       error: null,
     });
-  }
+  }, []);
 
   function openCreate() {
     const order = profiles.length;
@@ -284,6 +303,26 @@ export function VoiceModeSettingsSection({
     setDragOverId(null);
   }
 
+  const handleDragOverId = useCallback((id: string) => {
+    setDragOverId(id);
+  }, []);
+  const handleDragLeaveId = useCallback((id: string) => {
+    setDragOverId((current) => (current === id ? null : current));
+  }, []);
+  const handleDragStartId = useCallback((id: string) => {
+    setDraggingId(id);
+  }, []);
+  const handleDragEnd = useCallback(() => {
+    setDraggingId(null);
+    setDragOverId(null);
+  }, []);
+  const handleActivateId = useCallback(
+    (id: string) => {
+      onChange({ activeModeProfileId: id });
+    },
+    [onChange],
+  );
+
   return (
     <SettingsSectionPanel
       title="音声モード"
@@ -313,115 +352,23 @@ export function VoiceModeSettingsSection({
         </div>
 
         <div className="flex flex-col gap-2">
-          {profiles.map((profile) => {
-            const active = profile.id === activeId;
-            const dragging = draggingId === profile.id;
-            const dropTarget = dragOverId === profile.id && draggingId !== profile.id;
-            return (
-              <div
-                key={profile.id}
-                onDragOver={(event) => {
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = "move";
-                  setDragOverId(profile.id);
-                }}
-                onDragLeave={() =>
-                  setDragOverId((current) =>
-                    current === profile.id ? null : current,
-                  )
-                }
-                onDrop={(event) => {
-                  event.preventDefault();
-                  dropProfile(profile.id);
-                }}
-                className={`group flex flex-col gap-3 rounded-xl border bg-sunken px-3 py-3 transition-colors duration-100 sm:flex-row sm:items-center ${
-                  active ? "border-accent/40 bg-accent-soft" : "border-edge"
-                } ${dropTarget ? "border-accent bg-accent-soft" : ""} ${
-                  dragging ? "opacity-45" : ""
-                }`}
-              >
-                <div
-                  draggable
-                  onDragStart={(event) => {
-                    setDraggingId(profile.id);
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData("text/plain", profile.id);
-                  }}
-                  onDragEnd={() => {
-                    setDraggingId(null);
-                    setDragOverId(null);
-                  }}
-                  title="ドラッグして並び替え"
-                  className="flex w-full shrink-0 cursor-grab select-none items-center gap-2 rounded-lg border border-dashed border-edge bg-surface px-2 py-2 text-ink-faint transition-colors duration-100 group-hover:border-accent/40 group-hover:text-accent-ink active:cursor-grabbing sm:w-16 sm:flex-col sm:justify-center sm:self-stretch"
-                >
-                  <span className="grid grid-cols-2 gap-0.5" aria-hidden>
-                    {Array.from({ length: 6 }, (_, dot) => (
-                      <span key={dot} className="size-1 rounded-full bg-current" />
-                    ))}
-                  </span>
-                  <span className="text-[10px] font-medium leading-none sm:hidden">
-                    ドラッグ
-                  </span>
-                </div>
-
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="truncate text-sm font-semibold text-ink">
-                      {profile.name || "名称未設定"}
-                    </h3>
-                    {active ? (
-                      <span className="rounded-full bg-accent px-2 py-0.5 text-[11px] font-medium text-white">
-                        ON
-                      </span>
-                    ) : null}
-                    {!profile.deletable ? (
-                      <span className="rounded-full border border-edge bg-surface px-2 py-0.5 text-[11px] text-ink-mid">
-                        固定
-                      </span>
-                    ) : null}
-                    {!profile.formattingEnabled ? (
-                      <span className="rounded-full bg-warn-soft px-2 py-0.5 text-[11px] text-warn">
-                        整形なし
-                      </span>
-                    ) : null}
-                    {profile.liveTranscriptionEnabled ? (
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-[11px] ${
-                          liveTranscriptionAvailable
-                            ? "bg-ok-soft text-ok"
-                            : "border border-edge bg-surface text-ink-mid"
-                        }`}
-                      >
-                        {liveTranscriptionAvailable ? "ライブ" : "ライブ未対応"}
-                      </span>
-                    ) : null}
-                  </div>
-                  <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-ink-mid">
-                    {profile.description || "説明なし"}
-                  </p>
-                </div>
-
-                <div className="flex w-full shrink-0 items-center justify-end gap-2 sm:w-auto">
-                  {!active ? (
-                    <button
-                      type="button"
-                      onClick={() => onChange({ activeModeProfileId: profile.id })}
-                      className="rounded-lg bg-accent-soft px-2.5 py-1 text-xs font-medium text-accent-ink transition-colors duration-100 hover:bg-accent/20"
-                    >
-                      ONにする
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={() => openEditor(profile)}
-                    className={settingsButtonSecondaryClass}
-                  >
-                    編集
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+          {profiles.map((profile) => (
+            <VoiceModeProfileCard
+              key={profile.id}
+              profile={profile}
+              active={profile.id === activeId}
+              dragging={draggingId === profile.id}
+              dropTarget={dragOverId === profile.id && draggingId !== profile.id}
+              liveTranscriptionAvailable={liveTranscriptionAvailable}
+              onDragOverId={handleDragOverId}
+              onDragLeaveId={handleDragLeaveId}
+              onDropId={dropProfile}
+              onDragStartId={handleDragStartId}
+              onDragEnd={handleDragEnd}
+              onActivateId={handleActivateId}
+              onEdit={openEditor}
+            />
+          ))}
         </div>
       </div>
 
@@ -440,9 +387,134 @@ export function VoiceModeSettingsSection({
       ) : null}
     </SettingsSectionPanel>
   );
-}
+});
 
-export function AuthSettingsSection({
+const VoiceModeProfileCard = memo(function VoiceModeProfileCard({
+  profile,
+  active,
+  dragging,
+  dropTarget,
+  liveTranscriptionAvailable,
+  onDragOverId,
+  onDragLeaveId,
+  onDropId,
+  onDragStartId,
+  onDragEnd,
+  onActivateId,
+  onEdit,
+}: {
+  profile: VoiceModeProfile;
+  active: boolean;
+  dragging: boolean;
+  dropTarget: boolean;
+  liveTranscriptionAvailable: boolean;
+  onDragOverId: (id: string) => void;
+  onDragLeaveId: (id: string) => void;
+  onDropId: (id: string) => void;
+  onDragStartId: (id: string) => void;
+  onDragEnd: () => void;
+  onActivateId: (id: string) => void;
+  onEdit: (profile: VoiceModeProfile) => void;
+}) {
+  return (
+    <div
+      onDragOver={(event: DragEvent<HTMLDivElement>) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        onDragOverId(profile.id);
+      }}
+      onDragLeave={() => onDragLeaveId(profile.id)}
+      onDrop={(event) => {
+        event.preventDefault();
+        onDropId(profile.id);
+      }}
+      className={`group flex flex-col gap-3 rounded-xl border bg-sunken px-3 py-3 transition-colors duration-100 sm:flex-row sm:items-center ${
+        active ? "border-accent/40 bg-accent-soft" : "border-edge"
+      } ${dropTarget ? "border-accent bg-accent-soft" : ""} ${
+        dragging ? "opacity-45" : ""
+      }`}
+    >
+      <div
+        draggable
+        onDragStart={(event) => {
+          onDragStartId(profile.id);
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", profile.id);
+        }}
+        onDragEnd={onDragEnd}
+        title="ドラッグして並び替え"
+        className="flex w-full shrink-0 cursor-grab select-none items-center gap-2 rounded-lg border border-dashed border-edge bg-surface px-2 py-2 text-ink-faint transition-colors duration-100 group-hover:border-accent/40 group-hover:text-accent-ink active:cursor-grabbing sm:w-16 sm:flex-col sm:justify-center sm:self-stretch"
+      >
+        <span className="grid grid-cols-2 gap-0.5" aria-hidden>
+          {Array.from({ length: 6 }, (_, dot) => (
+            <span key={dot} className="size-1 rounded-full bg-current" />
+          ))}
+        </span>
+        <span className="text-[10px] font-medium leading-none sm:hidden">
+          ドラッグ
+        </span>
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="truncate text-sm font-semibold text-ink">
+            {profile.name || "名称未設定"}
+          </h3>
+          {active ? (
+            <span className="rounded-full bg-accent px-2 py-0.5 text-[11px] font-medium text-white">
+              ON
+            </span>
+          ) : null}
+          {!profile.deletable ? (
+            <span className="rounded-full border border-edge bg-surface px-2 py-0.5 text-[11px] text-ink-mid">
+              固定
+            </span>
+          ) : null}
+          {!profile.formattingEnabled ? (
+            <span className="rounded-full bg-warn-soft px-2 py-0.5 text-[11px] text-warn">
+              整形なし
+            </span>
+          ) : null}
+          {profile.liveTranscriptionEnabled ? (
+            <span
+              className={`rounded-full px-2 py-0.5 text-[11px] ${
+                liveTranscriptionAvailable
+                  ? "bg-ok-soft text-ok"
+                  : "border border-edge bg-surface text-ink-mid"
+              }`}
+            >
+              {liveTranscriptionAvailable ? "ライブ" : "ライブ未対応"}
+            </span>
+          ) : null}
+        </div>
+        <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-ink-mid">
+          {profile.description || "説明なし"}
+        </p>
+      </div>
+
+      <div className="flex w-full shrink-0 items-center justify-end gap-2 sm:w-auto">
+        {!active ? (
+          <button
+            type="button"
+            onClick={() => onActivateId(profile.id)}
+            className="rounded-lg bg-accent-soft px-2.5 py-1 text-xs font-medium text-accent-ink transition-colors duration-100 hover:bg-accent/20"
+          >
+            ONにする
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => onEdit(profile)}
+          className={settingsButtonSecondaryClass}
+        >
+          編集
+        </button>
+      </div>
+    </div>
+  );
+});
+
+export const AuthSettingsSection = memo(function AuthSettingsSection({
   voice,
   providerStatus,
   secrets,
@@ -453,10 +525,19 @@ export function AuthSettingsSection({
   voice: AppSettings["voice"];
   providerStatus: ProviderStatus | null;
   secrets: ProviderSecretsDraft;
-  onSecretsChange: (next: ProviderSecretsDraft) => void;
+  onSecretsChange: Dispatch<SetStateAction<ProviderSecretsDraft>>;
   onVoiceChange: (patch: Partial<AppSettings["voice"]>) => void;
   onOpenGeminiDocs: () => void;
 }) {
+  const onGeminiChange = useCallback(
+    (value: string) => onSecretsChange((prev) => ({ ...prev, gemini: value })),
+    [onSecretsChange],
+  );
+  const onOpenAiChange = useCallback(
+    (value: string) => onSecretsChange((prev) => ({ ...prev, openai: value })),
+    [onSecretsChange],
+  );
+
   return (
     <SettingsSectionPanel
       title="API / 認証"
@@ -466,7 +547,7 @@ export function AuthSettingsSection({
         label="Gemini APIキー"
         placeholder={providerStatus?.gemini ? "保存済み" : "AIza..."}
         value={secrets.gemini}
-        onChange={(value) => onSecretsChange({ ...secrets, gemini: value })}
+        onChange={onGeminiChange}
         helpAction={onOpenGeminiDocs}
         helpLabel="取得"
       />
@@ -474,7 +555,7 @@ export function AuthSettingsSection({
         label="OpenAI APIキー"
         placeholder={providerStatus?.openai ? "保存済み" : "sk-..."}
         value={secrets.openai}
-        onChange={(value) => onSecretsChange({ ...secrets, openai: value })}
+        onChange={onOpenAiChange}
       />
       <label className="flex flex-col gap-1.5 text-sm">
         <span className="font-medium text-ink">Google Cloud Project ID</span>
@@ -509,10 +590,10 @@ export function AuthSettingsSection({
           <textarea
             value={secrets.googleServiceAccount}
             onChange={(e) =>
-              onSecretsChange({
-                ...secrets,
+              onSecretsChange((prev) => ({
+                ...prev,
                 googleServiceAccount: e.target.value,
-              })
+              }))
             }
             rows={4}
             placeholder="{...}"
@@ -522,9 +603,9 @@ export function AuthSettingsSection({
       ) : null}
     </SettingsSectionPanel>
   );
-}
+});
 
-export function AppSettingsSection({
+export const AppSettingsSection = memo(function AppSettingsSection({
   app,
   onChange,
 }: {
@@ -548,7 +629,7 @@ export function AppSettingsSection({
       </p>
     </SettingsSectionPanel>
   );
-}
+});
 
 const THEME_OPTIONS: Array<{
   value: ThemePreference;

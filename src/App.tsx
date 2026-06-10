@@ -8,6 +8,7 @@ import {
   getSettings,
   hideStickyNoteWindow,
   hideWindow,
+  recordEditablePaste,
 } from "./lib/commands";
 import { startTranslation } from "./lib/startTranslation";
 import { useAppStore, type View } from "./stores/useAppStore";
@@ -99,6 +100,18 @@ function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [windowLabel]);
+
+  // 編集可能要素への paste を Rust 側へ通知する。音声入力の貼り付けが Enja
+  // 自身のウィンドウ(メモ等)に向いたとき、本当に挿入されたかの検証に使われる。
+  // ProseMirror が伝播を止めても拾えるよう capture フェーズで監視する。
+  useEffect(() => {
+    function onPaste(event: ClipboardEvent) {
+      if (!pasteTargetIsEditable(event.target)) return;
+      void recordEditablePaste().catch(() => {});
+    }
+    document.addEventListener("paste", onPaste, true);
+    return () => document.removeEventListener("paste", onPaste, true);
+  }, []);
 
   useEffect(() => {
     function preventFileNavigation(event: DragEvent) {
@@ -196,6 +209,20 @@ function AppNavigation() {
       </nav>
     </WindowDragRegion>
   );
+}
+
+function pasteTargetIsEditable(target: EventTarget | null): boolean {
+  const element =
+    target instanceof Element
+      ? target
+      : target instanceof Node
+        ? target.parentElement
+        : null;
+  if (!element) return false;
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+    return !element.readOnly && !element.disabled;
+  }
+  return element instanceof HTMLElement && element.isContentEditable;
 }
 
 function dragHasFiles(event: DragEvent) {

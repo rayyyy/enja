@@ -1,5 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { MouseEvent } from "react";
+import { useMemo, type MouseEvent } from "react";
 import { linkifyUrlText } from "../lib/linkifyText";
 
 interface Props {
@@ -14,7 +14,7 @@ function handleLinkClick(event: MouseEvent<HTMLAnchorElement>, href: string) {
 
 /** 翻訳本文のみをプレーンテキストで表示（見出し・Markdownは使わない） */
 export function StreamingMarkdown({ text, streaming }: Props) {
-  const parts = linkifyUrlText(text);
+  const parts = useMemo(() => linkifyUrlText(text), [text]);
 
   return (
     <div className="text-[14px] leading-relaxed text-ink">

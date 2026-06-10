@@ -9,7 +9,10 @@ let minWindowArea: CGFloat = 12_000
 let minOCRConfidence: Float = 0.45
 let maxOCRLinesPerWindow = 70
 let maxOCRCharactersPerWindow = 1_800
-let ignoredOwnerNames: Set<String> = ["Enja"]
+// Enja 自身のウィンドウも OCR 対象に含める(固定したメモを文脈として
+// 読みたいケースがあるため)。ただし音声オーバーレイは録音 UI しか
+// 映っていないため除外する。
+let ignoredOwnWindowTitles: Set<String> = ["Enja Voice"]
 
 struct ScreenContextResponse: Encodable {
     var ok: Bool
@@ -192,7 +195,8 @@ func onScreenWindowInfos() throws -> [WindowInfo] {
         }
 
         let ownerName = item[kCGWindowOwnerName as String] as? String
-        if shouldIgnoreWindow(ownerName: ownerName) {
+        let windowTitle = item[kCGWindowName as String] as? String
+        if shouldIgnoreWindow(ownerName: ownerName, title: windowTitle) {
             continue
         }
 
@@ -200,7 +204,7 @@ func onScreenWindowInfos() throws -> [WindowInfo] {
             id: CGWindowID(windowNumber),
             ownerPid: ownerPid,
             ownerName: ownerName,
-            title: item[kCGWindowName as String] as? String,
+            title: windowTitle,
             bounds: bounds
         ))
     }
@@ -231,9 +235,13 @@ func windowInfos(on display: DisplayInfo, from windows: [WindowInfo]) -> [Window
     }
 }
 
-func shouldIgnoreWindow(ownerName: String?) -> Bool {
-    let value = ownerName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return ignoredOwnerNames.contains(value)
+func shouldIgnoreWindow(ownerName: String?, title: String?) -> Bool {
+    let owner = ownerName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard owner.lowercased() == "enja" else {
+        return false
+    }
+    let title = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return ignoredOwnWindowTitles.contains(title)
 }
 
 func displayInfo(containing windowBounds: CGRect) throws -> DisplayInfo {

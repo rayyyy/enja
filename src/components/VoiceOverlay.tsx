@@ -391,7 +391,7 @@ export function VoiceOverlay() {
                 </span>
               </div>
               <p className="mt-1 truncate text-[11px] text-white/58">
-                {state.message ?? "入力先が見つかりませんでした。"}
+                {state.message ?? "カーソル位置への貼り付けを確認できませんでした。"}
               </p>
             </div>
           ) : null}

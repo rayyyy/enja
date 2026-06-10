@@ -224,7 +224,7 @@ pub fn record_window_geometry<R: Runtime>(window: &tauri::Window<R>) {
         return;
     };
     let app = window.app_handle();
-    let path = match notes_path(&app) {
+    let path = match notes_path(app) {
         Ok(path) => path,
         Err(err) => {
             eprintln!("[enja] sticky note geometry path failed: {err}");
