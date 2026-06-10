@@ -92,10 +92,11 @@ const MIN_FULL_INSERT_REWRITE_CHARS: usize = 12;
 const POLISH_SELECTION_INSTRUCTION: &str = "推敲して";
 const SCREEN_CONTEXT_SIDE_CHARS: usize = 1_400;
 const SCREEN_CONTEXT_VISIBLE_MAX_CHARS: usize = 6_000;
-const SCREEN_CONTEXT_OCR_MAX_CHARS: usize = 4_000;
-const SCREEN_CONTEXT_ASR_MAX_TERMS: usize = 80;
+const SCREEN_CONTEXT_OCR_MAX_CHARS: usize = 6_000;
+const SCREEN_CONTEXT_ASR_MAX_TERMS: usize = 180;
 const SCREEN_CONTEXT_ASR_MAX_TERM_CHARS: usize = 48;
-const SCREEN_CONTEXT_OCR_TIMEOUT: Duration = Duration::from_secs(4);
+const APPLE_SPEECH_CONTEXTUAL_STRINGS_MAX: usize = 180;
+const SCREEN_CONTEXT_OCR_TIMEOUT: Duration = Duration::from_secs(6);
 const SCREEN_CONTEXT_OCR_WAIT_TIMEOUT: Duration = Duration::from_millis(450);
 #[cfg(target_os = "macos")]
 const PASTE_RESTORE_DELAY_MS: u64 = 420;
@@ -2157,8 +2158,9 @@ fn start_apple_live_transcriber(
     let helper = resolve_apple_speech_helper(app)?;
     let entries = dictionary::load_dictionary(app).unwrap_or_default();
     let context_path = temp_voice_file_path("apple-speech-live-context", "json");
+    let contextual_strings = apple_speech_contextual_strings(&entries, screen_context);
     let context = serde_json::json!({
-        "contextualStrings": apple_speech_contextual_strings(&entries, screen_context),
+        "contextualStrings": contextual_strings,
     });
     fs::write(&context_path, context.to_string()).map_err(|e| e.to_string())?;
 
@@ -3946,8 +3948,9 @@ async fn transcribe_apple_speech(
     let wav_path = temp_voice_file_path("apple-speech", "wav");
     let context_path = temp_voice_file_path("apple-speech-context", "json");
     fs::write(&wav_path, &clip.wav).map_err(|e| e.to_string())?;
+    let contextual_strings = apple_speech_contextual_strings(entries, screen_context);
     let context = serde_json::json!({
-        "contextualStrings": apple_speech_contextual_strings(entries, screen_context),
+        "contextualStrings": contextual_strings,
     });
     fs::write(&context_path, context.to_string()).map_err(|e| e.to_string())?;
 
@@ -3989,13 +3992,13 @@ fn apple_speech_contextual_strings(
         let key = value.to_lowercase();
         if seen.insert(key) {
             values.push(value.to_string());
-            if values.len() >= 100 {
+            if values.len() >= APPLE_SPEECH_CONTEXTUAL_STRINGS_MAX {
                 return values;
             }
         }
     }
     for value in screen_context_terms(screen_context) {
-        if values.len() >= 100 {
+        if values.len() >= APPLE_SPEECH_CONTEXTUAL_STRINGS_MAX {
             break;
         }
         let key = value.to_lowercase();

@@ -743,7 +743,7 @@ export function SettingsView() {
               />
               <Toggle
                 label="画面OCRを使う"
-                description="アクセシビリティで読めない表示文字を、音声認識や整形に効く経路だけアクティブなディスプレイ全体のOCRで補います。"
+                description="アクセシビリティで読めない表示文字を、音声認識や整形に効く経路だけ対象ディスプレイ上の前面から最大3ウィンドウのOCRで補います。"
                 checked={
                   settings.voice.screenContextEnabled &&
                   settings.voice.screenContextOcrEnabled
