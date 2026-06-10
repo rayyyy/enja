@@ -46,6 +46,11 @@ export async function hideWindow(): Promise<void> {
   return invoke("hide_window");
 }
 
+/** 編集可能要素への paste イベントを Rust 側へ通知する(音声入力の貼り付け検証用)。 */
+export async function recordEditablePaste(): Promise<void> {
+  return invoke("record_editable_paste");
+}
+
 export async function translateStream(
   text: string,
   onEvent: (ev: TranslateEvent) => void,

@@ -458,16 +458,31 @@ pub(crate) fn copy_ax_attribute_names(element: AXUIElementRef) -> Option<HashSet
 
 /// 貼り付け試行の結果。
 /// - `Verified`: AX でテキストの変化を確認できた(辞書学習に使える)。
-/// - `Unverified`: Cmd+V は対象アプリに届いたはずだが、AX では挿入を確認
-///   できなかった(Electron/Monaco や WKWebView は AX に変化が出ないことが
-///   ある)。挿入済みとして扱うが、誤検出の恐れがあるため学習はしない。
+/// - `Unverified`: 挿入されたとみなすが AX のテキスト差分では確認できて
+///   いない。キャレット移動・自プロセスのペーストイベントで観測できた場合と、
+///   明示的なテキスト入力ロール(Electron/Monaco の隠し textarea 等)への
+///   楽観視がここに入る。誤検出の恐れがあるため学習はしない。
 /// - `Failed`: 入力先を解決できない・キー送信に失敗・貼り付け中にフォーカス
-///   が別アプリへ移った。フォールバック表示で本文を救済する。
+///   が別アプリへ移った・挿入をどの手段でも確認できず楽観視も許されない。
+///   フォールバック表示で本文を救済する。
 #[cfg(target_os = "macos")]
 pub(crate) enum PasteAttempt {
     Verified(Box<VerifiedPaste>),
     Unverified,
     Failed,
+}
+
+/// Cmd+V 送信後にポーリングで得られた挿入の証拠。
+#[cfg(target_os = "macos")]
+enum PasteConfirmation {
+    /// AX のテキスト差分で挿入を特定できた。
+    Verified {
+        after_paste: AxTextSnapshot,
+        insertion: VerifiedPasteInsertion,
+    },
+    /// キャレット移動または自プロセスのペーストイベントで挿入を観測した
+    /// (挿入位置までは特定できないので辞書学習には使わない)。
+    Observed,
 }
 
 #[cfg(target_os = "macos")]
@@ -481,14 +496,31 @@ pub(crate) fn perform_verified_clipboard_paste(text: &str) -> PasteAttempt {
         return PasteAttempt::Failed;
     };
 
+    let own_pid = std::process::id() as i32;
+    let is_own_target = target.pid == Some(own_pid);
+    let optimistic = allows_unverified_paste(&target);
+
     // スナップショット取得は Cmd+V 送信前なので安全に再試行できる。
     // 送信後の再試行は二重貼り付けの危険があるため一切行わない。
-    // スナップショットが取れない場合(WKWebView 等、AX がテキストを公開しない
-    // ターゲット)でも、編集可能要素として解決済みなので楽観的に貼り付ける。
     let focused = AxFocusedText::capture_for_paste_target(&target).or_else(|| {
         std::thread::sleep(Duration::from_millis(PASTE_SNAPSHOT_RETRY_DELAY_MS));
         AxFocusedText::capture_for_paste_target(&target)
     });
+
+    // スナップショットが取れないターゲット(WKWebView 等、AX がテキストを
+    // 公開しない)でも、キャレット移動で挿入を観測できることがある。
+    let caret_probe = if focused.is_none() {
+        CaretProbe::capture(&target)
+    } else {
+        None
+    };
+
+    // 挿入を確認する手段がひとつも無く、楽観視も許されないターゲットには
+    // Cmd+V を送らない。空打ちした上で成功扱いするより、クリップボードに
+    // 触れる前に失敗を確定させてフォールバックダイアログに倒す。
+    if focused.is_none() && caret_probe.is_none() && !is_own_target && !optimistic {
+        return PasteAttempt::Failed;
+    }
 
     let original = read_clipboard_text();
     if let Ok(mut clipboard) = arboard::Clipboard::new() {
@@ -499,29 +531,56 @@ pub(crate) fn perform_verified_clipboard_paste(text: &str) -> PasteAttempt {
         return PasteAttempt::Failed;
     }
     std::thread::sleep(Duration::from_millis(PASTE_WRITE_SETTLE_MS));
+    let pasted_at = Instant::now();
     if !run_keystroke("v") {
         restore_clipboard(original);
         return PasteAttempt::Failed;
     }
 
-    let attempt = match focused {
-        Some(focused) => match wait_for_verified_insertion(&focused, text) {
-            Some((after_paste, insertion)) => PasteAttempt::Verified(Box::new(VerifiedPaste {
-                target: focused,
-                after_paste,
-                insertion,
-            })),
-            // AX で変化を確認できなくても、対象アプリにフォーカスが残っていれば
-            // Cmd+V は届いているとみなす。「実際は貼れているのに失敗扱い」で
-            // フォールバックを出すより、ここでは楽観に倒す。
-            None => unverified_unless_focus_moved(&target),
-        },
-        None => {
-            // 検証手段がないため、遅いアプリでも貼り付けが処理される時間を
-            // 確保してからクリップボードを復元する。
-            std::thread::sleep(Duration::from_millis(PASTE_VERIFY_TIMEOUT_MS));
-            unverified_unless_focus_moved(&target)
+    // 検証が取れるか PASTE_VERIFY_TIMEOUT_MS を超えるまでクリップボードを
+    // 復元しない(遅いアプリが復元後に元の内容を貼る競合を防ぐ)。
+    let deadline = pasted_at + Duration::from_millis(PASTE_VERIFY_TIMEOUT_MS);
+    let confirmed = loop {
+        if let Some(focused) = &focused {
+            if let Some(after_paste) = focused.element.read_text_snapshot() {
+                if let Some(insertion) =
+                    verify_paste_insertion(&focused.snapshot, &after_paste, text)
+                {
+                    break Some(PasteConfirmation::Verified {
+                        after_paste,
+                        insertion,
+                    });
+                }
+            }
         }
+        if is_own_target && own_editable_paste_since(pasted_at) {
+            break Some(PasteConfirmation::Observed);
+        }
+        if caret_probe.as_ref().is_some_and(CaretProbe::caret_moved) {
+            break Some(PasteConfirmation::Observed);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(PASTE_VERIFY_POLL_MS));
+    };
+
+    let attempt = match confirmed {
+        Some(PasteConfirmation::Verified {
+            after_paste,
+            insertion,
+        }) => PasteAttempt::Verified(Box::new(VerifiedPaste {
+            target: focused.expect("verified paste requires a snapshot"),
+            after_paste,
+            insertion,
+        })),
+        Some(PasteConfirmation::Observed) => PasteAttempt::Unverified,
+        // 明示的なテキスト入力ロール等(allows_unverified_paste)だけは、
+        // AX に変化が出なくても対象アプリにフォーカスが残っていれば Cmd+V は
+        // 届いているとみなす(Electron/Monaco は AX に変化が出ないことがある)。
+        // それ以外は確認できなければ失敗としてフォールバックダイアログを出す。
+        None if optimistic => unverified_unless_focus_moved(&target),
+        None => PasteAttempt::Failed,
     };
     restore_clipboard(original);
     attempt
@@ -540,24 +599,129 @@ fn unverified_unless_focus_moved(target: &PasteTargetInfo) -> PasteAttempt {
     }
 }
 
-/// 挿入をポーリングで検証する。検証が取れるか PASTE_VERIFY_TIMEOUT_MS を
-/// 超えるまでクリップボードは呼び出し側で復元しないこと。
+/// AX のテキスト差分で挿入を確認できなかったときに「貼り付け成功」と楽観視
+/// してよいターゲットか。OS が明示的にテキスト入力ロールと報告する要素
+/// (Cursor/Monaco/Electron の隠し textarea を含む)と、web area 以外で
+/// キャレット系属性を公開するカスタムエディタだけを信頼する。
+/// web area は属性名がキャレットの有無と無関係に並ぶ(Safari のページ本体も
+/// AXSelectedTextMarkerRange を名乗る)ため楽観視せず、AX 差分・キャレット
+/// 移動・自プロセスのペーストイベントのいずれでも確認できなければ
+/// フォールバックダイアログに倒す。
+pub(crate) fn allows_unverified_paste(target: &PasteTargetInfo) -> bool {
+    if is_text_input_role(&target.role) || is_text_input_role(&target.subrole) {
+        return true;
+    }
+    !is_web_content_paste_candidate(target) && is_pasteable_target(target)
+}
+
+/// 自プロセスの WebView(メモ・設定画面)で編集可能要素への paste イベントを
+/// 最後に観測した時刻。record_editable_paste コマンド経由でフロントエンドが
+/// 記録し、自プロセス宛て貼り付けの検証チャネルとして使う。
+static LAST_OWN_EDITABLE_PASTE: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+
+fn own_editable_paste_cell() -> &'static Mutex<Option<Instant>> {
+    LAST_OWN_EDITABLE_PASTE.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn record_own_editable_paste() {
+    if let Ok(mut last) = own_editable_paste_cell().lock() {
+        *last = Some(Instant::now());
+    }
+}
+
+pub(crate) fn own_editable_paste_since(start: Instant) -> bool {
+    own_editable_paste_cell()
+        .lock()
+        .ok()
+        .and_then(|last| *last)
+        .is_some_and(|at| at >= start)
+}
+
+/// スナップショット(AXValue + AXSelectedTextRange)が取れないターゲット向けの
+/// 「キャレットが動いた」検出器。挿入が起きればキャレットは必ず進むので、
+/// 選択範囲の変化を挿入の証拠として使う(動かない限り何の判断にも使わない、
+/// 偽成功を生まない正方向専用のチャネル)。
 #[cfg(target_os = "macos")]
-fn wait_for_verified_insertion(
-    focused: &AxFocusedText,
-    text: &str,
-) -> Option<(AxTextSnapshot, VerifiedPasteInsertion)> {
-    let deadline = Instant::now() + Duration::from_millis(PASTE_VERIFY_TIMEOUT_MS);
-    loop {
-        if let Some(after_paste) = focused.element.read_text_snapshot() {
-            if let Some(insertion) = verify_paste_insertion(&focused.snapshot, &after_paste, text) {
-                return Some((after_paste, insertion));
-            }
-        }
-        if Instant::now() >= deadline {
+struct CaretProbe {
+    element: AxElementRef,
+    /// AXSelectedTextMarkerRange(WebKit の web area 等)。CFEqual が値比較を
+    /// 実装しているかを capture 時に 2 回読みで較正済み。
+    marker_range: Option<CFTypeRef>,
+    selected_range: Option<TextRange>,
+}
+
+#[cfg(target_os = "macos")]
+impl CaretProbe {
+    fn capture(target: &PasteTargetInfo) -> Option<Self> {
+        let focused = AxFocusedElement::capture()?;
+        if target
+            .pid
+            .is_some_and(|pid| focused.element.pid() != Some(pid))
+        {
             return None;
         }
-        std::thread::sleep(Duration::from_millis(PASTE_VERIFY_POLL_MS));
+        let element = focused.element;
+        let selected_range = copy_ax_range_attribute(element.raw, "AXSelectedTextRange");
+        let marker_range = calibrated_marker_range(element.raw);
+        if selected_range.is_none() && marker_range.is_none() {
+            return None;
+        }
+        Some(Self {
+            element,
+            marker_range,
+            selected_range,
+        })
+    }
+
+    fn caret_moved(&self) -> bool {
+        if let Some(before) = self.selected_range {
+            if let Some(now) = copy_ax_range_attribute(self.element.raw, "AXSelectedTextRange") {
+                if now != before {
+                    return true;
+                }
+            }
+        }
+        if let Some(before) = self.marker_range {
+            if let Some(now) = copy_ax_attribute_raw(self.element.raw, "AXSelectedTextMarkerRange")
+            {
+                let moved = unsafe { core_foundation_sys::base::CFEqual(before, now) } == 0;
+                unsafe { CFRelease(now) };
+                if moved {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for CaretProbe {
+    fn drop(&mut self) {
+        if let Some(marker) = self.marker_range.take() {
+            unsafe { CFRelease(marker) };
+        }
+    }
+}
+
+/// AXSelectedTextMarkerRange を 2 回読んで CFEqual が真になることを確認する。
+/// マーカーが値比較を実装せずポインタ比較に落ちる実装では、毎回「変化した」
+/// と誤判定して偽成功(ダイアログを出すべき場面で出さない)になるため、
+/// 較正に失敗したらこのチャネル自体を捨てる。
+#[cfg(target_os = "macos")]
+fn calibrated_marker_range(element: AXUIElementRef) -> Option<CFTypeRef> {
+    let first = copy_ax_attribute_raw(element, "AXSelectedTextMarkerRange")?;
+    let Some(second) = copy_ax_attribute_raw(element, "AXSelectedTextMarkerRange") else {
+        unsafe { CFRelease(first) };
+        return None;
+    };
+    let stable = unsafe { core_foundation_sys::base::CFEqual(first, second) } != 0;
+    unsafe { CFRelease(second) };
+    if stable {
+        Some(first)
+    } else {
+        unsafe { CFRelease(first) };
+        None
     }
 }
 
@@ -1220,5 +1384,83 @@ mod tests {
             subrole: subrole.to_string(),
             attributes: attributes.iter().map(|value| value.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn unverified_paste_allowed_for_explicit_text_input_roles() {
+        // Cursor/Monaco/Electron の隠し textarea: AX で挿入を確認できなくても
+        // 成功扱いにしてよい(偽ダイアログ防止)。
+        assert!(allows_unverified_paste(&paste_target(
+            "AXTextArea",
+            "",
+            &[]
+        )));
+        assert!(allows_unverified_paste(&paste_target(
+            "",
+            "AXTextField",
+            &[]
+        )));
+    }
+
+    #[test]
+    fn unverified_paste_allowed_for_non_web_cursor_attributes() {
+        assert!(allows_unverified_paste(&paste_target(
+            "AXGroup",
+            "",
+            &["AXRole", "AXSelectedTextRange"]
+        )));
+    }
+
+    #[test]
+    fn unverified_paste_rejected_for_web_areas() {
+        // web area の属性名はキャレットの有無と無関係に並ぶ(Safari のページ
+        // 本体も AXSelectedTextMarkerRange を名乗る)ため、楽観視すると
+        // 「カーソルがどこにも無いのに成功扱い」になりダイアログが出なくなる。
+        assert!(!allows_unverified_paste(&paste_target(
+            "AXWebArea",
+            "",
+            &["AXRole"]
+        )));
+        assert!(!allows_unverified_paste(&paste_target(
+            "AXWebArea",
+            "",
+            &["AXSelectedTextMarkerRange", "AXInsertionPointLineNumber"]
+        )));
+        assert!(!allows_unverified_paste(&paste_target(
+            "",
+            "AXWebArea",
+            &["AXSelectedTextRange"]
+        )));
+    }
+
+    #[test]
+    fn unverified_paste_rejected_for_ambiguous_targets() {
+        // pid しか分からないターゲットは編集可能の証拠が無い。確認できなければ
+        // フォールバックダイアログに倒す。
+        let target = PasteTargetInfo {
+            pid: Some(4242),
+            role: String::new(),
+            subrole: String::new(),
+            attributes: HashSet::new(),
+        };
+
+        assert!(!allows_unverified_paste(&target));
+        assert!(!allows_unverified_paste(&paste_target(
+            "AXUnknown",
+            "",
+            &[]
+        )));
+    }
+
+    #[test]
+    fn own_editable_paste_channel_reports_only_events_after_start() {
+        let before_record = Instant::now();
+        record_own_editable_paste();
+        let after_record = Instant::now();
+
+        assert!(own_editable_paste_since(before_record));
+        assert!(!own_editable_paste_since(
+            after_record + Duration::from_millis(1)
+        ));
     }
 }

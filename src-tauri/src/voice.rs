@@ -347,7 +347,7 @@ impl VoiceManager {
                         Some(mode),
                         mode_profile.clone(),
                         Some(
-                            "入力先が見つからなかったため、コピー用に表示しています。".to_string(),
+                            "カーソル位置への貼り付けを確認できなかったため、コピー用に表示しています。".to_string(),
                         ),
                     );
                     emit_result(
@@ -355,7 +355,9 @@ impl VoiceManager {
                         VoiceResultEvent {
                             text,
                             inserted: false,
-                            reason: Some("入力先が見つかりませんでした。".to_string()),
+                            reason: Some(
+                                "カーソル位置への貼り付けを確認できませんでした。".to_string(),
+                            ),
                         },
                     );
                 }
@@ -828,14 +830,16 @@ async fn polish_selected_text(
                     "fallback",
                     Some(VoiceMode::Ask),
                     None,
-                    Some("入力先が見つからなかったため、コピー用に表示しています。".to_string()),
+                    Some("カーソル位置への貼り付けを確認できなかったため、コピー用に表示しています。".to_string()),
                 );
                 emit_result(
                     &app,
                     VoiceResultEvent {
                         text,
                         inserted: false,
-                        reason: Some("入力先が見つかりませんでした。".to_string()),
+                        reason: Some(
+                            "カーソル位置への貼り付けを確認できませんでした。".to_string(),
+                        ),
                     },
                 );
             }
