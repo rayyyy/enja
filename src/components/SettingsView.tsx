@@ -313,7 +313,7 @@ function withShortcut(
 }
 
 export function SettingsView() {
-  const { setView, hydrateFromSettings } = useAppStore();
+  const hydrateFromSettings = useAppStore((s) => s.hydrateFromSettings);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);
   const [promptCatalog, setPromptCatalog] = useState<PromptCatalogItem[] | null>(
@@ -619,29 +619,6 @@ export function SettingsView() {
             </button>
           ))}
         </nav>
-        <div className="mt-auto space-y-0.5 px-2.5 py-3">
-          <button
-            type="button"
-            onClick={() => setView("notes")}
-            className="w-full rounded-md px-3 py-1.5 text-left text-[13px] text-ink-mid transition-colors duration-100 focus-ring hover:bg-hover hover:text-ink"
-          >
-            メモ
-          </button>
-          <button
-            type="button"
-            onClick={() => setView("dictionary")}
-            className="w-full rounded-md px-3 py-1.5 text-left text-[13px] text-ink-mid transition-colors duration-100 focus-ring hover:bg-hover hover:text-ink"
-          >
-            辞書
-          </button>
-          <button
-            type="button"
-            onClick={() => setView("translation")}
-            className="w-full rounded-md px-3 py-1.5 text-left text-[13px] text-ink-mid transition-colors duration-100 focus-ring hover:bg-hover hover:text-ink"
-          >
-            戻る
-          </button>
-        </div>
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">

@@ -6,7 +6,6 @@ import {
   getDictionary,
   updateDictionaryEntry,
 } from "../lib/commands";
-import { useAppStore } from "../stores/useAppStore";
 
 // バックエンド validate_entry の上限（dictionary.rs）と一致させる。
 const MAX_WORD_LENGTH = 100;
@@ -20,7 +19,6 @@ type EditingEntry = {
 };
 
 export function DictionaryView() {
-  const setView = useAppStore((s) => s.setView);
   const [entries, setEntries] = useState<DictionaryEntry[]>([]);
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState<EditingEntry | null>(null);
@@ -167,21 +165,14 @@ export function DictionaryView() {
   }
 
   return (
-    <div className="flex max-h-[560px] min-h-0 flex-col gap-5">
-      <header className="flex items-center justify-between gap-3">
+    <div className="flex h-full min-h-0 flex-col gap-5">
+      <header>
         <div>
           <h1 className="text-xl font-semibold tracking-tight text-ink">辞書</h1>
           <p className="mt-1 text-sm leading-relaxed text-ink-mid">
             音声認識と整形で優先する単語を登録します。各モデルに自動で連携されます。
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setView("translation")}
-          className="rounded-md border border-edge bg-surface px-3 py-1.5 text-sm text-ink-mid transition-colors duration-100 focus-ring hover:bg-hover hover:text-ink"
-        >
-          戻る
-        </button>
       </header>
 
       <section className="flex flex-col gap-2 rounded-xl border border-edge bg-sunken p-4">

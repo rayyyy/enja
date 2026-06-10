@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { AppSettings, ShortcutBinding, UiLanguage } from "../types";
 import { otherUiLanguage } from "../lib/uiLanguage";
 
-type View = "translation" | "notes" | "settings" | "dictionary";
+export type View = "translation" | "notes" | "settings" | "dictionary";
 
 const defaultVoiceDictationShortcut: ShortcutBinding = {
   keyCode: null,

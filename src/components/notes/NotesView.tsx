@@ -8,12 +8,10 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import {
   Check,
-  Languages,
   Pin,
   PinOff,
   Plus,
   Search,
-  Settings,
   StickyNote as StickyNoteIcon,
   Trash2,
 } from "lucide-react";
@@ -32,7 +30,6 @@ import {
   noteColorClass,
   noteColorPresets,
 } from "../../lib/stickyNotes";
-import { useAppStore } from "../../stores/useAppStore";
 import type { StickyNote } from "../../types";
 import { RichNoteEditor } from "./RichNoteEditor";
 
@@ -54,7 +51,6 @@ const NOTE_CONTEXT_MENU_WIDTH = 132;
 const NOTE_CONTEXT_MENU_HEIGHT = 42;
 
 export function NotesView() {
-  const setView = useAppStore((s) => s.setView);
   const {
     notes,
     loaded,
@@ -279,26 +275,6 @@ export function NotesView() {
           ) : null}
         </div>
 
-        <div className="flex shrink-0 items-center gap-0.5 border-t border-edge px-2.5 py-2">
-          <button
-            type="button"
-            title="翻訳"
-            aria-label="翻訳"
-            onClick={() => setView("translation")}
-            className="grid size-7 place-items-center rounded-md text-ink-faint transition-colors duration-100 focus-ring hover:bg-hover hover:text-ink"
-          >
-            <Languages size={15} />
-          </button>
-          <button
-            type="button"
-            title="設定"
-            aria-label="設定"
-            onClick={() => setView("settings")}
-            className="grid size-7 place-items-center rounded-md text-ink-faint transition-colors duration-100 focus-ring hover:bg-hover hover:text-ink"
-          >
-            <Settings size={15} />
-          </button>
-        </div>
       </aside>
 
       <main className="min-w-0 flex-1">
