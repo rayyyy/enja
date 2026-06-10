@@ -13,8 +13,8 @@ function ChevronDownIcon({ className }: { className?: string }) {
   return (
     <svg
       className={className}
-      width="12"
-      height="12"
+      width="11"
+      height="11"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -32,8 +32,8 @@ function SwapIcon({ className }: { className?: string }) {
   return (
     <svg
       className={className}
-      width="14"
-      height="14"
+      width="13"
+      height="13"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -47,7 +47,10 @@ function SwapIcon({ className }: { className?: string }) {
   );
 }
 
-/** 左ペイン左上用・幅・高さを抑えた言語スイッチ（青系アクセント） */
+const selectClass =
+  "w-full min-w-0 cursor-pointer appearance-none rounded-md border border-edge bg-surface py-1 pr-6 pl-2 text-[11px] font-medium text-ink outline-none transition-[border-color,box-shadow] duration-100 hover:border-edge-strong focus:border-accent focus:ring-2 focus:ring-accent/25 disabled:cursor-not-allowed disabled:opacity-50";
+
+/** 左ペイン上部の言語スイッチ */
 export function TranslationLanguageBar() {
   const sourceLanguage = useAppStore((s) => s.sourceLanguage);
   const targetLanguage = useAppStore((s) => s.targetLanguage);
@@ -69,20 +72,15 @@ export function TranslationLanguageBar() {
 
   return (
     <div
-      className="flex shrink-0 flex-col gap-1 px-2 py-2"
+      className="flex shrink-0 flex-col gap-1 px-2.5 pt-2.5 pb-1.5"
       role="group"
-      aria-label={"\u7ffb\u8a33\u306e\u8a00\u8a9e"}
+      aria-label={"翻訳の言語"}
       aria-busy={saving}
     >
       <div className="flex items-center gap-1.5">
-        <span
-          className={`mt-0.5 h-1.5 w-1.5 shrink-0 self-center rounded-full bg-blue-500 ${saving ? "animate-pulse" : ""}`}
-          title="言語"
-          aria-hidden
-        />
         <div className="group relative min-w-0 flex-1">
           <label htmlFor="enja-source-lang" className="sr-only">
-            {"\u7ffb\u8a33\u524d\u306e\u8a00\u8a9e"}
+            {"翻訳前の言語"}
           </label>
           <select
             id="enja-source-lang"
@@ -94,10 +92,8 @@ export function TranslationLanguageBar() {
                 otherUiLanguage(e.target.value as UiLanguage),
               )
             }
-            title={
-              "\u7ffb\u8a33\u524d: " + languageLabelForUi(sourceLanguage)
-            }
-            className="w-full min-w-0 cursor-pointer appearance-none rounded-md border border-neutral-200 bg-white py-1 pr-7 pl-2 text-[11px] font-medium text-neutral-800 outline-none transition-[border-color,box-shadow] hover:border-neutral-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            title={"翻訳前: " + languageLabelForUi(sourceLanguage)}
+            className={selectClass}
           >
             {LANG_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
@@ -105,25 +101,27 @@ export function TranslationLanguageBar() {
               </option>
             ))}
           </select>
-          <ChevronDownIcon className="pointer-events-none absolute top-1/2 right-1.5 -translate-y-1/2 text-neutral-500" />
+          <ChevronDownIcon className="pointer-events-none absolute top-1/2 right-1.5 -translate-y-1/2 text-ink-faint" />
         </div>
 
         <button
           type="button"
           disabled={isTranslating || saving}
           onClick={() => void runPersist(targetLanguage, sourceLanguage)}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-blue-500 text-white transition-[transform,filter] hover:bg-blue-600 active:scale-95 disabled:pointer-events-none disabled:opacity-45"
+          className={`grid size-7 shrink-0 place-items-center rounded-md border border-edge bg-surface text-ink-mid transition-[transform,background-color,color] duration-100 focus-ring hover:bg-hover hover:text-ink active:scale-95 disabled:pointer-events-none disabled:opacity-45 ${
+            saving ? "animate-pulse" : ""
+          }`}
           title="言語を入れ替え"
           aria-label={
-            "\u7ffb\u8a33\u524d\u3068\u7ffb\u8a33\u5f8c\u306e\u8a00\u8a9e\u3092\u5165\u308c\u66ff\u3048\u308b"
+            "翻訳前と翻訳後の言語を入れ替える"
           }
         >
-          <SwapIcon className="text-white" />
+          <SwapIcon />
         </button>
 
         <div className="group relative min-w-0 flex-1">
           <label htmlFor="enja-target-lang" className="sr-only">
-            {"\u7ffb\u8a33\u5f8c\u306e\u8a00\u8a9e"}
+            {"翻訳後の言語"}
           </label>
           <select
             id="enja-target-lang"
@@ -135,10 +133,8 @@ export function TranslationLanguageBar() {
                 e.target.value as UiLanguage,
               )
             }
-            title={
-              "\u7ffb\u8a33\u5f8c: " + languageLabelForUi(targetLanguage)
-            }
-            className="w-full min-w-0 cursor-pointer appearance-none rounded-md border border-neutral-200 bg-white py-1 pr-7 pl-2 text-[11px] font-medium text-neutral-800 outline-none transition-[border-color,box-shadow] hover:border-neutral-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            title={"翻訳後: " + languageLabelForUi(targetLanguage)}
+            className={selectClass}
           >
             {LANG_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
@@ -146,12 +142,12 @@ export function TranslationLanguageBar() {
               </option>
             ))}
           </select>
-          <ChevronDownIcon className="pointer-events-none absolute top-1/2 right-1.5 -translate-y-1/2 text-neutral-500" />
+          <ChevronDownIcon className="pointer-events-none absolute top-1/2 right-1.5 -translate-y-1/2 text-ink-faint" />
         </div>
       </div>
 
       {saveError ? (
-        <p className="text-center text-[9px] leading-tight text-red-600">
+        <p className="text-center text-[10px] leading-tight text-danger">
           {saveError}
         </p>
       ) : null}

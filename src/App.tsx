@@ -116,28 +116,28 @@ function App() {
 
   if (windowLabel.startsWith("sticky-")) {
     return (
-      <Suspense fallback={<div className="h-full bg-neutral-50" />}>
+      <Suspense fallback={<div className="h-full bg-canvas" />}>
         <StickyNoteWindow noteId={windowLabel.slice("sticky-".length)} />
       </Suspense>
     );
   }
 
   return (
-    <div className="flex h-full min-h-0 w-full cursor-default flex-col overflow-hidden bg-neutral-50">
+    <div className="flex h-full min-h-0 w-full cursor-default flex-col overflow-hidden bg-canvas">
       {view === "notes" ? (
-        <Suspense fallback={<div className="flex-1 bg-white" />}>
+        <Suspense fallback={<div className="flex-1 bg-surface" />}>
           <NotesView />
         </Suspense>
-      ) : view === "settings" || view === "dictionary" ? (
-        <div className="flex min-h-0 flex-1 flex-col bg-white">
-          <div className="flex min-h-0 flex-1 p-4 md:p-5">
-            {view === "dictionary" ? (
-              <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col">
-                <DictionaryView />
-              </div>
-            ) : (
-              <SettingsView />
-            )}
+      ) : view === "settings" ? (
+        <div className="flex min-h-0 flex-1 flex-col bg-surface">
+          <SettingsView />
+        </div>
+      ) : view === "dictionary" ? (
+        <div className="flex min-h-0 flex-1 flex-col bg-surface">
+          <div className="flex min-h-0 flex-1 p-4 md:p-6">
+            <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col">
+              <DictionaryView />
+            </div>
           </div>
         </div>
       ) : (

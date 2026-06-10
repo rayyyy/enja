@@ -1,8 +1,146 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ---------------------------------------------------------------------------
+ * Design tokens — Raycast/Linear系のフラットで精密なトーン。
+ * ライト/ダークは .dark クラスで切替（lib/theme.ts が制御）。
+ * ------------------------------------------------------------------------- */
+:root {
+  /* surfaces */
+  --canvas: #f7f7f8;
+  --surface: #ffffff;
+  --raised: #ffffff;
+  --sunken: #f1f1f3;
+  --hover: rgb(9 9 11 / 0.045);
+
+  /* borders */
+  --edge: rgb(9 9 11 / 0.08);
+  --edge-strong: rgb(9 9 11 / 0.15);
+
+  /* text */
+  --ink: #1c1c1f;
+  --ink-mid: #65656e;
+  --ink-faint: #9b9ba4;
+
+  /* accent (洗練ブルー) */
+  --accent: #3e63dd;
+  --accent-deep: #3458c4;
+  --accent-soft: rgb(62 99 221 / 0.09);
+  --accent-ink: #3457c4;
+
+  /* status */
+  --danger: #d93d42;
+  --danger-soft: rgb(217 61 66 / 0.09);
+  --ok: #2a9d68;
+  --ok-soft: rgb(42 157 104 / 0.1);
+  --warn: #9a6700;
+  --warn-soft: rgb(154 103 0 / 0.1);
+
+  /* sticky note tints (light: パステル維持) */
+  --note-lemon-surface: #fff8c9;
+  --note-lemon-swatch: #f8e58c;
+  --note-mint-surface: #e3f8ee;
+  --note-mint-swatch: #b9ead7;
+  --note-sky-surface: #e6f2ff;
+  --note-sky-swatch: #b9dcff;
+  --note-rose-surface: #ffe8ec;
+  --note-rose-swatch: #ffc8d2;
+  --note-paper-surface: #f8f7ef;
+  --note-paper-swatch: #f1f0e8;
+
+  --scrollbar-thumb: rgb(9 9 11 / 0.16);
+  --scrollbar-thumb-hover: rgb(9 9 11 / 0.28);
+
+  /* floating layers: ライトはボーダー+柔らかい影 */
+  --shadow-pop:
+    0 1px 2px rgb(0 0 0 / 0.06),
+    0 4px 12px rgb(0 0 0 / 0.08),
+    0 0 0 1px rgb(9 9 11 / 0.06);
+  --shadow-modal:
+    0 16px 48px rgb(0 0 0 / 0.16),
+    0 4px 12px rgb(0 0 0 / 0.08),
+    0 0 0 1px rgb(9 9 11 / 0.06);
+}
+
+.dark {
+  --canvas: #121214;
+  --surface: #1a1a1d;
+  --raised: #232328;
+  --sunken: #232327;
+  --hover: rgb(255 255 255 / 0.055);
+
+  --edge: rgb(255 255 255 / 0.085);
+  --edge-strong: rgb(255 255 255 / 0.17);
+
+  --ink: #ededf0;
+  --ink-mid: #a3a3ac;
+  --ink-faint: #6f6f78;
+
+  --accent: #5472e4;
+  --accent-deep: #6584f0;
+  --accent-soft: rgb(84 114 228 / 0.16);
+  --accent-ink: #9eb1ff;
+
+  --danger: #e5484d;
+  --danger-soft: rgb(229 72 77 / 0.15);
+  --ok: #3dd68c;
+  --ok-soft: rgb(61 214 140 / 0.13);
+  --warn: #e2b045;
+  --warn-soft: rgb(226 176 69 / 0.12);
+
+  /* sticky note tints (dark: 暗色ティント — 色相を保ったまま沈める) */
+  --note-lemon-surface: #2e2a18;
+  --note-lemon-swatch: #8d7d35;
+  --note-mint-surface: #18291f;
+  --note-mint-swatch: #4c8a6f;
+  --note-sky-surface: #182636;
+  --note-sky-swatch: #4d7fb8;
+  --note-rose-surface: #2f1f24;
+  --note-rose-swatch: #b06a7a;
+  --note-paper-surface: #232325;
+  --note-paper-swatch: #77776e;
+
+  --scrollbar-thumb: rgb(255 255 255 / 0.16);
+  --scrollbar-thumb-hover: rgb(255 255 255 / 0.3);
+
+  /* floating layers: ダークは内側1pxストローク+重ねた黒影（Linear式） */
+  --shadow-pop:
+    0 4px 12px rgb(0 0 0 / 0.3),
+    0 8px 24px rgb(0 0 0 / 0.3),
+    inset 0 0 0 1px rgb(255 255 255 / 0.08);
+  --shadow-modal:
+    0 16px 48px rgb(0 0 0 / 0.4),
+    0 32px 72px rgb(0 0 0 / 0.4),
+    inset 0 0 0 1px rgb(255 255 255 / 0.1);
+}
+
 @theme {
   --font-sans: "Inter", "Noto Sans JP", ui-sans-serif, system-ui, sans-serif;
   --font-play: "Play", ui-sans-serif, system-ui, sans-serif;
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-sunken: var(--sunken);
+  --color-hover: var(--hover);
+  --color-edge: var(--edge);
+  --color-edge-strong: var(--edge-strong);
+  --color-ink: var(--ink);
+  --color-ink-mid: var(--ink-mid);
+  --color-ink-faint: var(--ink-faint);
+  --color-accent: var(--accent);
+  --color-accent-deep: var(--accent-deep);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
 }
 
 html,
@@ -14,15 +152,55 @@ body,
 }
 
 body {
-  @apply antialiased text-neutral-800;
+  @apply antialiased text-ink;
   background: transparent;
   font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "calt", "kern", "liga";
+  /* 和文主体UIのため、小サイズでも詰まらないようわずかに字間を開ける */
+  letter-spacing: 0.01em;
 }
 
-body.voice-window {
-  background: transparent;
+/* floating layer (メニュー/ダイアログ) 用の影 — ライト/ダークでトークン切替 */
+@utility shadow-pop {
+  box-shadow: var(--shadow-pop);
 }
 
+@utility shadow-modal {
+  box-shadow: var(--shadow-modal);
+}
+
+/* Linear式の二重フォーカスリング */
+@utility focus-ring {
+  &:focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--accent) 42%, transparent),
+      0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+}
+
+/* メニュー/ダイアログの登場アニメーション (200ms ease-out-quart) */
+@utility animate-pop-in {
+  animation: enja-pop-in 180ms cubic-bezier(0.165, 0.84, 0.44, 1);
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+@keyframes enja-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+body.voice-window,
 body.voice-window #root {
   background: transparent;
 }
@@ -32,6 +210,9 @@ body.sticky-window #root {
   background: transparent;
 }
 
+/* ---------------------------------------------------------------------------
+ * Note editor prose
+ * ------------------------------------------------------------------------- */
 .note-editor-prose {
   min-height: 100%;
   word-break: break-word;
@@ -114,12 +295,9 @@ body.sticky-window #root {
   position: relative;
   width: 1rem;
   height: 1rem;
-  border: 1.5px solid rgb(55 53 47 / 0.35);
+  border: 1.5px solid color-mix(in srgb, var(--ink) 35%, transparent);
   border-radius: 0.25rem;
-  background: rgb(255 255 255 / 0.7);
-  box-shadow:
-    0 1px 1px rgb(15 23 42 / 0.04),
-    inset 0 0 0 1px rgb(255 255 255 / 0.34);
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
   transition:
     background-color 120ms ease,
     border-color 120ms ease,
@@ -128,16 +306,13 @@ body.sticky-window #root {
 
 .note-editor-prose .note-editor-task-item > label:hover span,
 .note-editor-prose ul[data-type="taskList"] > li > label:hover span {
-  border-color: rgb(55 53 47 / 0.5);
-  background: rgb(255 255 255 / 0.95);
-  box-shadow:
-    0 1px 3px rgb(15 23 42 / 0.08),
-    inset 0 0 0 1px rgb(255 255 255 / 0.5);
+  border-color: color-mix(in srgb, var(--ink) 55%, transparent);
+  background: var(--surface);
 }
 
 .note-editor-prose .note-editor-task-item > label input:focus-visible + span,
 .note-editor-prose ul[data-type="taskList"] > li > label input:focus-visible + span {
-  outline: 2px solid rgb(55 53 47 / 0.18);
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
   outline-offset: 2px;
 }
 
@@ -145,11 +320,8 @@ body.sticky-window #root {
 .note-editor-prose .note-editor-task-item[data-checked="true"] > label span,
 .note-editor-prose ul[data-type="taskList"] > li > label input:checked + span,
 .note-editor-prose ul[data-type="taskList"] > li[data-checked="true"] > label span {
-  border-color: rgb(35 131 226);
-  background: rgb(35 131 226);
-  box-shadow:
-    0 1px 2px rgb(35 131 226 / 0.22),
-    inset 0 0 0 1px rgb(255 255 255 / 0.1);
+  border-color: var(--accent);
+  background: var(--accent);
 }
 
 .note-editor-prose .note-editor-task-item > label input:checked + span::after,
@@ -182,29 +354,34 @@ body.sticky-window #root {
 
 .note-editor-prose .note-editor-task-item[data-checked="true"] > div,
 .note-editor-prose ul[data-type="taskList"] > li[data-checked="true"] > div {
-  color: rgb(55 53 47 / 0.55);
+  color: var(--ink-faint);
   text-decoration: line-through;
 }
 
 .note-editor-prose blockquote {
   margin: 0.55rem 0;
-  border-left: 3px solid rgb(82 82 82 / 0.22);
+  border-left: 3px solid color-mix(in srgb, var(--ink) 22%, transparent);
   padding-left: 0.75rem;
-  color: rgb(82 82 82);
+  color: var(--ink-mid);
 }
 
 .note-editor-prose pre {
   margin: 0.6rem 0;
   overflow-x: auto;
   border-radius: 0.375rem;
-  background: rgb(23 23 23 / 0.9);
+  background: rgb(20 20 23 / 0.92);
   padding: 0.65rem 0.75rem;
-  color: white;
+  color: #ededf0;
+}
+
+.dark .note-editor-prose pre {
+  background: rgb(0 0 0 / 0.45);
+  border: 1px solid var(--edge);
 }
 
 .note-editor-prose code {
   border-radius: 0.25rem;
-  background: rgb(23 23 23 / 0.08);
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
   padding: 0.08rem 0.22rem;
   font-size: 0.92em;
 }
@@ -215,7 +392,7 @@ body.sticky-window #root {
 }
 
 .note-editor-prose a {
-  color: rgb(37 99 235);
+  color: var(--accent-ink);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -223,7 +400,7 @@ body.sticky-window #root {
 .note-editor-prose hr {
   margin: 0.8rem 0;
   border: 0;
-  border-top: 1px solid rgb(23 23 23 / 0.12);
+  border-top: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
 }
 
 .note-editor-prose .note-editor-image,
@@ -236,20 +413,23 @@ body.sticky-window #root {
 
 .note-editor-prose .ProseMirror-selectednode,
 .note-editor-prose img.ProseMirror-selectednode {
-  outline: 2px solid rgb(37 99 235 / 0.7);
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
 }
 
 .note-editor-prose p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
   float: left;
   height: 0;
-  color: rgb(115 115 115 / 0.58);
+  color: var(--ink-faint);
   pointer-events: none;
 }
 
-/* Scrollbar styling */
+/* ---------------------------------------------------------------------------
+ * Scrollbar
+ * ------------------------------------------------------------------------- */
 ::-webkit-scrollbar {
-  width: 4px;
+  width: 5px;
+  height: 5px;
 }
 
 ::-webkit-scrollbar-track {
@@ -257,9 +437,10 @@ body.sticky-window #root {
 }
 
 ::-webkit-scrollbar-thumb {
-  @apply rounded-full bg-neutral-200;
+  border-radius: 9999px;
+  background: var(--scrollbar-thumb);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  @apply bg-neutral-300;
+  background: var(--scrollbar-thumb-hover);
 }

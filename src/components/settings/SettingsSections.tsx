@@ -1,4 +1,10 @@
 import { useState } from "react";
+import { Monitor, Moon, Sun } from "lucide-react";
+import {
+  setThemePreference,
+  useThemePreference,
+  type ThemePreference,
+} from "../../lib/theme";
 import type {
   AppSettings,
   PromptCatalogItem,
@@ -79,7 +85,7 @@ export function ShortcutSettingsSection({
       </SettingsFieldGroup>
 
       <label className="flex flex-col gap-1.5 text-sm sm:col-span-2 sm:max-w-xs">
-        <span className="font-medium text-neutral-800">Cmd+C連打の判定時間（ミリ秒）</span>
+        <span className="font-medium text-ink">Cmd+C連打の判定時間（ミリ秒）</span>
         <input
           type="number"
           min={100}
@@ -285,7 +291,7 @@ export function VoiceModeSettingsSection({
     >
       <div className="sm:col-span-2">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <p className="text-xs leading-relaxed text-neutral-500">
+          <p className="text-xs leading-relaxed text-ink-mid">
             最後にONだったモードは保存され、次回のFn録音もそのモードで始まります。
           </p>
           <div className="flex flex-wrap items-center gap-2">
@@ -328,11 +334,9 @@ export function VoiceModeSettingsSection({
                   event.preventDefault();
                   dropProfile(profile.id);
                 }}
-                className={`group flex flex-col gap-3 rounded-xl border bg-white px-3 py-3 transition sm:flex-row sm:items-center ${
-                  active
-                    ? "border-blue-200 shadow-[0_0_0_1px_rgba(37,99,235,0.10)]"
-                    : "border-neutral-200"
-                } ${dropTarget ? "border-blue-300 bg-blue-50/40" : ""} ${
+                className={`group flex flex-col gap-3 rounded-xl border bg-sunken px-3 py-3 transition-colors duration-100 sm:flex-row sm:items-center ${
+                  active ? "border-accent/40 bg-accent-soft" : "border-edge"
+                } ${dropTarget ? "border-accent bg-accent-soft" : ""} ${
                   dragging ? "opacity-45" : ""
                 }`}
               >
@@ -348,7 +352,7 @@ export function VoiceModeSettingsSection({
                     setDragOverId(null);
                   }}
                   title="ドラッグして並び替え"
-                  className="flex w-full shrink-0 cursor-grab select-none items-center gap-2 rounded-lg border border-dashed border-neutral-200 bg-neutral-50 px-2 py-2 text-neutral-400 transition group-hover:border-blue-200 group-hover:text-blue-500 active:cursor-grabbing sm:w-16 sm:flex-col sm:justify-center sm:self-stretch"
+                  className="flex w-full shrink-0 cursor-grab select-none items-center gap-2 rounded-lg border border-dashed border-edge bg-surface px-2 py-2 text-ink-faint transition-colors duration-100 group-hover:border-accent/40 group-hover:text-accent-ink active:cursor-grabbing sm:w-16 sm:flex-col sm:justify-center sm:self-stretch"
                 >
                   <span className="grid grid-cols-2 gap-0.5" aria-hidden>
                     {Array.from({ length: 6 }, (_, dot) => (
@@ -362,21 +366,21 @@ export function VoiceModeSettingsSection({
 
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="truncate text-sm font-semibold text-neutral-900">
+                    <h3 className="truncate text-sm font-semibold text-ink">
                       {profile.name || "名称未設定"}
                     </h3>
                     {active ? (
-                      <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+                      <span className="rounded-full bg-accent px-2 py-0.5 text-[11px] font-medium text-white">
                         ON
                       </span>
                     ) : null}
                     {!profile.deletable ? (
-                      <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] text-neutral-500">
+                      <span className="rounded-full border border-edge bg-surface px-2 py-0.5 text-[11px] text-ink-mid">
                         固定
                       </span>
                     ) : null}
                     {!profile.formattingEnabled ? (
-                      <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">
+                      <span className="rounded-full bg-warn-soft px-2 py-0.5 text-[11px] text-warn">
                         整形なし
                       </span>
                     ) : null}
@@ -384,15 +388,15 @@ export function VoiceModeSettingsSection({
                       <span
                         className={`rounded-full px-2 py-0.5 text-[11px] ${
                           liveTranscriptionAvailable
-                            ? "bg-emerald-50 text-emerald-700"
-                            : "bg-neutral-100 text-neutral-500"
+                            ? "bg-ok-soft text-ok"
+                            : "border border-edge bg-surface text-ink-mid"
                         }`}
                       >
                         {liveTranscriptionAvailable ? "ライブ" : "ライブ未対応"}
                       </span>
                     ) : null}
                   </div>
-                  <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-neutral-500">
+                  <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-ink-mid">
                     {profile.description || "説明なし"}
                   </p>
                 </div>
@@ -402,7 +406,7 @@ export function VoiceModeSettingsSection({
                     <button
                       type="button"
                       onClick={() => onChange({ activeModeProfileId: profile.id })}
-                      className="rounded-lg bg-neutral-100 px-2.5 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-200"
+                      className="rounded-lg bg-accent-soft px-2.5 py-1 text-xs font-medium text-accent-ink transition-colors duration-100 hover:bg-accent/20"
                     >
                       ONにする
                     </button>
@@ -473,7 +477,7 @@ export function AuthSettingsSection({
         onChange={(value) => onSecretsChange({ ...secrets, openai: value })}
       />
       <label className="flex flex-col gap-1.5 text-sm">
-        <span className="font-medium text-neutral-800">Google Cloud Project ID</span>
+        <span className="font-medium text-ink">Google Cloud Project ID</span>
         <input
           value={voice.googleCloudProjectId}
           onChange={(e) => onVoiceChange({ googleCloudProjectId: e.target.value })}
@@ -482,7 +486,7 @@ export function AuthSettingsSection({
         />
       </label>
       <label className="flex flex-col gap-1.5 text-sm">
-        <span className="font-medium text-neutral-800">Google Cloudリージョン</span>
+        <span className="font-medium text-ink">Google Cloudリージョン</span>
         <input
           value={voice.googleCloudRegion}
           onChange={(e) => onVoiceChange({ googleCloudRegion: e.target.value })}
@@ -498,7 +502,7 @@ export function AuthSettingsSection({
       />
       {!voice.googleCloudUseAdc ? (
         <label className="flex flex-col gap-1.5 text-sm sm:col-span-2">
-          <span className="font-medium text-neutral-800">
+          <span className="font-medium text-ink">
             サービスアカウントJSON
             {providerStatus?.googleServiceAccount ? "（保存済み）" : ""}
           </span>
@@ -528,17 +532,71 @@ export function AppSettingsSection({
   onChange: (patch: Partial<AppSettings["app"]>) => void;
 }) {
   return (
-    <SettingsSectionPanel title="アプリ" description="起動と権限まわりの設定です。">
+    <SettingsSectionPanel
+      title="アプリ"
+      description="外観、起動、権限まわりの設定です。"
+    >
+      <AppearanceField />
       <Toggle
         className="sm:col-span-2"
         label="Macログイン時に自動起動"
         checked={app.launchAtLogin}
         onChange={(checked) => onChange({ launchAtLogin: checked })}
       />
-      <p className="rounded-xl bg-neutral-100/60 px-4 py-3 text-xs leading-relaxed text-neutral-500 sm:col-span-2">
+      <p className="rounded-xl border border-edge bg-sunken px-4 py-3 text-xs leading-relaxed text-ink-mid sm:col-span-2">
         macOSではアクセシビリティ、入力監視、マイクの許可が必要です。ショートカットが取得できない場合は、プライバシーとセキュリティの許可を確認してください。
       </p>
     </SettingsSectionPanel>
+  );
+}
+
+const THEME_OPTIONS: Array<{
+  value: ThemePreference;
+  label: string;
+  icon: typeof Monitor;
+}> = [
+  { value: "system", label: "システム", icon: Monitor },
+  { value: "light", label: "ライト", icon: Sun },
+  { value: "dark", label: "ダーク", icon: Moon },
+];
+
+function AppearanceField() {
+  const preference = useThemePreference();
+
+  return (
+    <div className="flex flex-col gap-1.5 text-sm sm:col-span-2">
+      <span className="font-medium text-ink">テーマ</span>
+      <div
+        role="radiogroup"
+        aria-label="テーマ"
+        className="grid w-fit grid-cols-3 gap-0.5 rounded-lg border border-edge bg-sunken p-0.5"
+      >
+        {THEME_OPTIONS.map((option) => {
+          const Icon = option.icon;
+          const selected = preference === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              onClick={() => setThemePreference(option.value)}
+              className={`flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors duration-150 focus-ring ${
+                selected
+                  ? "bg-surface text-ink shadow-sm"
+                  : "text-ink-mid hover:text-ink"
+              }`}
+            >
+              <Icon size={13} />
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-xs leading-relaxed text-ink-mid">
+        「システム」はmacOSの外観モードに自動で追従します。
+      </p>
+    </div>
   );
 }
 
@@ -563,18 +621,18 @@ function VoiceModeEditorDialog({
   const canDelete = editor.kind === "edit" && profile.deletable;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-[2px]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[2px]">
       <div
         role="dialog"
         aria-modal="true"
-        className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+        className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-raised shadow-modal animate-pop-in"
       >
-        <div className="flex items-start justify-between gap-4 bg-neutral-50 px-5 py-4">
+        <div className="flex items-start justify-between gap-4 border-b border-edge px-5 py-4">
           <div className="min-w-0">
-            <h2 className="text-lg font-semibold text-neutral-900">
+            <h2 className="text-lg font-semibold text-ink">
               {editor.kind === "create" ? "音声モードを追加" : "音声モードを編集"}
             </h2>
-            <p className="mt-1 text-sm leading-relaxed text-neutral-500">
+            <p className="mt-1 text-sm leading-relaxed text-ink-mid">
               整形を有効にした場合、ユーザープロンプトには必ず {"{{transcript}}"} を含めます。
             </p>
           </div>
@@ -589,14 +647,14 @@ function VoiceModeEditorDialog({
 
         <div className="min-h-0 space-y-4 overflow-y-auto px-5 py-4">
           {editor.error ? (
-            <p className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">
+            <p className="rounded-xl bg-danger-soft px-3 py-2 text-sm text-danger">
               {editor.error}
             </p>
           ) : null}
 
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="flex flex-col gap-1.5 text-sm">
-              <span className="font-medium text-neutral-800">モード名</span>
+              <span className="font-medium text-ink">モード名</span>
               <input
                 value={profile.name}
                 onChange={(event) =>
@@ -607,7 +665,7 @@ function VoiceModeEditorDialog({
               />
             </label>
             <label className="flex flex-col gap-1.5 text-sm">
-              <span className="font-medium text-neutral-800">説明</span>
+              <span className="font-medium text-ink">説明</span>
               <input
                 value={profile.description}
                 onChange={(event) =>
@@ -647,7 +705,7 @@ function VoiceModeEditorDialog({
           {profile.formattingEnabled ? (
             <>
               <label className="flex flex-col gap-1.5 text-sm">
-                <span className="font-medium text-neutral-800">System prompt</span>
+                <span className="font-medium text-ink">System prompt</span>
                 <textarea
                   value={profile.systemPrompt}
                   onChange={(event) =>
@@ -660,8 +718,8 @@ function VoiceModeEditorDialog({
 
               <label className="flex flex-col gap-1.5 text-sm">
                 <span className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-medium text-neutral-800">User prompt</span>
-                  <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] text-neutral-500">
+                  <span className="font-medium text-ink">User prompt</span>
+                  <span className="rounded-full border border-edge bg-surface px-2 py-0.5 text-[11px] text-ink-mid">
                     必須: {"{{transcript}}"} / 任意: {"{{dictionary_section}}"}
                   </span>
                 </span>
@@ -676,13 +734,13 @@ function VoiceModeEditorDialog({
               </label>
             </>
           ) : (
-            <p className="rounded-xl bg-amber-50 px-4 py-3 text-sm leading-relaxed text-amber-800">
+            <p className="rounded-xl bg-warn-soft px-4 py-3 text-sm leading-relaxed text-warn">
               このモードでは整形プロンプトを使いません。録音停止後、文字起こし結果をそのまま出力します。
             </p>
           )}
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-neutral-100 px-5 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-edge px-5 py-4">
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -695,10 +753,10 @@ function VoiceModeEditorDialog({
               <button
                 type="button"
                 onClick={onDelete}
-                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors duration-100 ${
                   editor.confirmDelete
-                    ? "bg-red-600 text-white hover:bg-red-700"
-                    : "bg-red-50 text-red-700 hover:bg-red-100"
+                    ? "bg-danger text-white hover:bg-danger/85"
+                    : "bg-danger-soft text-danger hover:bg-danger/20"
                 }`}
               >
                 {editor.confirmDelete ? "もう一度押して削除" : "削除"}

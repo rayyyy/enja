@@ -17,7 +17,7 @@ export function StreamingMarkdown({ text, streaming }: Props) {
   const parts = linkifyUrlText(text);
 
   return (
-    <div className="text-[13px] leading-relaxed text-neutral-700">
+    <div className="text-[14px] leading-relaxed text-ink">
       {text ? (
         <p className="m-0 whitespace-pre-wrap wrap-break-word">
           {parts.map((part, index) =>
@@ -26,7 +26,7 @@ export function StreamingMarkdown({ text, streaming }: Props) {
                 key={`${part.href}-${index}`}
                 href={part.href}
                 onClick={(event) => handleLinkClick(event, part.href)}
-                className="text-blue-600 underline decoration-blue-300 underline-offset-2 transition-colors hover:text-blue-700"
+                className="text-accent-ink underline decoration-accent/40 underline-offset-2 transition-colors hover:decoration-accent"
                 rel="noreferrer"
                 target="_blank"
               >
@@ -38,13 +38,13 @@ export function StreamingMarkdown({ text, streaming }: Props) {
           )}
         </p>
       ) : (
-        <p className="m-0 text-neutral-400">
+        <p className="m-0 text-ink-faint">
           {streaming ? "応答を待っています…" : "翻訳がここに表示されます。"}
         </p>
       )}
       {streaming ? (
         <span
-          className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-blue-500 align-middle"
+          className="ml-0.5 inline-block h-4 w-0.5 animate-pulse rounded-full bg-accent align-middle"
           aria-hidden
         />
       ) : null}

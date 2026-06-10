@@ -116,7 +116,7 @@ export function RichNoteEditor({
     editorProps: {
       attributes: {
         class:
-          "note-editor-prose min-h-full px-5 py-4 text-[14px] leading-relaxed text-neutral-800 focus:outline-none",
+          "note-editor-prose min-h-full px-5 py-4 text-[14px] leading-relaxed text-ink focus:outline-none",
       },
       handlePaste: (_view, event) => {
         const files = imageFilesFromClipboard(event);

@@ -225,38 +225,38 @@ export function NotesView() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 bg-white">
-      <aside className="flex h-full w-[292px] shrink-0 flex-col border-r border-neutral-200 bg-neutral-50">
-        <div className="shrink-0 border-b border-neutral-200 px-4 pt-3 pb-3">
+    <div className="flex min-h-0 flex-1 bg-surface">
+      <aside className="flex h-full w-[292px] shrink-0 flex-col border-r border-edge bg-canvas">
+        <div className="shrink-0 px-4 pt-3.5 pb-3">
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
-              <StickyNoteIcon size={18} className="shrink-0 text-neutral-500" />
-              <h1 className="truncate text-sm font-semibold text-neutral-800">
+              <StickyNoteIcon size={16} className="shrink-0 text-ink-faint" />
+              <h1 className="truncate text-[13px] font-semibold text-ink">
                 メモ
               </h1>
             </div>
             <button
               type="button"
-              title="新規メモ"
+              title="新規メモ（⌘N）"
               aria-label="新規メモ"
               onClick={createAndSelectNote}
-              className="grid size-8 place-items-center rounded-md bg-neutral-900 text-white shadow-sm transition-colors hover:bg-neutral-700"
+              className="grid size-7 place-items-center rounded-md bg-accent text-white transition-colors duration-100 focus-ring hover:bg-accent-deep active:scale-95"
             >
-              <Plus size={16} />
+              <Plus size={15} />
             </button>
           </div>
-          <div className="mt-3 flex h-8 items-center gap-2 rounded-md border border-neutral-200 bg-white px-2">
-            <Search size={14} className="shrink-0 text-neutral-400" />
+          <div className="mt-3 flex h-8 items-center gap-2 rounded-md border border-edge bg-surface px-2 transition-[border-color,box-shadow] duration-100 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/25">
+            <Search size={13} className="shrink-0 text-ink-faint" />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              className="min-w-0 flex-1 bg-transparent text-[12px] text-neutral-700 placeholder:text-neutral-400 focus:outline-none"
+              className="min-w-0 flex-1 bg-transparent text-[12px] text-ink placeholder:text-ink-faint focus:outline-none"
               placeholder="検索"
             />
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
           {filteredRows.map(({ note, title, preview }) => (
             <NoteListItem
               key={note.id}
@@ -273,30 +273,30 @@ export function NotesView() {
             />
           ))}
           {filteredRows.length === 0 ? (
-            <p className="px-3 py-8 text-center text-xs text-neutral-400">
+            <p className="px-3 py-8 text-center text-xs text-ink-faint">
               メモがありません
             </p>
           ) : null}
         </div>
 
-        <div className="flex shrink-0 items-center gap-1 border-t border-neutral-200 px-3 py-2">
+        <div className="flex shrink-0 items-center gap-0.5 border-t border-edge px-2.5 py-2">
           <button
             type="button"
             title="翻訳"
             aria-label="翻訳"
             onClick={() => setView("translation")}
-            className="grid size-8 place-items-center rounded-md text-neutral-400 transition-colors hover:bg-neutral-200 hover:text-neutral-700"
+            className="grid size-7 place-items-center rounded-md text-ink-faint transition-colors duration-100 focus-ring hover:bg-hover hover:text-ink"
           >
-            <Languages size={16} />
+            <Languages size={15} />
           </button>
           <button
             type="button"
             title="設定"
             aria-label="設定"
             onClick={() => setView("settings")}
-            className="grid size-8 place-items-center rounded-md text-neutral-400 transition-colors hover:bg-neutral-200 hover:text-neutral-700"
+            className="grid size-7 place-items-center rounded-md text-ink-faint transition-colors duration-100 focus-ring hover:bg-hover hover:text-ink"
           >
-            <Settings size={16} />
+            <Settings size={15} />
           </button>
         </div>
       </aside>
@@ -318,7 +318,7 @@ export function NotesView() {
             />
           </div>
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-neutral-400">
+          <div className="flex h-full items-center justify-center text-sm text-ink-faint">
             メモを選択
           </div>
         )}
@@ -329,7 +329,7 @@ export function NotesView() {
           role="menu"
           aria-label="メモの操作"
           onContextMenu={(event) => event.preventDefault()}
-          className="fixed z-50 w-32 rounded-md border border-neutral-200 bg-white py-1 shadow-lg"
+          className="fixed z-50 w-32 rounded-lg bg-raised py-1 shadow-pop animate-pop-in"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
@@ -339,7 +339,7 @@ export function NotesView() {
               setContextMenu(null);
               deleteNote(contextMenuNote.id);
             }}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-red-600 transition-colors hover:bg-red-50"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-danger transition-colors duration-100 hover:bg-danger-soft"
           >
             <Trash2 size={14} />
             削除
@@ -362,12 +362,12 @@ export function StickyNoteWindow({ noteId }: { noteId: string }) {
   }, []);
 
   if (!loaded) {
-    return <div className="h-full bg-neutral-50" />;
+    return <div className="h-full bg-canvas" />;
   }
 
   if (!note) {
     return (
-      <div className="flex h-full items-center justify-center bg-neutral-50 text-sm text-neutral-400">
+      <div className="flex h-full items-center justify-center bg-canvas text-sm text-ink-faint">
         メモが見つかりません
       </div>
     );
@@ -414,9 +414,9 @@ function NoteEditorPanel({
       )}`}
     >
       {showToolbar ? (
-        <div className="shrink-0 border-b border-black/5 px-4 pt-3 pb-3">
+        <div className="shrink-0 border-b border-edge px-4 pt-3 pb-3">
           <div className="flex items-center gap-2">
-            <div className="flex min-w-0 flex-1 items-center gap-1">
+            <div className="flex min-w-0 flex-1 items-center gap-1.5">
               {noteColorPresets.map((preset) => (
                 <button
                   key={preset.id}
@@ -424,14 +424,14 @@ function NoteEditorPanel({
                   title={preset.label}
                   aria-label={preset.label}
                   onClick={() => onPatch({ color: preset.id })}
-                  className={`grid size-6 place-items-center rounded-full border transition ${
+                  className={`grid size-[18px] place-items-center rounded-full transition-[box-shadow,transform] duration-100 focus-ring active:scale-90 ${
                     note.color === preset.id
-                      ? "border-neutral-900"
-                      : "border-black/10 hover:border-neutral-500"
+                      ? "shadow-[0_0_0_1.5px_var(--surface),0_0_0_3px_var(--ink)]"
+                      : "shadow-[inset_0_0_0_1px_var(--edge-strong)] hover:scale-110"
                   }`}
                   style={{ backgroundColor: preset.swatch }}
                 >
-                  {note.color === preset.id ? <Check size={12} /> : null}
+                  {note.color === preset.id ? <Check size={11} /> : null}
                 </button>
               ))}
             </div>
@@ -441,22 +441,22 @@ function NoteEditorPanel({
                 title={note.pinned ? "最前面を解除" : "最前面に表示"}
                 aria-label={note.pinned ? "最前面を解除" : "最前面に表示"}
                 onClick={note.pinned ? onHidePinned : onShowPinned}
-                className={`grid size-8 place-items-center rounded-md transition-colors ${
+                className={`grid size-7 place-items-center rounded-md transition-colors duration-100 focus-ring ${
                   note.pinned
-                    ? "bg-neutral-900 text-white"
-                    : "text-neutral-500 hover:bg-black/5 hover:text-neutral-800"
+                    ? "bg-ink text-canvas"
+                    : "text-ink-mid hover:bg-hover hover:text-ink"
                 }`}
               >
-                {note.pinned ? <PinOff size={15} /> : <Pin size={15} />}
+                {note.pinned ? <PinOff size={14} /> : <Pin size={14} />}
               </button>
               <button
                 type="button"
                 title="削除"
                 aria-label="削除"
                 onClick={onDelete}
-                className="grid size-8 place-items-center rounded-md text-neutral-500 transition-colors hover:bg-red-500 hover:text-white"
+                className="grid size-7 place-items-center rounded-md text-ink-mid transition-colors duration-100 focus-ring hover:bg-danger hover:text-white"
               >
-                <Trash2 size={15} />
+                <Trash2 size={14} />
               </button>
             </div>
           </div>
@@ -510,38 +510,36 @@ function NoteListItem({
         onSelect();
       }}
       title={note.pinned ? "固定中" : "未固定"}
-      className={`mb-1 flex w-full cursor-pointer items-start gap-3 rounded-md border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 ${
-        selected
-          ? "border-neutral-300 bg-white shadow-sm"
-          : "border-transparent hover:bg-white/80"
+      className={`mb-0.5 flex w-full cursor-pointer items-start gap-2.5 rounded-lg px-3 py-2 text-left transition-colors duration-100 focus-ring ${
+        selected ? "bg-accent-soft" : "hover:bg-hover"
       }`}
     >
       <span
-        className={`mt-0.5 size-3 shrink-0 rounded-full ${noteColorClass(
+        className={`mt-1 size-2.5 shrink-0 rounded-full ${noteColorClass(
           note.color,
         )}`}
       />
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px] font-medium text-neutral-800">
+        <span className="block truncate text-[13px] font-medium text-ink">
           {title}
         </span>
-        <span className="mt-0.5 block truncate text-[11px] text-neutral-500">
+        <span className="mt-0.5 block truncate text-[11px] text-ink-mid">
           {preview}
         </span>
-        <span className="mt-1 block text-[10px] text-neutral-400">
+        <span className="mt-1 block text-[10px] text-ink-faint">
           {formatDate(note.updatedAt)}
         </span>
       </span>
-      <span
-        role="img"
-        title={note.pinned ? "固定中" : "未固定"}
-        aria-label={note.pinned ? "固定中" : "未固定"}
-        className={`mt-0.5 grid size-6 shrink-0 place-items-center rounded-md ${
-          note.pinned ? "text-neutral-900" : "text-neutral-300"
-        }`}
-      >
-        {note.pinned ? <Pin size={14} fill="currentColor" /> : <PinOff size={14} />}
-      </span>
+      {note.pinned ? (
+        <span
+          role="img"
+          title="固定中"
+          aria-label="固定中"
+          className="mt-0.5 grid size-5 shrink-0 place-items-center text-ink-mid"
+        >
+          <Pin size={12} fill="currentColor" />
+        </span>
+      ) : null}
     </div>
   );
 }
