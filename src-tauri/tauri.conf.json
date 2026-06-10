@@ -25,7 +25,7 @@
         "titleBarStyle": "Transparent",
         "decorations": true,
         "transparent": false,
-        "backgroundColor": "#fafafa",
+        "backgroundColor": "#f7f7f8",
         "alwaysOnTop": false,
         "visible": false,
         "skipTaskbar": true,

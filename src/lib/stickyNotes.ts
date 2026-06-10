@@ -13,25 +13,34 @@ export const defaultNoteContent: RichTextNode = {
   content: [{ type: "paragraph" }],
 };
 
+// 実色は index.css の --note-*-surface / --note-*-swatch（ライト/ダークで切替）。
 export const noteColorPresets: Array<{
   id: StickyNoteColor;
   label: string;
   swatch: string;
 }> = [
-  { id: "lemon", label: "レモン", swatch: "#f8e58c" },
-  { id: "mint", label: "ミント", swatch: "#b9ead7" },
-  { id: "sky", label: "スカイ", swatch: "#b9dcff" },
-  { id: "rose", label: "ローズ", swatch: "#ffc8d2" },
-  { id: "paper", label: "ペーパー", swatch: "#f1f0e8" },
+  { id: "lemon", label: "レモン", swatch: "var(--note-lemon-swatch)" },
+  { id: "mint", label: "ミント", swatch: "var(--note-mint-swatch)" },
+  { id: "sky", label: "スカイ", swatch: "var(--note-sky-swatch)" },
+  { id: "rose", label: "ローズ", swatch: "var(--note-rose-swatch)" },
+  { id: "paper", label: "ペーパー", swatch: "var(--note-paper-swatch)" },
 ];
 
 export function noteColorClass(color: StickyNoteColor, surface = false) {
   const classes: Record<StickyNoteColor, string> = {
-    lemon: surface ? "bg-[#fff8c9]" : "bg-[#f8e58c]",
-    mint: surface ? "bg-[#e3f8ee]" : "bg-[#b9ead7]",
-    sky: surface ? "bg-[#e6f2ff]" : "bg-[#b9dcff]",
-    rose: surface ? "bg-[#ffe8ec]" : "bg-[#ffc8d2]",
-    paper: surface ? "bg-[#f8f7ef]" : "bg-[#f1f0e8]",
+    lemon: surface
+      ? "bg-[var(--note-lemon-surface)]"
+      : "bg-[var(--note-lemon-swatch)]",
+    mint: surface
+      ? "bg-[var(--note-mint-surface)]"
+      : "bg-[var(--note-mint-swatch)]",
+    sky: surface ? "bg-[var(--note-sky-surface)]" : "bg-[var(--note-sky-swatch)]",
+    rose: surface
+      ? "bg-[var(--note-rose-surface)]"
+      : "bg-[var(--note-rose-swatch)]",
+    paper: surface
+      ? "bg-[var(--note-paper-surface)]"
+      : "bg-[var(--note-paper-swatch)]",
   };
   return classes[color] ?? classes.lemon;
 }

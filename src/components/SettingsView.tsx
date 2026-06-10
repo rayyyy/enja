@@ -313,7 +313,7 @@ function withShortcut(
 }
 
 export function SettingsView() {
-  const { setView, hydrateFromSettings } = useAppStore();
+  const hydrateFromSettings = useAppStore((s) => s.hydrateFromSettings);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [devices, setDevices] = useState<AudioInputDevice[]>([]);
   const [promptCatalog, setPromptCatalog] = useState<PromptCatalogItem[] | null>(
@@ -587,7 +587,7 @@ export function SettingsView() {
   }
 
   if (!settings || !promptCatalog) {
-    return <p className="text-sm text-neutral-500">設定を読み込んでいます…</p>;
+    return <p className="p-6 text-sm text-ink-mid">設定を読み込んでいます…</p>;
   }
 
   const activeSetupProfile = setupProfile
@@ -595,11 +595,11 @@ export function SettingsView() {
     : null;
 
   return (
-    <div className="flex h-full min-h-0 w-full overflow-hidden bg-white">
-      <aside className="flex w-54 shrink-0 flex-col bg-neutral-100/50 md:w-56">
+    <div className="flex h-full min-h-0 w-full overflow-hidden bg-surface">
+      <aside className="flex w-54 shrink-0 flex-col border-r border-edge bg-canvas md:w-56">
         <div className="px-4 pb-4 pt-5">
-          <h1 className="text-lg font-semibold tracking-tight text-neutral-900">設定</h1>
-          <p className="mt-1.5 text-xs leading-relaxed text-neutral-500">
+          <h1 className="text-lg font-semibold tracking-tight text-ink">設定</h1>
+          <p className="mt-1.5 text-xs leading-relaxed text-ink-mid">
             音声入力、ショートカット、プロンプトを管理します。
           </p>
         </div>
@@ -609,39 +609,16 @@ export function SettingsView() {
               key={section.id}
               type="button"
               onClick={() => setActiveSection(section.id)}
-              className={`rounded-lg px-3 py-2 text-left text-sm font-medium transition ${
+              className={`rounded-md px-3 py-1.5 text-left text-[13px] font-medium transition-colors duration-100 focus-ring ${
                 activeSection === section.id
-                  ? "bg-white text-blue-700"
-                  : "text-neutral-600 hover:bg-white/60 hover:text-neutral-900"
+                  ? "bg-accent-soft text-accent-ink"
+                  : "text-ink-mid hover:bg-hover hover:text-ink"
               }`}
             >
               {section.label}
             </button>
           ))}
         </nav>
-        <div className="mt-auto space-y-0.5 px-2.5 py-3">
-          <button
-            type="button"
-            onClick={() => setView("notes")}
-            className="w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-600 transition hover:bg-white/80 hover:text-neutral-900"
-          >
-            メモ
-          </button>
-          <button
-            type="button"
-            onClick={() => setView("dictionary")}
-            className="w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-600 transition hover:bg-white/80 hover:text-neutral-900"
-          >
-            辞書
-          </button>
-          <button
-            type="button"
-            onClick={() => setView("translation")}
-            className="w-full rounded-lg px-3 py-2 text-left text-sm text-neutral-600 transition hover:bg-white/80 hover:text-neutral-900"
-          >
-            戻る
-          </button>
-        </div>
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -653,7 +630,7 @@ export function SettingsView() {
               description="録音、文字起こし、整形モデルの設定です。"
             >
               <label className="flex flex-col gap-1.5 text-sm sm:col-span-2">
-                <span className="font-medium text-neutral-800">マイク</span>
+                <span className="font-medium text-ink">マイク</span>
                 <select
                   value={settings.voice.selectedMicrophoneId ?? ""}
                   onChange={(e) =>
@@ -673,10 +650,10 @@ export function SettingsView() {
 
               <div className="flex flex-col gap-3 sm:col-span-2">
                 <div>
-                  <h3 className="text-sm font-medium text-neutral-800">
+                  <h3 className="text-sm font-medium text-ink">
                     音声認識モデル
                   </h3>
-                  <p className="mt-1 text-xs leading-relaxed text-neutral-500">
+                  <p className="mt-1 text-xs leading-relaxed text-ink-mid">
                     料金は公式ページの目安です。実際の請求は利用量、リージョン、追加機能、契約プランで変わります。
                   </p>
                 </div>
@@ -717,7 +694,7 @@ export function SettingsView() {
               </div>
 
               <label className="flex flex-col gap-1.5 text-sm">
-                <span className="font-medium text-neutral-800">整形モデル</span>
+                <span className="font-medium text-ink">整形モデル</span>
                 <select
                   value={settings.voice.finalizationModel}
                   onChange={(e) =>
@@ -736,7 +713,7 @@ export function SettingsView() {
               </label>
 
               <label className="flex flex-col gap-1.5 text-sm">
-                <span className="font-medium text-neutral-800">最大録音秒数</span>
+                <span className="font-medium text-ink">最大録音秒数</span>
                 <input
                   type="number"
                   min={5}
@@ -757,62 +734,62 @@ export function SettingsView() {
                 }
               />
               <fieldset className="sm:col-span-2">
-                <legend className="mb-2 text-sm font-medium text-slate-900">
+                <legend className="mb-2 text-sm font-medium text-ink">
                   PC内部音声の扱い
                 </legend>
                 <div className="grid gap-2">
-                  <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-3 text-sm">
+                  <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-edge bg-sunken p-3 text-sm transition-colors duration-100 hover:bg-hover has-checked:border-accent/40 has-checked:bg-accent-soft">
                     <input
                       type="radio"
                       name="systemAudioHandling"
                       value="mute"
-                      className="mt-1"
+                      className="mt-1 accent-[var(--accent)]"
                       checked={settings.voice.systemAudioHandling === "mute"}
                       onChange={() =>
                         patchVoice({ systemAudioHandling: "mute" })
                       }
                     />
                     <span>
-                      <span className="block font-medium">録音中はミュート</span>
-                      <span className="block text-xs text-slate-600">
+                      <span className="block font-medium text-ink">録音中はミュート</span>
+                      <span className="block text-xs leading-relaxed text-ink-mid">
                         録音開始直前にMacの出力をミュートし、終了後に元へ戻します。シンプルですが、ユーザーにも音が聞こえなくなります。
                       </span>
                     </span>
                   </label>
-                  <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-3 text-sm">
+                  <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-edge bg-sunken p-3 text-sm transition-colors duration-100 hover:bg-hover has-checked:border-accent/40 has-checked:bg-accent-soft">
                     <input
                       type="radio"
                       name="systemAudioHandling"
                       value="isolate"
-                      className="mt-1"
+                      className="mt-1 accent-[var(--accent)]"
                       checked={settings.voice.systemAudioHandling === "isolate"}
                       onChange={() =>
                         patchVoice({ systemAudioHandling: "isolate" })
                       }
                     />
                     <span>
-                      <span className="block font-medium">
+                      <span className="block font-medium text-ink">
                         AECで分離（Typeless相当）
                       </span>
-                      <span className="block text-xs text-slate-600">
+                      <span className="block text-xs leading-relaxed text-ink-mid">
                         Core Audio Process Tapでシステム音声のみを別経路で取得し、AECでマイクから差し引きます。再生音は止まらず、Netflix等のDRM動画も暗転しません。macOS 14.4以上が必要です。
                       </span>
                     </span>
                   </label>
-                  <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white p-3 text-sm">
+                  <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-edge bg-sunken p-3 text-sm transition-colors duration-100 hover:bg-hover has-checked:border-accent/40 has-checked:bg-accent-soft">
                     <input
                       type="radio"
                       name="systemAudioHandling"
                       value="off"
-                      className="mt-1"
+                      className="mt-1 accent-[var(--accent)]"
                       checked={settings.voice.systemAudioHandling === "off"}
                       onChange={() =>
                         patchVoice({ systemAudioHandling: "off" })
                       }
                     />
                     <span>
-                      <span className="block font-medium">何もしない</span>
-                      <span className="block text-xs text-slate-600">
+                      <span className="block font-medium text-ink">何もしない</span>
+                      <span className="block text-xs leading-relaxed text-ink-mid">
                         ヘッドホン利用などで漏れ込みが起きない環境向け。録音への介入はしません。
                       </span>
                     </span>
@@ -873,7 +850,7 @@ export function SettingsView() {
           </div>
         </main>
 
-        <div className="flex shrink-0 items-center gap-3 bg-neutral-100/40 px-6 py-3.5 md:px-8">
+        <div className="flex shrink-0 items-center gap-3 border-t border-edge bg-canvas px-6 py-3 md:px-8">
           <button
             type="button"
             className={settingsButtonPrimaryClass}
@@ -884,7 +861,7 @@ export function SettingsView() {
           </button>
           {msg ? (
             <p
-              className={`text-sm ${msg.includes("保存しました") ? "text-emerald-600" : "text-neutral-500"}`}
+              className={`text-sm ${msg.includes("保存しました") ? "text-ok" : "text-ink-mid"}`}
             >
               {msg}
             </p>
@@ -1091,38 +1068,38 @@ function SpeechProfileRow({
           onSelect();
         }
       }}
-      className={`grid w-full gap-4 rounded-xl px-4 py-4 text-left transition lg:grid-cols-[minmax(0,1fr)_auto] ${
-        selected ? "bg-blue-50" : "bg-neutral-100/70 hover:bg-neutral-100"
+      className={`grid w-full gap-4 rounded-xl border px-4 py-4 text-left transition-colors duration-100 focus-ring lg:grid-cols-[minmax(0,1fr)_auto] ${
+        selected
+          ? "border-accent/40 bg-accent-soft"
+          : "border-edge bg-sunken hover:bg-hover"
       } ${disabled ? "cursor-not-allowed opacity-75" : ""}`}
     >
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <span
-            className={`size-3 shrink-0 rounded-full ${
-              selected ? "bg-blue-600" : "bg-neutral-300"
+            className={`size-2.5 shrink-0 rounded-full transition-colors duration-100 ${
+              selected ? "bg-accent" : "bg-edge-strong"
             }`}
           />
-          <span className="font-medium text-neutral-900">{profile.label}</span>
-          <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] text-neutral-600">
+          <span className="text-sm font-medium text-ink">{profile.label}</span>
+          <span className="rounded-full border border-edge bg-surface px-2 py-0.5 text-[11px] text-ink-mid">
             {profile.badge}
           </span>
           <span
             className={`rounded-full px-2 py-0.5 text-[11px] ${
-              configured
-                ? "bg-emerald-50 text-emerald-700"
-                : "bg-amber-50 text-amber-700"
+              configured ? "bg-ok-soft text-ok" : "bg-warn-soft text-warn"
             }`}
           >
             {configured ? "設定済み" : "要セットアップ"}
           </span>
         </div>
-        <p className="mt-1 text-xs leading-relaxed text-neutral-500">{profile.note}</p>
+        <p className="mt-1 text-xs leading-relaxed text-ink-mid">{profile.note}</p>
         <div className="mt-2 flex flex-wrap gap-1.5">
           {requirements.map((item) => (
             <span
               key={item.label}
               className={`rounded-full px-2 py-0.5 text-[11px] ${
-                item.ok ? "bg-neutral-100 text-neutral-600" : "bg-red-50 text-red-700"
+                item.ok ? "border border-edge bg-surface text-ink-mid" : "bg-danger-soft text-danger"
               }`}
             >
               {item.label}: {item.value}
@@ -1143,7 +1120,7 @@ function SpeechProfileRow({
             event.stopPropagation();
             onSetup();
           }}
-          className="w-fit rounded-lg bg-white/80 px-2.5 py-1 text-xs font-medium text-blue-600 transition hover:bg-blue-100/80"
+          className="w-fit rounded-lg bg-transparent px-2.5 py-1 text-xs font-medium text-accent-ink transition-colors duration-100 hover:bg-accent-soft"
         >
           セットアップ方法
         </button>
@@ -1162,10 +1139,10 @@ function ModelMetric({
   note?: string;
 }) {
   return (
-    <span className="min-w-[72px] rounded-lg bg-neutral-100/80 px-2 py-1.5 text-center">
-      <span className="block text-[10px] text-neutral-400">{label}</span>
-      <span className="block text-xs font-semibold text-neutral-800">{value}</span>
-      {note ? <span className="block truncate text-[10px] text-neutral-400">{note}</span> : null}
+    <span className="min-w-[72px] rounded-lg border border-edge bg-surface px-2 py-1.5 text-center">
+      <span className="block text-[10px] text-ink-faint">{label}</span>
+      <span className="block text-xs font-semibold text-ink">{value}</span>
+      {note ? <span className="block truncate text-[10px] text-ink-faint">{note}</span> : null}
     </span>
   );
 }
@@ -1190,17 +1167,17 @@ function SetupDialog({
   onInstallAppleSpeech?: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-[2px]">
-      <div className="flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-4 bg-neutral-50 px-5 py-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[2px]">
+      <div className="flex max-h-[82vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-raised shadow-modal animate-pop-in">
+        <div className="flex items-start justify-between gap-4 border-b border-edge px-5 py-4">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-lg font-semibold text-neutral-900">{profile.label}</h2>
-              <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-600">
+              <h2 className="text-lg font-semibold text-ink">{profile.label}</h2>
+              <span className="rounded-full border border-edge bg-surface px-2 py-0.5 text-xs text-ink-mid">
                 {profile.badge}
               </span>
             </div>
-            <p className="mt-1 text-sm leading-relaxed text-neutral-500">
+            <p className="mt-1 text-sm leading-relaxed text-ink-mid">
               {profile.setupSummary}
             </p>
           </div>
@@ -1209,7 +1186,7 @@ function SetupDialog({
               type="button"
               onClick={onCheck}
               disabled={checking}
-              className="rounded-lg bg-blue-100 px-2.5 py-1 text-xs font-medium text-blue-700 transition hover:bg-blue-200/70 disabled:opacity-50"
+              className="rounded-lg bg-accent-soft px-2.5 py-1 text-xs font-medium text-accent-ink transition-colors duration-100 hover:bg-accent/20 disabled:opacity-50"
             >
               {checking ? "確認中…" : profile.value === "appleSpeechAnalyzer" ? "状態確認" : "疎通確認"}
             </button>
@@ -1218,7 +1195,7 @@ function SetupDialog({
                 type="button"
                 onClick={onInstallAppleSpeech}
                 disabled={installingAppleSpeech}
-                className="rounded-lg bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-700 transition hover:bg-emerald-200/70 disabled:opacity-50"
+                className="rounded-lg bg-ok-soft px-2.5 py-1 text-xs font-medium text-ok transition-colors duration-100 hover:bg-ok/20 disabled:opacity-50"
               >
                 {installingAppleSpeech ? "インストール中…" : "モデルをインストール"}
               </button>
@@ -1237,9 +1214,7 @@ function SetupDialog({
           {checkResult ? (
             <div
               className={`mb-4 rounded-xl p-3 text-sm leading-relaxed ${
-                checkResult.ok
-                  ? "bg-emerald-50 text-emerald-900"
-                  : "bg-red-50 text-red-900"
+                checkResult.ok ? "bg-ok-soft text-ok" : "bg-danger-soft text-danger"
               }`}
             >
               <p className="font-medium">{checkResult.message}</p>
@@ -1260,13 +1235,13 @@ function SetupDialog({
           </div>
 
           <section className="mt-5">
-            <h3 className="text-sm font-semibold text-neutral-900">必要な設定</h3>
+            <h3 className="text-sm font-semibold text-ink">必要な設定</h3>
             <div className="mt-2 flex flex-wrap gap-2">
               {requirements.map((item) => (
                 <span
                   key={item.label}
                   className={`rounded-full px-2.5 py-1 text-xs ${
-                    item.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
+                    item.ok ? "bg-ok-soft text-ok" : "bg-danger-soft text-danger"
                   }`}
                 >
                   {item.label}: {item.value}
@@ -1276,8 +1251,8 @@ function SetupDialog({
           </section>
 
           <section className="mt-5">
-            <h3 className="text-sm font-semibold text-neutral-900">セットアップ手順</h3>
-            <ol className="mt-2 list-decimal space-y-2 pl-5 text-sm leading-relaxed text-neutral-600">
+            <h3 className="text-sm font-semibold text-ink">セットアップ手順</h3>
+            <ol className="mt-2 list-decimal space-y-2 pl-5 text-sm leading-relaxed text-ink-mid">
               {profile.setupSteps.map((step) => (
                 <li key={step}>{step}</li>
               ))}
@@ -1285,10 +1260,10 @@ function SetupDialog({
           </section>
 
           <section className="mt-5">
-            <h3 className="text-sm font-semibold text-neutral-900">
+            <h3 className="text-sm font-semibold text-ink">
               Enjaが設定画面から利用する情報
             </h3>
-            <ul className="mt-2 list-disc space-y-2 pl-5 text-sm leading-relaxed text-neutral-600">
+            <ul className="mt-2 list-disc space-y-2 pl-5 text-sm leading-relaxed text-ink-mid">
               {profile.enjaDataFlow.map((item) => (
                 <li key={item}>{item}</li>
               ))}
@@ -1296,14 +1271,14 @@ function SetupDialog({
           </section>
 
           <section className="mt-5">
-            <h3 className="text-sm font-semibold text-neutral-900">参照ページ</h3>
+            <h3 className="text-sm font-semibold text-ink">参照ページ</h3>
             <div className="mt-2 flex flex-wrap gap-2">
               {profile.docs.map((doc) => (
                 <button
                   key={doc.url}
                   type="button"
                   onClick={() => void openUrl(doc.url)}
-                  className="rounded-lg bg-neutral-100 px-3 py-1.5 text-xs font-medium text-blue-600 transition hover:bg-blue-100/80"
+                  className="rounded-lg border border-edge bg-surface px-3 py-1.5 text-xs font-medium text-accent-ink transition-colors duration-100 hover:bg-accent-soft"
                 >
                   {doc.label}
                 </button>

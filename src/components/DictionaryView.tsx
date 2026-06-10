@@ -6,7 +6,6 @@ import {
   getDictionary,
   updateDictionaryEntry,
 } from "../lib/commands";
-import { useAppStore } from "../stores/useAppStore";
 
 // バックエンド validate_entry の上限（dictionary.rs）と一致させる。
 const MAX_WORD_LENGTH = 100;
@@ -20,7 +19,6 @@ type EditingEntry = {
 };
 
 export function DictionaryView() {
-  const setView = useAppStore((s) => s.setView);
   const [entries, setEntries] = useState<DictionaryEntry[]>([]);
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState<EditingEntry | null>(null);
@@ -167,26 +165,19 @@ export function DictionaryView() {
   }
 
   return (
-    <div className="flex max-h-[560px] min-h-0 flex-col gap-5">
-      <header className="flex items-center justify-between gap-3">
+    <div className="flex h-full min-h-0 flex-col gap-5">
+      <header>
         <div>
-          <h1 className="text-2xl font-semibold text-neutral-900">辞書</h1>
-          <p className="mt-1 text-sm text-neutral-500">
+          <h1 className="text-xl font-semibold tracking-tight text-ink">辞書</h1>
+          <p className="mt-1 text-sm leading-relaxed text-ink-mid">
             音声認識と整形で優先する単語を登録します。各モデルに自動で連携されます。
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setView("translation")}
-          className="rounded-md border border-neutral-200 px-3 py-1.5 text-sm text-neutral-600 hover:bg-neutral-50"
-        >
-          戻る
-        </button>
       </header>
 
-      <section className="flex flex-col gap-2 rounded-lg border border-neutral-200 bg-white p-4">
+      <section className="flex flex-col gap-2 rounded-xl border border-edge bg-sunken p-4">
         <label className="flex flex-col gap-1 text-sm">
-          <span className="font-medium text-neutral-700">単語を追加</span>
+          <span className="font-medium text-ink">単語を追加</span>
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -198,7 +189,7 @@ export function DictionaryView() {
             }}
             rows={4}
             placeholder={"1行に1単語（改行で一括登録）\n例:\nTypeless\nAquaVoice"}
-            className="resize-none rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+            className="resize-none rounded-md border border-edge bg-surface px-3 py-2 text-sm text-ink outline-none transition-[border-color,box-shadow] duration-100 placeholder:text-ink-faint focus:border-accent focus:ring-2 focus:ring-accent/25"
           />
         </label>
         <div className="flex items-center gap-3">
@@ -206,11 +197,11 @@ export function DictionaryView() {
             type="button"
             disabled={saving || !draft.trim()}
             onClick={() => void addWords()}
-            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-40"
+            className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors duration-100 focus-ring hover:bg-accent-deep active:scale-[0.98] disabled:opacity-40"
           >
             {saving ? "追加中…" : "追加"}
           </button>
-          {message ? <p className="text-sm text-neutral-500">{message}</p> : null}
+          {message ? <p className="text-sm text-ink-mid">{message}</p> : null}
         </div>
       </section>
 
@@ -219,16 +210,16 @@ export function DictionaryView() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="辞書を検索"
-          className="w-full max-w-xs rounded-md border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+          className="w-full max-w-xs text-sm rounded-md border border-edge bg-surface px-3 py-2 text-sm text-ink outline-none transition-[border-color,box-shadow] duration-100 placeholder:text-ink-faint focus:border-accent focus:ring-2 focus:ring-accent/25"
         />
-        <p className="text-xs text-neutral-400">{entries.length}件</p>
+        <p className="text-xs text-ink-faint">{entries.length}件</p>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-neutral-200 bg-white">
+      <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-edge bg-surface">
         {filtered.length === 0 ? (
-          <p className="p-5 text-sm text-neutral-400">登録された単語はありません。</p>
+          <p className="p-5 text-sm text-ink-faint">登録された単語はありません。</p>
         ) : (
-          <ul className="divide-y divide-neutral-100">
+          <ul className="divide-y divide-edge">
             {filtered.map((entry) => {
               const details = entryDetails(entry);
               const isEditing = editing?.id === entry.id;
@@ -240,29 +231,29 @@ export function DictionaryView() {
                       onClick={() => void toggleEntry(entry)}
                       disabled={saving}
                       title={entry.enabled ? "有効（クリックで無効化）" : "無効（クリックで有効化）"}
-                      className="flex size-6 shrink-0 items-center justify-center rounded-full hover:bg-neutral-100 disabled:opacity-50"
+                      className="flex size-6 shrink-0 items-center justify-center rounded-full transition-colors duration-100 hover:bg-hover disabled:opacity-50"
                       aria-label={entry.enabled ? "無効化" : "有効化"}
                     >
                       <span
-                        className={`size-2.5 rounded-full ${entry.enabled ? "bg-blue-500" : "bg-neutral-300"}`}
+                        className={`size-2.5 rounded-full ${entry.enabled ? "bg-accent" : "bg-edge-strong"}`}
                         aria-hidden
                       />
                     </button>
                     <div className="min-w-0 flex-1">
                       <p
-                        className={`truncate text-sm ${entry.enabled ? "text-neutral-900" : "text-neutral-400"}`}
+                        className={`truncate text-sm ${entry.enabled ? "text-ink" : "text-ink-faint"}`}
                       >
                         {entry.preferred}
                       </p>
                       {details ? (
-                        <p className="mt-0.5 truncate text-xs text-neutral-400">{details}</p>
+                        <p className="mt-0.5 truncate text-xs text-ink-faint">{details}</p>
                       ) : null}
                     </div>
                     <button
                       type="button"
                       onClick={() => (isEditing ? setEditing(null) : startEditing(entry))}
                       disabled={saving}
-                      className="rounded-md border border-neutral-200 px-2.5 py-1 text-xs text-neutral-600 hover:bg-neutral-50 disabled:opacity-50"
+                      className="rounded-md border border-edge bg-surface px-2.5 py-1 text-xs text-ink-mid transition-colors duration-100 hover:bg-hover hover:text-ink disabled:opacity-50"
                     >
                       {isEditing ? "閉じる" : "詳細"}
                     </button>
@@ -270,25 +261,25 @@ export function DictionaryView() {
                       type="button"
                       onClick={() => void removeEntry(entry.id)}
                       disabled={saving}
-                      className="rounded-md border border-red-100 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+                      className="rounded-md px-2.5 py-1 text-xs text-danger transition-colors duration-100 hover:bg-danger-soft disabled:opacity-50"
                     >
                       削除
                     </button>
                   </div>
                   {isEditing && editing ? (
-                    <div className="mt-3 grid gap-3 border-t border-neutral-100 pt-3">
+                    <div className="mt-3 grid gap-3 border-t border-edge pt-3">
                       <label className="flex flex-col gap-1 text-sm">
-                        <span className="font-medium text-neutral-700">優先表記</span>
+                        <span className="font-medium text-ink">優先表記</span>
                         <input
                           value={editing.preferred}
                           onChange={(e) =>
                             setEditing({ ...editing, preferred: e.target.value })
                           }
-                          className="rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                          className="rounded-md border border-edge bg-surface px-3 py-2 text-sm text-ink outline-none transition-[border-color,box-shadow] duration-100 placeholder:text-ink-faint focus:border-accent focus:ring-2 focus:ring-accent/25"
                         />
                       </label>
                       <label className="flex flex-col gap-1 text-sm">
-                        <span className="font-medium text-neutral-700">誤認識した表記</span>
+                        <span className="font-medium text-ink">誤認識した表記</span>
                         <textarea
                           value={editing.aliasesText}
                           onChange={(e) =>
@@ -296,11 +287,11 @@ export function DictionaryView() {
                           }
                           rows={3}
                           placeholder={"1行に1つ\n例:\nタイプレス\nタイプです"}
-                          className="resize-none rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                          className="resize-none rounded-md border border-edge bg-surface px-3 py-2 text-sm text-ink outline-none transition-[border-color,box-shadow] duration-100 placeholder:text-ink-faint focus:border-accent focus:ring-2 focus:ring-accent/25"
                         />
                       </label>
                       <label className="flex flex-col gap-1 text-sm">
-                        <span className="font-medium text-neutral-700">高度な補正</span>
+                        <span className="font-medium text-ink">高度な補正</span>
                         <textarea
                           value={editing.correctionsText}
                           onChange={(e) =>
@@ -308,18 +299,18 @@ export function DictionaryView() {
                           }
                           rows={3}
                           placeholder={"1行に1つ\n例:\nタイプですか？アクアボイス -> TypelessかAquaVoice"}
-                          className="resize-none rounded-md border border-neutral-200 px-3 py-2 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                          className="resize-none rounded-md border border-edge bg-surface px-3 py-2 text-sm text-ink outline-none transition-[border-color,box-shadow] duration-100 placeholder:text-ink-faint focus:border-accent focus:ring-2 focus:ring-accent/25"
                         />
                       </label>
                       <div className="flex items-center gap-2">
-                        <label className="flex items-center gap-2 text-sm text-neutral-700">
+                        <label className="flex items-center gap-2 text-sm text-ink">
                           <input
                             type="checkbox"
                             checked={editing.enabled}
                             onChange={(e) =>
                               setEditing({ ...editing, enabled: e.target.checked })
                             }
-                            className="size-4 rounded border-neutral-300"
+                            className="size-4 rounded accent-[var(--accent)]"
                           />
                           有効
                         </label>
@@ -327,7 +318,7 @@ export function DictionaryView() {
                           type="button"
                           onClick={() => void saveEditing()}
                           disabled={saving}
-                          className="ml-auto rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-40"
+                          className="ml-auto rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors duration-100 focus-ring hover:bg-accent-deep active:scale-[0.98] disabled:opacity-40"
                         >
                           {saving ? "保存中…" : "保存"}
                         </button>

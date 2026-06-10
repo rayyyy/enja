@@ -1,6 +1,8 @@
 import { lazy, Suspense, useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { LucideIcon } from "lucide-react";
+import { BookOpenText, Languages, Settings, StickyNote } from "lucide-react";
 import {
   getProviderStatus,
   getSettings,
@@ -8,7 +10,7 @@ import {
   hideWindow,
 } from "./lib/commands";
 import { startTranslation } from "./lib/startTranslation";
-import { useAppStore } from "./stores/useAppStore";
+import { useAppStore, type View } from "./stores/useAppStore";
 import { LeftPanel } from "./components/LeftPanel";
 import { RightPanel } from "./components/RightPanel";
 import { SettingsView } from "./components/SettingsView";
@@ -25,6 +27,13 @@ const StickyNoteWindow = lazy(() =>
     default: module.StickyNoteWindow,
   })),
 );
+
+const APP_NAV_ITEMS: { view: View; label: string; icon: LucideIcon }[] = [
+  { view: "translation", label: "翻訳", icon: Languages },
+  { view: "notes", label: "メモ", icon: StickyNote },
+  { view: "dictionary", label: "辞書", icon: BookOpenText },
+  { view: "settings", label: "設定", icon: Settings },
+];
 
 function App() {
   const windowLabel = getCurrentWindow().label;
@@ -116,28 +125,29 @@ function App() {
 
   if (windowLabel.startsWith("sticky-")) {
     return (
-      <Suspense fallback={<div className="h-full bg-neutral-50" />}>
+      <Suspense fallback={<div className="h-full bg-canvas" />}>
         <StickyNoteWindow noteId={windowLabel.slice("sticky-".length)} />
       </Suspense>
     );
   }
 
   return (
-    <div className="flex h-full min-h-0 w-full cursor-default flex-col overflow-hidden bg-neutral-50">
+    <div className="flex h-full min-h-0 w-full cursor-default overflow-hidden bg-canvas">
+      <AppNavigation />
       {view === "notes" ? (
-        <Suspense fallback={<div className="flex-1 bg-white" />}>
+        <Suspense fallback={<div className="flex-1 bg-surface" />}>
           <NotesView />
         </Suspense>
-      ) : view === "settings" || view === "dictionary" ? (
-        <div className="flex min-h-0 flex-1 flex-col bg-white">
-          <div className="flex min-h-0 flex-1 p-4 md:p-5">
-            {view === "dictionary" ? (
-              <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col">
-                <DictionaryView />
-              </div>
-            ) : (
-              <SettingsView />
-            )}
+      ) : view === "settings" ? (
+        <div className="flex min-h-0 flex-1 flex-col bg-surface">
+          <SettingsView />
+        </div>
+      ) : view === "dictionary" ? (
+        <div className="flex min-h-0 flex-1 flex-col bg-surface">
+          <div className="flex min-h-0 flex-1 p-4 md:p-6">
+            <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col">
+              <DictionaryView />
+            </div>
           </div>
         </div>
       ) : (
@@ -147,6 +157,42 @@ function App() {
         </div>
       )}
     </div>
+  );
+}
+
+function AppNavigation() {
+  const view = useAppStore((s) => s.view);
+  const setView = useAppStore((s) => s.setView);
+
+  return (
+    <aside
+      className="flex h-full w-12 shrink-0 flex-col items-center border-r border-edge bg-canvas px-1.5 py-2"
+      aria-label="アプリ内ナビゲーション"
+    >
+      <nav className="flex flex-1 flex-col items-center gap-1" aria-label="主要画面">
+        {APP_NAV_ITEMS.map((item) => {
+          const Icon = item.icon;
+          const active = view === item.view;
+          return (
+            <button
+              key={item.view}
+              type="button"
+              title={item.label}
+              aria-label={item.label}
+              aria-current={active ? "page" : undefined}
+              onClick={() => setView(item.view)}
+              className={`grid size-8 place-items-center rounded-md transition-colors duration-100 focus-ring ${
+                active
+                  ? "bg-accent-soft text-accent-ink"
+                  : "text-ink-faint hover:bg-hover hover:text-ink"
+              }`}
+            >
+              <Icon size={17} strokeWidth={1.8} />
+            </button>
+          );
+        })}
+      </nav>
+    </aside>
   );
 }
 

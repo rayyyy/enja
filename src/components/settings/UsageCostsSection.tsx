@@ -30,28 +30,28 @@ const SERVICE_META: Record<
 > = {
   geminiTranslation: {
     label: "Gemini 翻訳",
-    colorClass: "bg-blue-500",
-    pillClass: "bg-blue-50 text-blue-700",
+    colorClass: "bg-blue-500 dark:bg-blue-400",
+    pillClass: "bg-blue-500/10 text-blue-700 dark:text-blue-300",
   },
   geminiFinalization: {
     label: "Gemini 整形",
-    colorClass: "bg-emerald-500",
-    pillClass: "bg-emerald-50 text-emerald-700",
+    colorClass: "bg-emerald-500 dark:bg-emerald-400",
+    pillClass: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
   },
   geminiAudioInput: {
     label: "Gemini 音声入力",
-    colorClass: "bg-violet-500",
-    pillClass: "bg-violet-50 text-violet-700",
+    colorClass: "bg-violet-500 dark:bg-violet-400",
+    pillClass: "bg-violet-500/10 text-violet-700 dark:text-violet-300",
   },
   openAiTranscription: {
     label: "OpenAI 文字起こし",
-    colorClass: "bg-rose-500",
-    pillClass: "bg-rose-50 text-rose-700",
+    colorClass: "bg-rose-500 dark:bg-rose-400",
+    pillClass: "bg-rose-500/10 text-rose-700 dark:text-rose-300",
   },
   googleSpeechToText: {
     label: "Google Speech-to-Text",
-    colorClass: "bg-amber-500",
-    pillClass: "bg-amber-50 text-amber-700",
+    colorClass: "bg-amber-500 dark:bg-amber-400",
+    pillClass: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
   },
 };
 
@@ -78,16 +78,16 @@ export function UsageCostsSection({
       description="この端末で実行したAPI呼び出しを直近90日分だけ保存し、公式単価ベースで概算します。実際の請求額は各プロバイダの請求画面で確認してください。"
     >
       <div className="flex flex-wrap items-center justify-between gap-3 sm:col-span-2">
-        <div className="flex rounded-lg bg-neutral-100 p-1">
+        <div className="flex rounded-lg border border-edge bg-sunken p-0.5">
           {RANGE_OPTIONS.map((days) => (
             <button
               key={days}
               type="button"
               onClick={() => setRangeDays(days)}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors duration-150 focus-ring ${
                 rangeDays === days
-                  ? "bg-white text-blue-700 shadow-sm"
-                  : "text-neutral-600 hover:text-neutral-900"
+                  ? "bg-surface text-ink shadow-sm"
+                  : "text-ink-mid hover:text-ink"
               }`}
             >
               {days}日
@@ -113,10 +113,10 @@ export function UsageCostsSection({
       />
       <UsageSummaryCard label="保存期間" value="90日" />
 
-      <section className="rounded-xl bg-neutral-100/70 p-4 sm:col-span-2">
+      <section className="rounded-xl border border-edge bg-sunken p-4 sm:col-span-2">
         <div className="mb-3 flex items-end justify-between gap-3">
-          <h3 className="text-sm font-semibold text-neutral-900">日別</h3>
-          <span className="text-xs text-neutral-500">
+          <h3 className="text-sm font-semibold text-ink">日別</h3>
+          <span className="text-xs text-ink-mid">
             最大 {formatUsd(maxDailyCost)}
           </span>
         </div>
@@ -129,14 +129,14 @@ export function UsageCostsSection({
               const height = maxDailyCost > 0 ? Math.max((day.cost / maxDailyCost) * 100, 3) : 0;
               return (
                 <div key={day.key} className="flex h-full min-w-0 flex-1 flex-col items-center gap-2">
-                  <div className="flex h-32 w-full items-end rounded-md bg-white/80 px-1">
+                  <div className="flex h-32 w-full items-end rounded-md bg-surface px-1">
                     <div
-                      className="w-full rounded-t bg-blue-500"
+                      className="w-full rounded-t bg-accent"
                       style={{ height: `${height}%` }}
                       title={`${day.key}: ${formatUsd(day.cost)} / ${day.count}回`}
                     />
                   </div>
-                  <span className="w-full truncate text-center text-[10px] text-neutral-500">
+                  <span className="w-full truncate text-center text-[10px] text-ink-faint">
                     {day.label}
                   </span>
                 </div>
@@ -146,10 +146,10 @@ export function UsageCostsSection({
         </div>
       </section>
 
-      <section className="rounded-xl bg-neutral-100/70 p-4 sm:col-span-2">
+      <section className="rounded-xl border border-edge bg-sunken p-4 sm:col-span-2">
         <div className="mb-3 flex items-end justify-between gap-3">
-          <h3 className="text-sm font-semibold text-neutral-900">用途別</h3>
-          <span className="text-xs text-neutral-500">
+          <h3 className="text-sm font-semibold text-ink">用途別</h3>
+          <span className="text-xs text-ink-mid">
             {report.services.length.toLocaleString()}用途
           </span>
         </div>
@@ -160,21 +160,21 @@ export function UsageCostsSection({
               return (
                 <div key={service.service} className="grid gap-1.5">
                   <div className="flex items-center justify-between gap-3">
-                    <span className="truncate text-sm font-medium text-neutral-800">
+                    <span className="truncate text-sm font-medium text-ink">
                       {service.label}
                     </span>
-                    <span className="shrink-0 text-xs tabular-nums text-neutral-500">
+                    <span className="shrink-0 text-xs tabular-nums text-ink-mid">
                       {formatUsd(service.cost)} / {service.count.toLocaleString()}回
                     </span>
                   </div>
-                  <div className="h-2 overflow-hidden rounded-full bg-white">
+                  <div className="h-2 overflow-hidden rounded-full bg-surface">
                     <div
                       className={`h-full rounded-full ${service.colorClass}`}
                       style={{ width: `${width}%` }}
                     />
                   </div>
                   {service.unpriced > 0 ? (
-                    <p className="text-[11px] text-amber-700">
+                    <p className="text-[11px] text-warn">
                       未算出 {service.unpriced.toLocaleString()}件
                     </p>
                   ) : null}
@@ -189,13 +189,13 @@ export function UsageCostsSection({
 
       <section className="sm:col-span-2">
         <div className="mb-3 flex items-end justify-between gap-3">
-          <h3 className="text-sm font-semibold text-neutral-900">記録一覧</h3>
-          <span className="text-xs text-neutral-500">最新20件</span>
+          <h3 className="text-sm font-semibold text-ink">記録一覧</h3>
+          <span className="text-xs text-ink-mid">最新20件</span>
         </div>
         {report.recent.length ? (
-          <div className="overflow-x-auto rounded-xl bg-neutral-100/70">
+          <div className="overflow-x-auto rounded-xl border border-edge bg-sunken">
             <table className="min-w-full text-left text-xs">
-              <thead className="bg-neutral-100 text-neutral-500">
+              <thead className="border-b border-edge text-ink-mid">
                 <tr>
                   <th className="whitespace-nowrap px-3 py-2 font-medium">日時</th>
                   <th className="whitespace-nowrap px-3 py-2 font-medium">用途</th>
@@ -204,12 +204,12 @@ export function UsageCostsSection({
                   <th className="whitespace-nowrap px-3 py-2 text-right font-medium">概算</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-white/80">
+              <tbody className="divide-y divide-edge">
                 {report.recent.map((event) => {
                   const meta = SERVICE_META[event.service];
                   return (
-                    <tr key={event.id} className="bg-neutral-50/60">
-                      <td className="whitespace-nowrap px-3 py-2 text-neutral-600">
+                    <tr key={event.id}>
+                      <td className="whitespace-nowrap px-3 py-2 text-ink-mid">
                         {formatDateTime(event.timestampMs)}
                       </td>
                       <td className="px-3 py-2">
@@ -220,13 +220,13 @@ export function UsageCostsSection({
                           {meta.label}
                         </span>
                       </td>
-                      <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-neutral-600">
+                      <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-ink-mid">
                         {event.model}
                       </td>
-                      <td className="whitespace-nowrap px-3 py-2 text-neutral-600">
+                      <td className="whitespace-nowrap px-3 py-2 text-ink-mid">
                         {formatUsageQuantity(event)}
                       </td>
-                      <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-neutral-900">
+                      <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-ink">
                         {formatUsd(event.estimatedCostUsd)}
                       </td>
                     </tr>
@@ -253,11 +253,11 @@ function UsageSummaryCard({
   tone?: "neutral" | "warning";
 }) {
   return (
-    <div className="rounded-xl bg-neutral-100/70 px-4 py-3">
-      <p className="text-xs font-medium text-neutral-500">{label}</p>
+    <div className="rounded-xl border border-edge bg-sunken px-4 py-3">
+      <p className="text-xs font-medium text-ink-mid">{label}</p>
       <p
         className={`mt-1 text-lg font-semibold tabular-nums ${
-          tone === "warning" ? "text-amber-700" : "text-neutral-900"
+          tone === "warning" ? "text-warn" : "text-ink"
         }`}
       >
         {value}
@@ -268,7 +268,7 @@ function UsageSummaryCard({
 
 function EmptyUsageState() {
   return (
-    <div className="rounded-xl bg-neutral-100/70 px-4 py-6 text-center text-sm text-neutral-500">
+    <div className="rounded-xl border border-edge bg-sunken px-4 py-6 text-center text-sm text-ink-mid">
       まだ利用記録がありません。
     </div>
   );
