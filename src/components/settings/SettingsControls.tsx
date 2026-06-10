@@ -1,5 +1,5 @@
-import type { ReactNode } from "react";
-import type { PromptCatalogItem, ShortcutBinding } from "../../types";
+import { memo, type ReactNode } from "react";
+import type { PromptCatalogItem, PromptOverrides, ShortcutBinding } from "../../types";
 
 export const settingsInputClass =
   "w-full rounded-lg border border-edge bg-sunken px-3 py-2 text-sm text-ink transition-[border-color,box-shadow,background-color] duration-100 placeholder:text-ink-faint focus:border-accent focus:bg-surface focus:outline-none focus:ring-2 focus:ring-accent/25";
@@ -48,7 +48,7 @@ export function SettingsFieldGroup({
   return <div className={`flex flex-col gap-3 ${className}`}>{children}</div>;
 }
 
-export function ShortcutRow({
+export const ShortcutRow = memo(function ShortcutRow({
   label,
   shortcut,
   capturing,
@@ -98,9 +98,9 @@ export function ShortcutRow({
       </div>
     </div>
   );
-}
+});
 
-export function PromptEditor({
+export const PromptEditor = memo(function PromptEditor({
   field,
   defaultValue,
   customValue,
@@ -109,7 +109,7 @@ export function PromptEditor({
   field: PromptCatalogItem;
   defaultValue: string;
   customValue: string | null;
-  onChange: (value: string | null) => void;
+  onChange: (key: keyof PromptOverrides, value: string | null) => void;
 }) {
   const customized = customValue !== null;
   const value = customized ? customValue : defaultValue;
@@ -130,14 +130,14 @@ export function PromptEditor({
             <input
               type="checkbox"
               checked={customized}
-              onChange={(e) => onChange(e.target.checked ? defaultValue : null)}
+              onChange={(e) => onChange(field.key, e.target.checked ? defaultValue : null)}
               className="size-4 rounded accent-[var(--accent)] focus:ring-0 focus:ring-offset-0"
             />
             カスタム
           </label>
           <button
             type="button"
-            onClick={() => onChange(null)}
+            onClick={() => onChange(field.key, null)}
             className={settingsButtonSecondaryClass}
           >
             デフォルトに戻す
@@ -148,16 +148,16 @@ export function PromptEditor({
         value={value}
         readOnly={!customized}
         rows={field.rows}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => onChange(field.key, e.target.value)}
         className={`w-full resize-y px-4 py-3 font-mono text-xs leading-relaxed outline-none ${
           customized ? "bg-surface text-ink" : "bg-sunken text-ink-mid"
         }`}
       />
     </div>
   );
-}
+});
 
-export function Toggle({
+export const Toggle = memo(function Toggle({
   label,
   description,
   checked,
@@ -195,9 +195,9 @@ export function Toggle({
       />
     </label>
   );
-}
+});
 
-export function SecretField({
+export const SecretField = memo(function SecretField({
   label,
   placeholder,
   value,
@@ -236,4 +236,4 @@ export function SecretField({
       />
     </label>
   );
-}
+});
