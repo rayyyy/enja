@@ -517,9 +517,15 @@ async fn finish_start_session(
     let paste_target = capture_paste_target();
 
     let selected_text = if mode == VoiceMode::Ask {
-        tokio::task::spawn_blocking(capture_selected_text)
-            .await
-            .map_err(|e| e.to_string())?
+        match tokio::task::spawn_blocking(capture_selected_text).await {
+            Ok(text) => text,
+            Err(e) => {
+                // join 失敗で Starting 状態を残すと以後のセッションが開始できなくなる。
+                let err = e.to_string();
+                fail_start_session(&app, mode, &cancelled, err.clone());
+                return Err(err);
+            }
+        }
     } else {
         String::new()
     };
@@ -554,7 +560,7 @@ async fn finish_start_session(
     let pipeline_for_recorder = pipeline_mode.clone();
     let live_transcription_provider = live_transcription_provider_for_settings(&settings, mode);
     let screen_context_for_recorder = screen_context_capture.context.clone();
-    let recorder = tokio::task::spawn_blocking(move || {
+    let recorder = match tokio::task::spawn_blocking(move || {
         Recorder::start(
             app_for_recorder,
             microphone_id,
@@ -565,7 +571,18 @@ async fn finish_start_session(
         )
     })
     .await
-    .map_err(|e| e.to_string())?;
+    {
+        Ok(result) => result,
+        Err(e) => {
+            // join 失敗で Starting 状態を残すと以後のセッションが開始できなくなる。
+            if let Some(aux) = audio_aux {
+                aux.stop();
+            }
+            let err = e.to_string();
+            fail_start_session(&app, mode, &cancelled, err.clone());
+            return Err(err);
+        }
+    };
 
     if is_start_cancelled(&cancelled) {
         if let Some(aux) = audio_aux {
@@ -676,9 +693,18 @@ async fn polish_selected_text(
         .unwrap_or_default();
     let screen_context_capture =
         start_voice_screen_context_capture(&app, &settings, paste_target.as_ref(), false);
-    let selected_text = tokio::task::spawn_blocking(capture_selected_text)
-        .await
-        .map_err(|e| e.to_string())?;
+    let selected_text = match tokio::task::spawn_blocking(capture_selected_text).await {
+        Ok(text) => text,
+        Err(e) => {
+            // join 失敗で Processing 状態を残すと以後のセッションが開始できなくなる。
+            let err = e.to_string();
+            if clear_processing_session_for_app(&app, &cancelled) {
+                show_voice_window(&app, true);
+                emit_state(&app, "error", Some(VoiceMode::Ask), None, Some(err.clone()));
+            }
+            return Err(err);
+        }
+    };
     let screen_context = resolve_voice_screen_context(
         screen_context_capture.context,
         screen_context_capture.ocr_rx,

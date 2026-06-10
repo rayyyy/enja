@@ -4,10 +4,20 @@
 use super::*;
 
 #[cfg(target_os = "macos")]
-pub(crate) const PASTE_RESTORE_DELAY_MS: u64 = 420;
-
-#[cfg(target_os = "macos")]
 pub(crate) const PASTE_WRITE_SETTLE_MS: u64 = 40;
+
+/// Cmd+V 後の挿入検証ポーリング間隔。
+#[cfg(target_os = "macos")]
+pub(crate) const PASTE_VERIFY_POLL_MS: u64 = 40;
+
+/// 挿入検証を諦めるまでの最大待ち時間。検証成功または このタイムアウトまで
+/// クリップボードを復元しない(遅いアプリが復元後に元の内容を貼る競合を防ぐ)。
+#[cfg(target_os = "macos")]
+pub(crate) const PASTE_VERIFY_TIMEOUT_MS: u64 = 600;
+
+/// Cmd+V 送信前のスナップショット取得を再試行するまでの待ち時間。
+#[cfg(target_os = "macos")]
+pub(crate) const PASTE_SNAPSHOT_RETRY_DELAY_MS: u64 = 80;
 
 #[cfg(target_os = "macos")]
 pub(crate) const PASTE_ACTIVATE_SETTLE_MS: u64 = 80;
@@ -450,20 +460,65 @@ pub(crate) fn perform_verified_clipboard_paste(
     text: &str,
     preferred_target: Option<&PasteTargetInfo>,
 ) -> Option<VerifiedPaste> {
-    let target = resolve_paste_target_info(preferred_target)?;
-    // If macOS cannot expose the target text, fall back to manual copy instead
-    // of treating a posted Cmd+V event as a successful insertion.
-    let focused = AxFocusedText::capture_for_paste_target(&target)?;
-    if !perform_clipboard_paste(text) {
+    // スナップショット取得は Cmd+V 送信前なので安全に再試行できる。
+    // 送信後の再試行は二重貼り付けの危険があるため一切行わない。
+    let focused = acquire_paste_snapshot(preferred_target).or_else(|| {
+        std::thread::sleep(Duration::from_millis(PASTE_SNAPSHOT_RETRY_DELAY_MS));
+        acquire_paste_snapshot(preferred_target)
+    })?;
+
+    let original = read_clipboard_text();
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        if clipboard.set_text(text.to_string()).is_err() {
+            return None;
+        }
+    } else {
         return None;
     }
-    let after_paste = focused.element.read_text_snapshot()?;
-    let insertion = verify_paste_insertion(&focused.snapshot, &after_paste, text)?;
+    std::thread::sleep(Duration::from_millis(PASTE_WRITE_SETTLE_MS));
+    if !run_keystroke("v") {
+        restore_clipboard(original);
+        return None;
+    }
+
+    let verified = wait_for_verified_insertion(&focused, text);
+    restore_clipboard(original);
+
+    let (after_paste, insertion) = verified?;
     Some(VerifiedPaste {
         target: focused,
         after_paste,
         insertion,
     })
+}
+
+#[cfg(target_os = "macos")]
+fn acquire_paste_snapshot(preferred_target: Option<&PasteTargetInfo>) -> Option<AxFocusedText> {
+    let target = resolve_paste_target_info(preferred_target)?;
+    // If macOS cannot expose the target text, fall back to manual copy instead
+    // of treating a posted Cmd+V event as a successful insertion.
+    AxFocusedText::capture_for_paste_target(&target)
+}
+
+/// 挿入をポーリングで検証する。検証が取れるか PASTE_VERIFY_TIMEOUT_MS を
+/// 超えるまでクリップボードは呼び出し側で復元しないこと。
+#[cfg(target_os = "macos")]
+fn wait_for_verified_insertion(
+    focused: &AxFocusedText,
+    text: &str,
+) -> Option<(AxTextSnapshot, VerifiedPasteInsertion)> {
+    let deadline = Instant::now() + Duration::from_millis(PASTE_VERIFY_TIMEOUT_MS);
+    loop {
+        if let Some(after_paste) = focused.element.read_text_snapshot() {
+            if let Some(insertion) = verify_paste_insertion(&focused.snapshot, &after_paste, text) {
+                return Some((after_paste, insertion));
+            }
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(PASTE_VERIFY_POLL_MS));
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -497,23 +552,6 @@ pub(crate) fn unchanged_selection_replacement_matches_text(
         return false;
     }
     utf16_range_text(&before.value, before.selected_range).is_some_and(|selected| selected == text)
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn perform_clipboard_paste(text: &str) -> bool {
-    let original = read_clipboard_text();
-    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-        if clipboard.set_text(text.to_string()).is_err() {
-            return false;
-        }
-    } else {
-        return false;
-    }
-    std::thread::sleep(Duration::from_millis(PASTE_WRITE_SETTLE_MS));
-    let ok = run_keystroke("v");
-    std::thread::sleep(Duration::from_millis(PASTE_RESTORE_DELAY_MS));
-    restore_clipboard(original);
-    ok
 }
 
 #[cfg(not(target_os = "macos"))]
