@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { deriveNoteTitle, noteToMarkdown, type RichTextNode } from "./stickyNotes";
+import {
+  deriveNoteTitle,
+  noteToMarkdown,
+  serializeRichTextNode,
+  type RichTextNode,
+} from "./stickyNotes";
 
 test("noteToMarkdown keeps copied blocks compact", () => {
   const doc: RichTextNode = {
@@ -114,4 +119,28 @@ test("deriveNoteTitle uses the first body line", () => {
   };
 
   expect(deriveNoteTitle(doc)).toBe("disol");
+});
+
+test("serializeRichTextNode returns cached string for the same doc object", () => {
+  const doc: RichTextNode = {
+    type: "doc",
+    content: [
+      { type: "paragraph", content: [{ type: "text", text: "キャッシュ" }] },
+    ],
+  };
+
+  const first = serializeRichTextNode(doc);
+  const second = serializeRichTextNode(doc);
+
+  expect(first).toBe(JSON.stringify(doc));
+  expect(second).toBe(first);
+});
+
+test("serializeRichTextNode falls back to default content for invalid docs", () => {
+  expect(serializeRichTextNode(null)).toBe(
+    JSON.stringify({ type: "doc", content: [{ type: "paragraph" }] }),
+  );
+  expect(serializeRichTextNode({ type: "paragraph" })).toBe(
+    serializeRichTextNode(undefined),
+  );
 });

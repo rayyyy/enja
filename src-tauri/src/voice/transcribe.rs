@@ -846,6 +846,7 @@ pub(crate) async fn transcribe_gemini_audio(
     Ok(output.text)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn finalize_text(
     app: &tauri::AppHandle,
     settings: &AppSettings,

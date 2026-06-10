@@ -94,7 +94,7 @@ enum SessionState {
         mode_profile_id: String,
         cancelled: Arc<Mutex<bool>>,
     },
-    Active(ActiveSession),
+    Active(Box<ActiveSession>),
     Processing {
         cancelled: ProcessingCancel,
     },
@@ -207,7 +207,7 @@ impl VoiceManager {
             }
         };
 
-        self.stop_active_session(app, session, cancelled).await
+        self.stop_active_session(app, *session, cancelled).await
     }
 
     async fn stop_active_session(
@@ -677,7 +677,7 @@ async fn finish_start_session(
     }
 
     let starting_mode_profile_id = starting_mode_profile_id.clone();
-    *guard = Some(SessionState::Active(ActiveSession {
+    *guard = Some(SessionState::Active(Box::new(ActiveSession {
         mode,
         mode_profile_id: starting_mode_profile_id.clone(),
         selected_text,
@@ -686,7 +686,7 @@ async fn finish_start_session(
         screen_context_ocr_rx: screen_context_capture.ocr_rx,
         recorder,
         audio_aux,
-    }));
+    })));
     drop(guard);
 
     if settings.voice.interaction_sounds_enabled {

@@ -145,9 +145,8 @@ pub(crate) async fn resolve_voice_screen_context(
     let Some(ocr_rx) = ocr_rx else {
         return context;
     };
-    match tokio::time::timeout(SCREEN_CONTEXT_OCR_WAIT_TIMEOUT, ocr_rx).await {
-        Ok(Ok(Some(ocr))) => context.merge_ocr(ocr),
-        Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {}
+    if let Ok(Ok(Some(ocr))) = tokio::time::timeout(SCREEN_CONTEXT_OCR_WAIT_TIMEOUT, ocr_rx).await {
+        context.merge_ocr(ocr)
     }
     context
 }

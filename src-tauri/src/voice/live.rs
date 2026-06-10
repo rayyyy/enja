@@ -177,7 +177,7 @@ pub(crate) fn write_i16_samples(writer: &mut impl Write, samples: &[i16]) -> Res
 }
 
 pub(crate) fn i16_samples_to_bytes(samples: &[i16]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(samples.len() * std::mem::size_of::<i16>());
+    let mut bytes = Vec::with_capacity(std::mem::size_of_val(samples));
     for sample in samples {
         bytes.extend_from_slice(&sample.to_le_bytes());
     }
@@ -266,6 +266,7 @@ pub(crate) fn start_google_live_transcriber(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn google_streaming_transcribe(
     settings: AppSettings,
     entries: Vec<DictionaryEntry>,

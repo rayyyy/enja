@@ -149,11 +149,11 @@ impl Recorder {
         let _ = self.control_tx.send(RecorderCommand::Finish);
         let _ = self.stopped_rx.recv_timeout(RECORDING_STOP_NOTIFY_TIMEOUT);
         after_recording_stopped();
-        let result = match self.done_rx.recv_timeout(Duration::from_secs(10)) {
+
+        match self.done_rx.recv_timeout(Duration::from_secs(10)) {
             Ok(result) => result,
             Err(_) => Err("録音停止処理がタイムアウトしました。".to_string()),
-        };
-        result
+        }
     }
 
     pub(crate) fn cancel(self) {
@@ -203,6 +203,7 @@ impl Drop for SystemAudioMuteGuard {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_recording_thread(
     app: tauri::AppHandle,
     selected_device_id: Option<String>,
