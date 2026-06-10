@@ -549,6 +549,26 @@ pub(crate) async fn transcribe_google_chirp3(
     }
 }
 
+/// Google ASR(バッチ Chirp3 またはライブ)を使う見込みのとき、確定時に
+/// 直列で発生するアクセストークン取得を録音中に先回りして温める。
+/// 取得結果は cache 側が保持するため、ここでは結果を捨ててよい。
+pub(crate) fn prefetch_google_speech_token(settings: &AppSettings, mode: VoiceMode) {
+    let uses_google_batch = settings.voice.speech_profile == SpeechProfile::GoogleChirp3;
+    let uses_google_live = matches!(
+        live_transcription_provider_for_settings(settings, mode),
+        Some(LiveTranscriptionProvider::GoogleChirp3)
+    );
+    if !uses_google_batch && !uses_google_live {
+        return;
+    }
+    let settings = settings.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = google_access_token(&settings).await {
+            eprintln!("[enja] Googleトークンの先読みに失敗: {err}");
+        }
+    });
+}
+
 pub(crate) async fn google_access_token(settings: &AppSettings) -> Result<String, String> {
     google_access_token_with_details(settings)
         .await

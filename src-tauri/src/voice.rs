@@ -249,14 +249,24 @@ impl VoiceManager {
             .try_state::<SettingsStore>()
             .map(|store| store.get().voice.interaction_sounds_enabled)
             .unwrap_or(false);
-        let clip = recorder.finish(move || {
-            if let Some(aux) = audio_aux {
-                aux.stop();
-            }
-            if should_play_stop_sound {
-                play_interaction_sound("stop");
-            }
+        // 録音停止(VAD トリム+WAV 化まで含むブロッキング処理)と OCR 結果の
+        // 解決を並行に走らせる。OCR を ASR 送信前に待つ仕様は維持しつつ、
+        // 待ち時間を録音停止処理の裏に隠す。
+        let finish_task = tokio::task::spawn_blocking(move || {
+            recorder.finish(move || {
+                if let Some(aux) = audio_aux {
+                    aux.stop();
+                }
+                if should_play_stop_sound {
+                    play_interaction_sound("stop");
+                }
+            })
         });
+        let (clip, screen_context) = tokio::join!(
+            finish_task,
+            resolve_voice_screen_context(screen_context, screen_context_ocr_rx)
+        );
+        let clip = clip.unwrap_or_else(|e| Err(e.to_string()));
 
         if is_processing_cancelled(&cancelled) {
             self.clear_processing_session(&cancelled);
@@ -289,8 +299,6 @@ impl VoiceManager {
             mode_profile.clone(),
             Some(processing_message.to_string()),
         );
-        let screen_context =
-            resolve_voice_screen_context(screen_context, screen_context_ocr_rx).await;
 
         let result = tokio::select! {
             result = process_clip(&app, mode, &mode_profile_id, &selected_text, &screen_context, clip) => result,
@@ -534,18 +542,49 @@ async fn finish_start_session(
         mode,
         &settings.voice.active_mode_profile_id,
     );
-    let screen_context_capture = start_voice_screen_context_capture(
-        &app,
-        &settings,
-        paste_target.as_ref(),
-        screen_context_ocr_enabled,
-    );
 
-    if is_start_cancelled(&cancelled) {
-        return Ok(());
-    }
+    // Google ASR を使う見込みなら、確定時のトークン取得 RTT(ADC では gcloud
+    // 呼び出し)を録音中に済ませておく。結果は cache 側が保持する。
+    prefetch_google_speech_token(&settings, mode);
 
-    let (audio_aux, pipeline_mode) = prepare_audio_pipeline(&settings);
+    // 画面文脈の取得(osascript+AX 走査)と音声パイプライン準備(システム音声の
+    // ミュート/分離)は互いに独立なので並行に走らせる。どちらも同期 I/O のため
+    // spawn_blocking に出し、async ワーカーを塞がない。
+    let app_for_context = app.clone();
+    let settings_for_context = settings.clone();
+    let target_for_context = paste_target.clone();
+    let context_task = tokio::task::spawn_blocking(move || {
+        start_voice_screen_context_capture(
+            &app_for_context,
+            &settings_for_context,
+            target_for_context.as_ref(),
+            screen_context_ocr_enabled,
+        )
+    });
+    let settings_for_pipeline = settings.clone();
+    let pipeline_task =
+        tokio::task::spawn_blocking(move || prepare_audio_pipeline(&settings_for_pipeline));
+
+    let (screen_context_capture, pipeline) = tokio::join!(context_task, pipeline_task);
+    let screen_context_capture = match screen_context_capture {
+        Ok(capture) => capture,
+        Err(e) => {
+            let err = e.to_string();
+            if let Ok((Some(aux), _)) = pipeline {
+                aux.stop();
+            }
+            fail_start_session(&app, mode, &cancelled, err.clone());
+            return Err(err);
+        }
+    };
+    let (audio_aux, pipeline_mode) = match pipeline {
+        Ok(pipeline) => pipeline,
+        Err(e) => {
+            let err = e.to_string();
+            fail_start_session(&app, mode, &cancelled, err.clone());
+            return Err(err);
+        }
+    };
 
     if is_start_cancelled(&cancelled) {
         if let Some(aux) = audio_aux {
@@ -854,7 +893,11 @@ async fn process_clip(
     screen_context: &VoiceScreenContext,
     clip: AudioClip,
 ) -> Result<String, String> {
-    let settings = crate::settings::load_settings(app)?;
+    // 設定はメモリ上の SettingsStore から取る(確定パスでのディスク再読込を避ける)。
+    let settings = app
+        .try_state::<SettingsStore>()
+        .map(|store| store.get())
+        .ok_or_else(|| "SettingsStore is unavailable.".to_string())?;
     let entries = dictionary::load_dictionary(app)?;
     let transcript = if should_use_live_transcript(&settings, mode, mode_profile_id) {
         match clip.live_transcript.as_ref() {
@@ -912,7 +955,10 @@ async fn finalize_selected_text_instruction(
     selected_text: &str,
     screen_context: &VoiceScreenContext,
 ) -> Result<String, String> {
-    let settings = crate::settings::load_settings(app)?;
+    let settings = app
+        .try_state::<SettingsStore>()
+        .map(|store| store.get())
+        .ok_or_else(|| "SettingsStore is unavailable.".to_string())?;
     let entries = dictionary::load_dictionary(app)?;
     finalize_text(
         app,
