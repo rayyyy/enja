@@ -324,12 +324,13 @@ impl VoiceManager {
 
         match result {
             Ok(text) => {
-                let inserted = if mode == VoiceMode::Dictation {
+                let paste_report = if mode == VoiceMode::Dictation {
                     paste_text_with_dictionary_learning(&app, &text)
                 } else {
                     paste_text(&text)
                 };
-                if inserted {
+                log_paste_report(&paste_report);
+                if paste_report.inserted() {
                     emit_result(
                         &app,
                         VoiceResultEvent {
@@ -341,23 +342,20 @@ impl VoiceManager {
                     hide_voice_window_after(app, Duration::from_millis(280));
                 } else {
                     show_voice_window(&app, true);
+                    let message = paste_report.user_message();
                     emit_state(
                         &app,
                         "fallback",
                         Some(mode),
                         mode_profile.clone(),
-                        Some(
-                            "カーソル位置への貼り付けを確認できなかったため、コピー用に表示しています。".to_string(),
-                        ),
+                        Some(message.clone()),
                     );
                     emit_result(
                         &app,
                         VoiceResultEvent {
                             text,
                             inserted: false,
-                            reason: Some(
-                                "カーソル位置への貼り付けを確認できませんでした。".to_string(),
-                            ),
+                            reason: Some(message),
                         },
                     );
                 }
@@ -812,8 +810,9 @@ async fn polish_selected_text(
 
     match result {
         Ok(text) => {
-            let inserted = paste_text(&text);
-            if inserted {
+            let paste_report = paste_text(&text);
+            log_paste_report(&paste_report);
+            if paste_report.inserted() {
                 emit_result(
                     &app,
                     VoiceResultEvent {
@@ -825,21 +824,20 @@ async fn polish_selected_text(
                 hide_voice_window_after(app, Duration::from_millis(280));
             } else {
                 show_voice_window(&app, true);
+                let message = paste_report.user_message();
                 emit_state(
                     &app,
                     "fallback",
                     Some(VoiceMode::Ask),
                     None,
-                    Some("カーソル位置への貼り付けを確認できなかったため、コピー用に表示しています。".to_string()),
+                    Some(message.clone()),
                 );
                 emit_result(
                     &app,
                     VoiceResultEvent {
                         text,
                         inserted: false,
-                        reason: Some(
-                            "カーソル位置への貼り付けを確認できませんでした。".to_string(),
-                        ),
+                        reason: Some(message),
                     },
                 );
             }

@@ -76,27 +76,32 @@ pub(crate) fn advance_dictionary_learning_quiescence(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn paste_text_with_dictionary_learning(app: &tauri::AppHandle, text: &str) -> bool {
-    let paste = match perform_verified_clipboard_paste(text) {
-        PasteAttempt::Verified(paste) => paste,
-        // 挿入はされたとみなすが、AX で確認できていないため辞書学習は行わない。
-        PasteAttempt::Unverified => return true,
-        PasteAttempt::Failed => return false,
+pub(crate) fn paste_text_with_dictionary_learning(
+    app: &tauri::AppHandle,
+    text: &str,
+) -> PasteReport {
+    let mut report = paste_text(text);
+    // 挿入はされたとみなすが、AX で確認できていない場合は辞書学習しない。
+    let Some(paste) = report.take_verified_paste() else {
+        return report;
     };
+    let VerifiedPaste {
+        target,
+        after_paste,
+        insertion,
+    } = *paste;
 
-    if let VerifiedPasteInsertion::Changed(inserted_range) = paste.insertion {
-        start_dictionary_learning_watch(
-            app.clone(),
-            paste.target,
-            paste.after_paste,
-            inserted_range,
-        );
+    if let VerifiedPasteInsertion::Changed(inserted_range) = insertion {
+        start_dictionary_learning_watch(app.clone(), target, after_paste, inserted_range);
     }
-    true
+    report
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn paste_text_with_dictionary_learning(_app: &tauri::AppHandle, text: &str) -> bool {
+pub(crate) fn paste_text_with_dictionary_learning(
+    _app: &tauri::AppHandle,
+    text: &str,
+) -> PasteReport {
     paste_text(text)
 }
 

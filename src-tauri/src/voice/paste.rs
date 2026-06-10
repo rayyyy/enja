@@ -325,6 +325,163 @@ pub(crate) enum VerifiedPasteInsertion {
     SameTextReplacement,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PasteStatus {
+    Verified,
+    Unverified,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PasteConfirmationKind {
+    AxTextChanged,
+    AxSameTextReplacement,
+    CaretMoved,
+    OwnEditablePasteEvent,
+    OptimisticTextInput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PasteFailureReason {
+    NoFocusedTarget,
+    FocusedTargetIsNotTextInput,
+    NoConfirmationChannel,
+    ClipboardUnavailable,
+    ClipboardWriteFailed,
+    KeystrokeFailed,
+    FocusMovedAfterPaste,
+    InsertionNotConfirmed,
+    #[cfg(not(target_os = "macos"))]
+    UnsupportedPlatform,
+}
+
+pub(crate) struct PasteReport {
+    pub(crate) status: PasteStatus,
+    pub(crate) target: Option<PasteTargetInfo>,
+    pub(crate) confirmation: Option<PasteConfirmationKind>,
+    pub(crate) failure_reason: Option<PasteFailureReason>,
+    #[cfg(target_os = "macos")]
+    verified: Option<Box<VerifiedPaste>>,
+}
+
+impl PasteReport {
+    fn new(
+        status: PasteStatus,
+        target: Option<PasteTargetInfo>,
+        confirmation: Option<PasteConfirmationKind>,
+        failure_reason: Option<PasteFailureReason>,
+    ) -> Self {
+        Self {
+            status,
+            target,
+            confirmation,
+            failure_reason,
+            #[cfg(target_os = "macos")]
+            verified: None,
+        }
+    }
+
+    pub(crate) fn unverified(target: PasteTargetInfo, confirmation: PasteConfirmationKind) -> Self {
+        Self::new(
+            PasteStatus::Unverified,
+            Some(target),
+            Some(confirmation),
+            None,
+        )
+    }
+
+    pub(crate) fn failed(
+        target: Option<PasteTargetInfo>,
+        failure_reason: PasteFailureReason,
+    ) -> Self {
+        Self::new(PasteStatus::Failed, target, None, Some(failure_reason))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn verified(
+        target: PasteTargetInfo,
+        confirmation: PasteConfirmationKind,
+        paste: VerifiedPaste,
+    ) -> Self {
+        let mut report = Self::new(
+            PasteStatus::Verified,
+            Some(target),
+            Some(confirmation),
+            None,
+        );
+        report.verified = Some(Box::new(paste));
+        report
+    }
+
+    pub(crate) fn inserted(&self) -> bool {
+        !matches!(self.status, PasteStatus::Failed)
+    }
+
+    pub(crate) fn user_message(&self) -> String {
+        match self.failure_reason {
+            Some(
+                PasteFailureReason::NoFocusedTarget
+                | PasteFailureReason::FocusedTargetIsNotTextInput
+                | PasteFailureReason::NoConfirmationChannel,
+            ) => "入力欄を確認できなかったため、コピー用に表示しています。".to_string(),
+            Some(
+                PasteFailureReason::ClipboardUnavailable
+                | PasteFailureReason::ClipboardWriteFailed
+                | PasteFailureReason::KeystrokeFailed,
+            ) => "カーソル位置への貼り付けを実行できなかったため、コピー用に表示しています。"
+                .to_string(),
+            #[cfg(not(target_os = "macos"))]
+            Some(PasteFailureReason::UnsupportedPlatform) => {
+                "カーソル位置への貼り付けを実行できなかったため、コピー用に表示しています。"
+                    .to_string()
+            }
+            Some(PasteFailureReason::FocusMovedAfterPaste) => {
+                "貼り付け中にフォーカスが移動したため、コピー用に表示しています。".to_string()
+            }
+            Some(PasteFailureReason::InsertionNotConfirmed) | None => {
+                "貼り付け後の挿入を確認できなかったため、コピー用に表示しています。".to_string()
+            }
+        }
+    }
+
+    pub(crate) fn debug_summary(&self) -> String {
+        format!(
+            "status={:?} confirmation={:?} failure={:?} target={}",
+            self.status,
+            self.confirmation,
+            self.failure_reason,
+            format_paste_target(self.target.as_ref()),
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn take_verified_paste(&mut self) -> Option<Box<VerifiedPaste>> {
+        self.verified.take()
+    }
+}
+
+pub(crate) fn log_paste_report(report: &PasteReport) {
+    if matches!(report.status, PasteStatus::Verified) {
+        return;
+    }
+    eprintln!("[enja] voice paste report: {}", report.debug_summary());
+}
+
+fn format_paste_target(target: Option<&PasteTargetInfo>) -> String {
+    let Some(target) = target else {
+        return "none".to_string();
+    };
+    let mut attributes = target.attributes.iter().cloned().collect::<Vec<_>>();
+    attributes.sort();
+    format!(
+        "pid={:?} role={:?} subrole={:?} attrs=[{}]",
+        target.pid,
+        target.role,
+        target.subrole,
+        attributes.join(","),
+    )
+}
+
 #[cfg(target_os = "macos")]
 impl AxFocusedText {
     pub(crate) fn capture() -> Option<Self> {
@@ -456,22 +613,6 @@ pub(crate) fn copy_ax_attribute_names(element: AXUIElementRef) -> Option<HashSet
     Some(out)
 }
 
-/// 貼り付け試行の結果。
-/// - `Verified`: AX でテキストの変化を確認できた(辞書学習に使える)。
-/// - `Unverified`: 挿入されたとみなすが AX のテキスト差分では確認できて
-///   いない。キャレット移動・自プロセスのペーストイベントで観測できた場合と、
-///   明示的なテキスト入力ロール(Electron/Monaco の隠し textarea 等)への
-///   楽観視がここに入る。誤検出の恐れがあるため学習はしない。
-/// - `Failed`: 入力先を解決できない・キー送信に失敗・貼り付け中にフォーカス
-///   が別アプリへ移った・挿入をどの手段でも確認できず楽観視も許されない。
-///   フォールバック表示で本文を救済する。
-#[cfg(target_os = "macos")]
-pub(crate) enum PasteAttempt {
-    Verified(Box<VerifiedPaste>),
-    Unverified,
-    Failed,
-}
-
 /// Cmd+V 送信後にポーリングで得られた挿入の証拠。
 #[cfg(target_os = "macos")]
 enum PasteConfirmation {
@@ -482,18 +623,19 @@ enum PasteConfirmation {
     },
     /// キャレット移動または自プロセスのペーストイベントで挿入を観測した
     /// (挿入位置までは特定できないので辞書学習には使わない)。
-    Observed,
+    Observed(PasteConfirmationKind),
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn paste_text(text: &str) -> bool {
-    !matches!(perform_verified_clipboard_paste(text), PasteAttempt::Failed)
+pub(crate) fn paste_text(text: &str) -> PasteReport {
+    perform_clipboard_paste(text)
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn perform_verified_clipboard_paste(text: &str) -> PasteAttempt {
-    let Some(target) = resolve_paste_target_info() else {
-        return PasteAttempt::Failed;
+pub(crate) fn perform_clipboard_paste(text: &str) -> PasteReport {
+    let target = match resolve_paste_target_info() {
+        Ok(target) => target,
+        Err(failure) => return failure.into_report(),
     };
 
     let own_pid = std::process::id() as i32;
@@ -507,9 +649,10 @@ pub(crate) fn perform_verified_clipboard_paste(text: &str) -> PasteAttempt {
         AxFocusedText::capture_for_paste_target(&target)
     });
 
-    // スナップショットが取れないターゲット(WKWebView 等、AX がテキストを
-    // 公開しない)でも、キャレット移動で挿入を観測できることがある。
-    let caret_probe = if focused.is_none() {
+    // AX がテキスト差分を公開しないターゲットでも、キャレット移動で挿入を
+    // 観測できることがある。AXWebArea は非編集ページ本体でもマーカーが動く
+    // ことがあるため、キャレット移動だけでは挿入証拠にしない。
+    let caret_probe = if allows_caret_movement_confirmation(&target) {
         CaretProbe::capture(&target)
     } else {
         None
@@ -519,22 +662,22 @@ pub(crate) fn perform_verified_clipboard_paste(text: &str) -> PasteAttempt {
     // Cmd+V を送らない。空打ちした上で成功扱いするより、クリップボードに
     // 触れる前に失敗を確定させてフォールバックダイアログに倒す。
     if focused.is_none() && caret_probe.is_none() && !is_own_target && !optimistic {
-        return PasteAttempt::Failed;
+        return PasteReport::failed(Some(target), PasteFailureReason::NoConfirmationChannel);
     }
 
     let original = read_clipboard_text();
     if let Ok(mut clipboard) = arboard::Clipboard::new() {
         if clipboard.set_text(text.to_string()).is_err() {
-            return PasteAttempt::Failed;
+            return PasteReport::failed(Some(target), PasteFailureReason::ClipboardWriteFailed);
         }
     } else {
-        return PasteAttempt::Failed;
+        return PasteReport::failed(Some(target), PasteFailureReason::ClipboardUnavailable);
     }
     std::thread::sleep(Duration::from_millis(PASTE_WRITE_SETTLE_MS));
     let pasted_at = Instant::now();
     if !run_keystroke("v") {
         restore_clipboard(original);
-        return PasteAttempt::Failed;
+        return PasteReport::failed(Some(target), PasteFailureReason::KeystrokeFailed);
     }
 
     // 検証が取れるか PASTE_VERIFY_TIMEOUT_MS を超えるまでクリップボードを
@@ -554,10 +697,14 @@ pub(crate) fn perform_verified_clipboard_paste(text: &str) -> PasteAttempt {
             }
         }
         if is_own_target && own_editable_paste_since(pasted_at) {
-            break Some(PasteConfirmation::Observed);
+            break Some(PasteConfirmation::Observed(
+                PasteConfirmationKind::OwnEditablePasteEvent,
+            ));
         }
         if caret_probe.as_ref().is_some_and(CaretProbe::caret_moved) {
-            break Some(PasteConfirmation::Observed);
+            break Some(PasteConfirmation::Observed(
+                PasteConfirmationKind::CaretMoved,
+            ));
         }
         if Instant::now() >= deadline {
             break None;
@@ -565,53 +712,82 @@ pub(crate) fn perform_verified_clipboard_paste(text: &str) -> PasteAttempt {
         std::thread::sleep(Duration::from_millis(PASTE_VERIFY_POLL_MS));
     };
 
-    let attempt = match confirmed {
+    let report = match confirmed {
         Some(PasteConfirmation::Verified {
             after_paste,
             insertion,
-        }) => PasteAttempt::Verified(Box::new(VerifiedPaste {
-            target: focused.expect("verified paste requires a snapshot"),
-            after_paste,
-            insertion,
-        })),
-        Some(PasteConfirmation::Observed) => PasteAttempt::Unverified,
+        }) => {
+            let confirmation = confirmation_kind_for_insertion(&insertion);
+            PasteReport::verified(
+                target.clone(),
+                confirmation,
+                VerifiedPaste {
+                    target: focused.expect("verified paste requires a snapshot"),
+                    after_paste,
+                    insertion,
+                },
+            )
+        }
+        Some(PasteConfirmation::Observed(confirmation)) => {
+            PasteReport::unverified(target.clone(), confirmation)
+        }
         // 明示的なテキスト入力ロール等(allows_unverified_paste)だけは、
         // AX に変化が出なくても対象アプリにフォーカスが残っていれば Cmd+V は
         // 届いているとみなす(Electron/Monaco は AX に変化が出ないことがある)。
         // それ以外は確認できなければ失敗としてフォールバックダイアログを出す。
         None if optimistic => unverified_unless_focus_moved(&target),
-        None => PasteAttempt::Failed,
+        None => PasteReport::failed(
+            Some(target.clone()),
+            PasteFailureReason::InsertionNotConfirmed,
+        ),
     };
     restore_clipboard(original);
-    attempt
+    report
 }
 
 /// 貼り付け後もフォーカスが対象アプリに残っているかで Unverified / Failed を
 /// 判定する。AX が読めない場合は楽観的に Unverified とする。
 #[cfg(target_os = "macos")]
-fn unverified_unless_focus_moved(target: &PasteTargetInfo) -> PasteAttempt {
+fn unverified_unless_focus_moved(target: &PasteTargetInfo) -> PasteReport {
     let Some(expected_pid) = target.pid else {
-        return PasteAttempt::Unverified;
+        return PasteReport::unverified(target.clone(), PasteConfirmationKind::OptimisticTextInput);
     };
     match current_paste_target_info().and_then(|current| current.pid) {
-        Some(pid) if pid != expected_pid => PasteAttempt::Failed,
-        _ => PasteAttempt::Unverified,
+        Some(pid) if pid != expected_pid => PasteReport::failed(
+            Some(target.clone()),
+            PasteFailureReason::FocusMovedAfterPaste,
+        ),
+        _ => PasteReport::unverified(target.clone(), PasteConfirmationKind::OptimisticTextInput),
     }
 }
 
-/// AX のテキスト差分で挿入を確認できなかったときに「貼り付け成功」と楽観視
-/// してよいターゲットか。OS が明示的にテキスト入力ロールと報告する要素
-/// (Cursor/Monaco/Electron の隠し textarea を含む)と、web area 以外で
-/// キャレット系属性を公開するカスタムエディタだけを信頼する。
-/// web area は属性名がキャレットの有無と無関係に並ぶ(Safari のページ本体も
-/// AXSelectedTextMarkerRange を名乗る)ため楽観視せず、AX 差分・キャレット
-/// 移動・自プロセスのペーストイベントのいずれでも確認できなければ
-/// フォールバックダイアログに倒す。
-pub(crate) fn allows_unverified_paste(target: &PasteTargetInfo) -> bool {
-    if is_text_input_role(&target.role) || is_text_input_role(&target.subrole) {
-        return true;
+#[cfg(target_os = "macos")]
+fn confirmation_kind_for_insertion(insertion: &VerifiedPasteInsertion) -> PasteConfirmationKind {
+    match insertion {
+        VerifiedPasteInsertion::Changed(_) => PasteConfirmationKind::AxTextChanged,
+        VerifiedPasteInsertion::SameTextReplacement => PasteConfirmationKind::AxSameTextReplacement,
     }
-    !is_web_content_paste_candidate(target) && is_pasteable_target(target)
+}
+
+/// AX のテキスト差分やキャレット移動で挿入を確認できなかったときに
+/// 「貼り付け成功」と楽観視してよいターゲットか。
+///
+/// ロールや属性名だけでは入力欄かどうかを断定しない。Cursor/Monaco/Electron
+/// の隠し textarea や Chrome のページ本体は、見た目には入力欄でなくても
+/// AXTextArea / AXSelectedTextRange を出し続けることがある。未確認成功は
+/// 「入力できていないのにダイアログが出ない」原因になるため、現状は許可しない。
+pub(crate) fn allows_unverified_paste(target: &PasteTargetInfo) -> bool {
+    let _ = target;
+    false
+}
+
+/// キャレット移動を挿入証拠として使ってよいターゲットか。
+///
+/// AXWebArea の marker range は通常ページ本体でも変化することがあり、Chrome
+/// などで偽成功になりやすい。Web コンテンツは AX テキスト差分や paste イベント
+/// など、より強い証拠が取れた場合だけ成功扱いにする。
+pub(crate) fn allows_caret_movement_confirmation(target: &PasteTargetInfo) -> bool {
+    !is_web_content_paste_candidate(target)
 }
 
 /// 自プロセスの WebView(メモ・設定画面)で編集可能要素への paste イベントを
@@ -759,8 +935,8 @@ pub(crate) fn unchanged_selection_replacement_matches_text(
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn paste_text(_text: &str) -> bool {
-    false
+pub(crate) fn paste_text(_text: &str) -> PasteReport {
+    PasteReport::failed(None, PasteFailureReason::UnsupportedPlatform)
 }
 
 #[cfg(target_os = "macos")]
@@ -849,13 +1025,29 @@ pub(crate) fn post_command_key(keycode: u16) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn resolve_paste_target_info() -> Option<PasteTargetInfo> {
+pub(crate) struct PasteTargetResolutionFailure {
+    target: Option<PasteTargetInfo>,
+    reason: PasteFailureReason,
+}
+
+#[cfg(target_os = "macos")]
+impl PasteTargetResolutionFailure {
+    fn into_report(self) -> PasteReport {
+        PasteReport::failed(self.target, self.reason)
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn resolve_paste_target_info() -> Result<PasteTargetInfo, PasteTargetResolutionFailure> {
     // ルールは一つ: 確定時にカーソル(フォーカス)がある編集可能要素に貼る。
-    // 解決できなければ None を返し、呼び出し側がコピー用ダイアログを出す。
+    // 解決できなければ理由付き失敗を返し、呼び出し側がコピー用ダイアログを出す。
     let own_pid = std::process::id() as i32;
     let target = current_paste_target_info();
-    if target.as_ref().is_some_and(is_verified_paste_candidate) {
-        return target;
+    if let Some(target) = target
+        .as_ref()
+        .filter(|target| is_verified_paste_candidate(target))
+    {
+        return Ok(target.clone());
     }
 
     let fallback = target
@@ -868,20 +1060,34 @@ pub(crate) fn resolve_paste_target_info() -> Option<PasteTargetInfo> {
             for _ in 0..MANUAL_ACCESSIBILITY_POLL_ATTEMPTS {
                 std::thread::sleep(MANUAL_ACCESSIBILITY_POLL_INTERVAL);
                 let target = current_paste_target_info();
-                if target.as_ref().is_some_and(is_verified_paste_candidate) {
-                    return target;
-                }
-                if target
+                if let Some(target) = target
                     .as_ref()
-                    .is_some_and(|target| is_fallback_paste_candidate(target, own_pid))
+                    .filter(|target| is_verified_paste_candidate(target))
                 {
-                    return target;
+                    return Ok(target.clone());
+                }
+                if let Some(target) = target
+                    .as_ref()
+                    .filter(|target| is_fallback_paste_candidate(target, own_pid))
+                {
+                    return Ok(target.clone());
                 }
             }
         }
     }
 
-    fallback
+    if let Some(fallback) = fallback {
+        return Ok(fallback);
+    }
+
+    Err(PasteTargetResolutionFailure {
+        reason: if target.is_some() {
+            PasteFailureReason::FocusedTargetIsNotTextInput
+        } else {
+            PasteFailureReason::NoFocusedTarget
+        },
+        target,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -1313,6 +1519,44 @@ mod tests {
         assert_eq!(manual_accessibility_retry_pid(Some(&target), 4242), None);
     }
 
+    #[test]
+    fn paste_report_failed_user_messages_are_grouped() {
+        let no_input = PasteReport::failed(None, PasteFailureReason::NoFocusedTarget);
+        assert_eq!(
+            no_input.user_message(),
+            "入力欄を確認できなかったため、コピー用に表示しています。"
+        );
+
+        let not_confirmed = PasteReport::failed(None, PasteFailureReason::InsertionNotConfirmed);
+        assert_eq!(
+            not_confirmed.user_message(),
+            "貼り付け後の挿入を確認できなかったため、コピー用に表示しています。"
+        );
+    }
+
+    #[test]
+    fn paste_report_debug_summary_includes_sorted_target_attributes() {
+        let report = PasteReport::failed(
+            Some(paste_target("AXGroup", "AXTextArea", &["BAttr", "AAttr"])),
+            PasteFailureReason::FocusedTargetIsNotTextInput,
+        );
+
+        assert!(report.debug_summary().contains("status=Failed"));
+        assert!(report
+            .debug_summary()
+            .contains("role=\"AXGroup\" subrole=\"AXTextArea\" attrs=[AAttr,BAttr]"));
+    }
+
+    #[test]
+    fn paste_report_unverified_counts_as_inserted() {
+        let report = PasteReport::unverified(
+            paste_target("AXTextArea", "", &[]),
+            PasteConfirmationKind::OptimisticTextInput,
+        );
+
+        assert!(report.inserted());
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn verified_paste_accepts_changed_value() {
@@ -1387,15 +1631,16 @@ mod tests {
     }
 
     #[test]
-    fn unverified_paste_allowed_for_explicit_text_input_roles() {
-        // Cursor/Monaco/Electron の隠し textarea: AX で挿入を確認できなくても
-        // 成功扱いにしてよい(偽ダイアログ防止)。
-        assert!(allows_unverified_paste(&paste_target(
+    fn unverified_paste_rejected_for_explicit_text_input_roles() {
+        // Cursor/Monaco/Electron の隠し textarea は、見た目には入力欄でない
+        // 場所でも AXTextArea として残ることがある。ロールだけでは未確認成功
+        // にせず、AX 差分・キャレット移動などの証拠を要求する。
+        assert!(!allows_unverified_paste(&paste_target(
             "AXTextArea",
             "",
             &[]
         )));
-        assert!(allows_unverified_paste(&paste_target(
+        assert!(!allows_unverified_paste(&paste_target(
             "",
             "AXTextField",
             &[]
@@ -1403,11 +1648,39 @@ mod tests {
     }
 
     #[test]
-    fn unverified_paste_allowed_for_non_web_cursor_attributes() {
-        assert!(allows_unverified_paste(&paste_target(
+    fn unverified_paste_rejected_for_non_web_cursor_attributes() {
+        assert!(!allows_unverified_paste(&paste_target(
             "AXGroup",
             "",
             &["AXRole", "AXSelectedTextRange"]
+        )));
+    }
+
+    #[test]
+    fn caret_movement_confirmation_rejected_for_web_areas() {
+        assert!(!allows_caret_movement_confirmation(&paste_target(
+            "AXWebArea",
+            "",
+            &["AXSelectedTextMarkerRange", "AXInsertionPointLineNumber"]
+        )));
+        assert!(!allows_caret_movement_confirmation(&paste_target(
+            "",
+            "AXWebArea",
+            &["AXSelectedTextRange"]
+        )));
+    }
+
+    #[test]
+    fn caret_movement_confirmation_allowed_for_non_web_targets() {
+        assert!(allows_caret_movement_confirmation(&paste_target(
+            "AXTextArea",
+            "",
+            &["AXSelectedTextRange"]
+        )));
+        assert!(allows_caret_movement_confirmation(&paste_target(
+            "AXGroup",
+            "",
+            &["AXSelectedTextRange"]
         )));
     }
 
