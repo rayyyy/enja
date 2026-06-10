@@ -524,19 +524,6 @@ async fn finish_start_session(
 
     let paste_target = capture_paste_target();
 
-    let selected_text = if mode == VoiceMode::Ask {
-        match tokio::task::spawn_blocking(capture_selected_text).await {
-            Ok(text) => text,
-            Err(e) => {
-                // join 失敗で Starting 状態を残すと以後のセッションが開始できなくなる。
-                let err = e.to_string();
-                fail_start_session(&app, mode, &cancelled, err.clone());
-                return Err(err);
-            }
-        }
-    } else {
-        String::new()
-    };
     let screen_context_ocr_enabled = should_capture_voice_screen_context_ocr(
         &settings,
         mode,
@@ -547,9 +534,19 @@ async fn finish_start_session(
     // 呼び出し)を録音中に済ませておく。結果は cache 側が保持する。
     prefetch_google_speech_token(&settings, mode);
 
-    // 画面文脈の取得(osascript+AX 走査)と音声パイプライン準備(システム音声の
-    // ミュート/分離)は互いに独立なので並行に走らせる。どちらも同期 I/O のため
+    // 以下 3 つは互いに独立なので並行に走らせる。どれも同期 I/O のため
     // spawn_blocking に出し、async ワーカーを塞がない。
+    // - Ask の選択テキスト取得(AX 失敗時は Cmd+C 合成で最大 700ms 待つため、
+    //   直列に置くと Fn+Space の開始が体感で重くなる)
+    // - 画面文脈の取得(osascript+AX 走査)
+    // - 音声パイプライン準備(システム音声のミュート/分離)
+    let selected_text_task = tokio::task::spawn_blocking(move || {
+        if mode == VoiceMode::Ask {
+            capture_selected_text()
+        } else {
+            String::new()
+        }
+    });
     let app_for_context = app.clone();
     let settings_for_context = settings.clone();
     let target_for_context = paste_target.clone();
@@ -565,14 +562,31 @@ async fn finish_start_session(
     let pipeline_task =
         tokio::task::spawn_blocking(move || prepare_audio_pipeline(&settings_for_pipeline));
 
-    let (screen_context_capture, pipeline) = tokio::join!(context_task, pipeline_task);
+    let (selected_text, screen_context_capture, pipeline) =
+        tokio::join!(selected_text_task, context_task, pipeline_task);
+    let stop_pipeline_aux = |pipeline: &mut Result<(Option<AudioAux>, PipelineMode), _>| {
+        if let Ok((aux, _)) = pipeline {
+            if let Some(aux) = aux.take() {
+                aux.stop();
+            }
+        }
+    };
+    let mut pipeline = pipeline;
+    // join 失敗で Starting 状態を残すと以後のセッションが開始できなくなる。
+    let selected_text = match selected_text {
+        Ok(text) => text,
+        Err(e) => {
+            let err = e.to_string();
+            stop_pipeline_aux(&mut pipeline);
+            fail_start_session(&app, mode, &cancelled, err.clone());
+            return Err(err);
+        }
+    };
     let screen_context_capture = match screen_context_capture {
         Ok(capture) => capture,
         Err(e) => {
             let err = e.to_string();
-            if let Ok((Some(aux), _)) = pipeline {
-                aux.stop();
-            }
+            stop_pipeline_aux(&mut pipeline);
             fail_start_session(&app, mode, &cancelled, err.clone());
             return Err(err);
         }
@@ -730,19 +744,36 @@ async fn polish_selected_text(
         .try_state::<SettingsStore>()
         .map(|store| store.get())
         .unwrap_or_default();
-    let screen_context_capture =
-        start_voice_screen_context_capture(&app, &settings, paste_target.as_ref(), false);
-    let selected_text = match tokio::task::spawn_blocking(capture_selected_text).await {
-        Ok(text) => text,
-        Err(e) => {
-            // join 失敗で Processing 状態を残すと以後のセッションが開始できなくなる。
-            let err = e.to_string();
-            if clear_processing_session_for_app(&app, &cancelled) {
-                show_voice_window(&app, true);
-                emit_state(&app, "error", Some(VoiceMode::Ask), None, Some(err.clone()));
-            }
-            return Err(err);
+    // 選択テキスト取得(AX 失敗時は Cmd+C 合成で最大 700ms)と画面文脈取得を
+    // 並行に走らせ、推敲開始の体感を軽くする。
+    let app_for_context = app.clone();
+    let settings_for_context = settings.clone();
+    let target_for_context = paste_target.clone();
+    let context_task = tokio::task::spawn_blocking(move || {
+        start_voice_screen_context_capture(
+            &app_for_context,
+            &settings_for_context,
+            target_for_context.as_ref(),
+            false,
+        )
+    });
+    let selected_text_task = tokio::task::spawn_blocking(capture_selected_text);
+    let (screen_context_capture, selected_text) = tokio::join!(context_task, selected_text_task);
+    // join 失敗で Processing 状態を残すと以後のセッションが開始できなくなる。
+    let fail_polish = |err: String| {
+        if clear_processing_session_for_app(&app, &cancelled) {
+            show_voice_window(&app, true);
+            emit_state(&app, "error", Some(VoiceMode::Ask), None, Some(err.clone()));
         }
+        err
+    };
+    let screen_context_capture = match screen_context_capture {
+        Ok(capture) => capture,
+        Err(e) => return Err(fail_polish(e.to_string())),
+    };
+    let selected_text = match selected_text {
+        Ok(text) => text,
+        Err(e) => return Err(fail_polish(e.to_string())),
     };
     let screen_context = resolve_voice_screen_context(
         screen_context_capture.context,

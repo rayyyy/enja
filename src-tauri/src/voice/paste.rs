@@ -450,54 +450,94 @@ pub(crate) fn copy_ax_attribute_names(element: AXUIElementRef) -> Option<HashSet
     Some(out)
 }
 
+/// 貼り付け試行の結果。
+/// - `Verified`: AX でテキストの変化を確認できた(辞書学習に使える)。
+/// - `Unverified`: Cmd+V は対象アプリに届いたはずだが、AX では挿入を確認
+///   できなかった(Electron/Monaco や WKWebView は AX に変化が出ないことが
+///   ある)。挿入済みとして扱うが、誤検出の恐れがあるため学習はしない。
+/// - `Failed`: 入力先を解決できない・キー送信に失敗・貼り付け中にフォーカス
+///   が別アプリへ移った。フォールバック表示で本文を救済する。
+#[cfg(target_os = "macos")]
+pub(crate) enum PasteAttempt {
+    Verified(Box<VerifiedPaste>),
+    Unverified,
+    Failed,
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn paste_text(text: &str, preferred_target: Option<&PasteTargetInfo>) -> bool {
-    perform_verified_clipboard_paste(text, preferred_target).is_some()
+    !matches!(
+        perform_verified_clipboard_paste(text, preferred_target),
+        PasteAttempt::Failed
+    )
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn perform_verified_clipboard_paste(
     text: &str,
     preferred_target: Option<&PasteTargetInfo>,
-) -> Option<VerifiedPaste> {
+) -> PasteAttempt {
+    let Some(target) = resolve_paste_target_info(preferred_target) else {
+        return PasteAttempt::Failed;
+    };
+
     // スナップショット取得は Cmd+V 送信前なので安全に再試行できる。
     // 送信後の再試行は二重貼り付けの危険があるため一切行わない。
-    let focused = acquire_paste_snapshot(preferred_target).or_else(|| {
+    // スナップショットが取れない場合(WKWebView 等、AX がテキストを公開しない
+    // ターゲット)でも、編集可能要素として解決済みなので楽観的に貼り付ける。
+    let focused = AxFocusedText::capture_for_paste_target(&target).or_else(|| {
         std::thread::sleep(Duration::from_millis(PASTE_SNAPSHOT_RETRY_DELAY_MS));
-        acquire_paste_snapshot(preferred_target)
-    })?;
+        AxFocusedText::capture_for_paste_target(&target)
+    });
 
     let original = read_clipboard_text();
     if let Ok(mut clipboard) = arboard::Clipboard::new() {
         if clipboard.set_text(text.to_string()).is_err() {
-            return None;
+            return PasteAttempt::Failed;
         }
     } else {
-        return None;
+        return PasteAttempt::Failed;
     }
     std::thread::sleep(Duration::from_millis(PASTE_WRITE_SETTLE_MS));
     if !run_keystroke("v") {
         restore_clipboard(original);
-        return None;
+        return PasteAttempt::Failed;
     }
 
-    let verified = wait_for_verified_insertion(&focused, text);
+    let attempt = match focused {
+        Some(focused) => match wait_for_verified_insertion(&focused, text) {
+            Some((after_paste, insertion)) => PasteAttempt::Verified(Box::new(VerifiedPaste {
+                target: focused,
+                after_paste,
+                insertion,
+            })),
+            // AX で変化を確認できなくても、対象アプリにフォーカスが残っていれば
+            // Cmd+V は届いているとみなす。「実際は貼れているのに失敗扱い」で
+            // フォールバックを出すより、ここでは楽観に倒す。
+            None => unverified_unless_focus_moved(&target),
+        },
+        None => {
+            // 検証手段がないため、遅いアプリでも貼り付けが処理される時間を
+            // 確保してからクリップボードを復元する。
+            std::thread::sleep(Duration::from_millis(PASTE_VERIFY_TIMEOUT_MS));
+            unverified_unless_focus_moved(&target)
+        }
+    };
     restore_clipboard(original);
-
-    let (after_paste, insertion) = verified?;
-    Some(VerifiedPaste {
-        target: focused,
-        after_paste,
-        insertion,
-    })
+    attempt
 }
 
+/// 貼り付け後もフォーカスが対象アプリに残っているかで Unverified / Failed を
+/// 判定する。AX が読めない場合は楽観的に Unverified とする。
 #[cfg(target_os = "macos")]
-fn acquire_paste_snapshot(preferred_target: Option<&PasteTargetInfo>) -> Option<AxFocusedText> {
-    let target = resolve_paste_target_info(preferred_target)?;
-    // If macOS cannot expose the target text, fall back to manual copy instead
-    // of treating a posted Cmd+V event as a successful insertion.
-    AxFocusedText::capture_for_paste_target(&target)
+fn unverified_unless_focus_moved(target: &PasteTargetInfo) -> PasteAttempt {
+    let Some(expected_pid) = target.pid else {
+        return PasteAttempt::Unverified;
+    };
+    match current_paste_target_info().and_then(|current| current.pid) {
+        Some(pid) if pid != expected_pid => PasteAttempt::Failed,
+        _ => PasteAttempt::Unverified,
+    }
 }
 
 /// 挿入をポーリングで検証する。検証が取れるか PASTE_VERIFY_TIMEOUT_MS を
@@ -649,6 +689,11 @@ pub(crate) fn resolve_paste_target_info(
     preferred_target: Option<&PasteTargetInfo>,
 ) -> Option<PasteTargetInfo> {
     let own_pid = std::process::id() as i32;
+    // セッション開始時に Enja 自身(メモ等)を狙っていた場合、または狙いが
+    // 不明な場合は、自プロセスの編集可能要素も貼り付け先として認める。
+    // 開始時に外部アプリを狙っていた場合は従来どおり自プロセスを除外し、
+    // 録音中に Enja へフォーカスが移っていても元のアプリへ貼り付け直す。
+    let allow_own = preferred_target.is_none_or(|preferred| preferred.pid == Some(own_pid));
     let target = current_paste_target_info();
     let current_missing = target.is_none();
     let current_is_own = target
@@ -656,14 +701,14 @@ pub(crate) fn resolve_paste_target_info(
         .is_some_and(|target| target.pid == Some(own_pid));
     if target
         .as_ref()
-        .is_some_and(|target| is_verified_paste_candidate(target, own_pid))
+        .is_some_and(|target| is_verified_paste_candidate(target, own_pid, allow_own))
     {
         return target;
     }
 
     let fallback = target
         .as_ref()
-        .filter(|target| is_fallback_paste_candidate(target, own_pid))
+        .filter(|target| is_fallback_paste_candidate(target, own_pid, allow_own))
         .cloned();
 
     if let Some(pid) = manual_accessibility_retry_pid(target.as_ref(), own_pid) {
@@ -673,13 +718,13 @@ pub(crate) fn resolve_paste_target_info(
                 let target = current_paste_target_info();
                 if target
                     .as_ref()
-                    .is_some_and(|target| is_verified_paste_candidate(target, own_pid))
+                    .is_some_and(|target| is_verified_paste_candidate(target, own_pid, allow_own))
                 {
                     return target;
                 }
                 if target
                     .as_ref()
-                    .is_some_and(|target| is_fallback_paste_candidate(target, own_pid))
+                    .is_some_and(|target| is_fallback_paste_candidate(target, own_pid, allow_own))
                 {
                     return target;
                 }
@@ -688,10 +733,10 @@ pub(crate) fn resolve_paste_target_info(
     }
 
     fallback.or_else(|| {
-        let preferred =
-            preferred_target.filter(|target| is_attemptable_paste_target(target, own_pid))?;
+        let preferred = preferred_target
+            .filter(|target| is_attemptable_paste_target(target, own_pid, allow_own))?;
 
-        if current_is_own {
+        if current_is_own && !allow_own {
             let pid = preferred.pid?;
             if !activate_application_pid(pid) {
                 return None;
@@ -700,13 +745,13 @@ pub(crate) fn resolve_paste_target_info(
             let target = current_paste_target_info();
             if target
                 .as_ref()
-                .is_some_and(|target| is_verified_paste_candidate(target, own_pid))
+                .is_some_and(|target| is_verified_paste_candidate(target, own_pid, allow_own))
             {
                 return target;
             }
             if target
                 .as_ref()
-                .is_some_and(|target| is_fallback_paste_candidate(target, own_pid))
+                .is_some_and(|target| is_fallback_paste_candidate(target, own_pid, allow_own))
             {
                 return target;
             }
@@ -714,6 +759,10 @@ pub(crate) fn resolve_paste_target_info(
         }
 
         if current_missing {
+            Some(preferred.clone())
+        } else if allow_own && current_is_own {
+            // 自プロセス宛の貼り付けで、現在のフォーカス要素を編集可能と確認
+            // できなかった場合も、開始時に狙った要素を信じて試行する。
             Some(preferred.clone())
         } else {
             None
@@ -904,25 +953,41 @@ pub(crate) fn is_pasteable_target(target: &PasteTargetInfo) -> bool {
         || target.attributes.contains("AXEditableAncestor")
 }
 
-pub(crate) fn is_verified_paste_candidate(target: &PasteTargetInfo, own_pid: i32) -> bool {
-    target.pid != Some(own_pid) && is_pasteable_target(target)
+pub(crate) fn is_verified_paste_candidate(
+    target: &PasteTargetInfo,
+    own_pid: i32,
+    allow_own: bool,
+) -> bool {
+    (allow_own || target.pid != Some(own_pid)) && is_pasteable_target(target)
 }
 
-pub(crate) fn is_attemptable_paste_target(target: &PasteTargetInfo, own_pid: i32) -> bool {
-    if target.pid == Some(own_pid) {
+pub(crate) fn is_attemptable_paste_target(
+    target: &PasteTargetInfo,
+    own_pid: i32,
+    allow_own: bool,
+) -> bool {
+    if !allow_own && target.pid == Some(own_pid) {
         return false;
     }
 
-    is_pasteable_target(target) || is_fallback_paste_candidate(target, own_pid)
+    is_pasteable_target(target) || is_fallback_paste_candidate(target, own_pid, allow_own)
 }
 
-pub(crate) fn is_fallback_paste_candidate(target: &PasteTargetInfo, own_pid: i32) -> bool {
-    is_web_content_paste_candidate(target, own_pid)
+pub(crate) fn is_fallback_paste_candidate(
+    target: &PasteTargetInfo,
+    own_pid: i32,
+    allow_own: bool,
+) -> bool {
+    is_web_content_paste_candidate(target, own_pid, allow_own)
         || is_ambiguous_external_paste_candidate(target, own_pid)
 }
 
-pub(crate) fn is_web_content_paste_candidate(target: &PasteTargetInfo, own_pid: i32) -> bool {
-    if target.pid == Some(own_pid) {
+pub(crate) fn is_web_content_paste_candidate(
+    target: &PasteTargetInfo,
+    own_pid: i32,
+    allow_own: bool,
+) -> bool {
+    if !allow_own && target.pid == Some(own_pid) {
         return false;
     }
 
@@ -986,7 +1051,7 @@ mod tests {
     }
 
     #[test]
-    fn paste_target_attempt_skips_own_text_input() {
+    fn paste_target_attempt_skips_own_text_input_unless_allowed() {
         let target = PasteTargetInfo {
             pid: Some(100),
             role: "AXTextArea".to_string(),
@@ -995,8 +1060,12 @@ mod tests {
         };
 
         assert!(is_pasteable_target(&target));
-        assert!(!is_verified_paste_candidate(&target, 100));
-        assert!(!is_attemptable_paste_target(&target, 100));
+        // 外部アプリを狙ったセッションでは自プロセスを除外する。
+        assert!(!is_verified_paste_candidate(&target, 100, false));
+        assert!(!is_attemptable_paste_target(&target, 100, false));
+        // 開始時に Enja 自身(メモ等)を狙った場合は許可する。
+        assert!(is_verified_paste_candidate(&target, 100, true));
+        assert!(is_attemptable_paste_target(&target, 100, true));
     }
 
     #[test]
@@ -1042,16 +1111,18 @@ mod tests {
     fn paste_target_treats_web_area_as_fallback_candidate() {
         assert!(is_web_content_paste_candidate(
             &paste_target("AXWebArea", "", &["AXRole"]),
-            100
+            100,
+            false
         ));
         assert!(is_web_content_paste_candidate(
             &paste_target("", "AXWebArea", &["AXRole"]),
-            100
+            100,
+            false
         ));
     }
 
     #[test]
-    fn paste_target_fallback_skips_own_web_area() {
+    fn paste_target_fallback_skips_own_web_area_unless_allowed() {
         let target = PasteTargetInfo {
             pid: Some(100),
             role: "AXWebArea".to_string(),
@@ -1059,7 +1130,8 @@ mod tests {
             attributes: HashSet::new(),
         };
 
-        assert!(!is_web_content_paste_candidate(&target, 100));
+        assert!(!is_web_content_paste_candidate(&target, 100, false));
+        assert!(is_web_content_paste_candidate(&target, 100, true));
     }
 
     #[test]
@@ -1072,7 +1144,23 @@ mod tests {
         };
 
         assert!(is_ambiguous_external_paste_candidate(&target, 100));
-        assert!(is_attemptable_paste_target(&target, 100));
+        assert!(is_attemptable_paste_target(&target, 100, false));
+    }
+
+    #[test]
+    fn paste_target_rejects_ambiguous_own_target_even_when_own_allowed() {
+        // ロールも属性も無い自プロセス要素(音声オーバーレイ等)には
+        // own 許可時でも貼り付けを試みない。
+        let target = PasteTargetInfo {
+            pid: Some(100),
+            role: String::new(),
+            subrole: String::new(),
+            attributes: HashSet::new(),
+        };
+
+        assert!(!is_ambiguous_external_paste_candidate(&target, 100));
+        assert!(!is_fallback_paste_candidate(&target, 100, true));
+        assert!(!is_attemptable_paste_target(&target, 100, true));
     }
 
     #[test]
@@ -1084,8 +1172,8 @@ mod tests {
             attributes: HashSet::new(),
         };
 
-        assert!(!is_fallback_paste_candidate(&target, 100));
-        assert!(!is_attemptable_paste_target(&target, 100));
+        assert!(!is_fallback_paste_candidate(&target, 100, false));
+        assert!(!is_attemptable_paste_target(&target, 100, false));
     }
 
     #[test]

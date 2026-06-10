@@ -81,8 +81,11 @@ pub(crate) fn paste_text_with_dictionary_learning(
     text: &str,
     preferred_target: Option<&PasteTargetInfo>,
 ) -> bool {
-    let Some(paste) = perform_verified_clipboard_paste(text, preferred_target) else {
-        return false;
+    let paste = match perform_verified_clipboard_paste(text, preferred_target) {
+        PasteAttempt::Verified(paste) => paste,
+        // 挿入はされたとみなすが、AX で確認できていないため辞書学習は行わない。
+        PasteAttempt::Unverified => return true,
+        PasteAttempt::Failed => return false,
     };
 
     if let VerifiedPasteInsertion::Changed(inserted_range) = paste.insertion {
