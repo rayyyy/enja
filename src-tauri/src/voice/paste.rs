@@ -3,6 +3,10 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+/// 音声オーバーレイのウィンドウタイトル(tauri.conf.json と一致させること)。
+#[cfg(target_os = "macos")]
+pub(crate) const VOICE_OVERLAY_WINDOW_TITLE: &str = "Enja Voice";
+
 #[cfg(target_os = "macos")]
 pub(crate) const PASTE_WRITE_SETTLE_MS: u64 = 40;
 
@@ -291,6 +295,19 @@ impl AxFocusedElement {
 
     fn read_paste_target_info(&self) -> Option<PasteTargetInfo> {
         let pid = self.element.pid()?;
+        // Enja 自身の音声オーバーレイ(tauri.conf.json の "Enja Voice")に
+        // フォーカスがある場合は、ロール無しターゲットへ落として貼り付け先
+        // 候補から外す。メモ等の編集可能ウィンドウは通常どおり扱う。
+        if pid == std::process::id() as i32
+            && focused_window_title(self.element.raw).as_deref() == Some(VOICE_OVERLAY_WINDOW_TITLE)
+        {
+            return Some(PasteTargetInfo {
+                pid: Some(pid),
+                role: String::new(),
+                subrole: String::new(),
+                attributes: HashSet::new(),
+            });
+        }
         Some(PasteTargetInfo {
             pid: Some(pid),
             role: copy_ax_string_attribute(self.element.raw, "AXRole").unwrap_or_default(),
@@ -298,6 +315,17 @@ impl AxFocusedElement {
             attributes: copy_ax_attribute_names(self.element.raw).unwrap_or_default(),
         })
     }
+}
+
+/// フォーカス要素が属するウィンドウのタイトルを読む。
+#[cfg(target_os = "macos")]
+fn focused_window_title(element: AXUIElementRef) -> Option<String> {
+    let window = copy_ax_attribute_raw(element, "AXWindow")?;
+    let title = copy_ax_string_attribute(window as AXUIElementRef, "AXTitle");
+    unsafe {
+        CFRelease(window);
+    }
+    title
 }
 
 #[cfg(target_os = "macos")]
@@ -689,26 +717,19 @@ pub(crate) fn resolve_paste_target_info(
     preferred_target: Option<&PasteTargetInfo>,
 ) -> Option<PasteTargetInfo> {
     let own_pid = std::process::id() as i32;
-    // セッション開始時に Enja 自身(メモ等)を狙っていた場合、または狙いが
-    // 不明な場合は、自プロセスの編集可能要素も貼り付け先として認める。
-    // 開始時に外部アプリを狙っていた場合は従来どおり自プロセスを除外し、
-    // 録音中に Enja へフォーカスが移っていても元のアプリへ貼り付け直す。
-    let allow_own = preferred_target.is_none_or(|preferred| preferred.pid == Some(own_pid));
+    // 原則: 確定時にカーソルがある場所へ貼る。Enja 自身のメモも対象。
     let target = current_paste_target_info();
     let current_missing = target.is_none();
     let current_is_own = target
         .as_ref()
         .is_some_and(|target| target.pid == Some(own_pid));
-    if target
-        .as_ref()
-        .is_some_and(|target| is_verified_paste_candidate(target, own_pid, allow_own))
-    {
+    if target.as_ref().is_some_and(is_verified_paste_candidate) {
         return target;
     }
 
     let fallback = target
         .as_ref()
-        .filter(|target| is_fallback_paste_candidate(target, own_pid, allow_own))
+        .filter(|target| is_fallback_paste_candidate(target, own_pid))
         .cloned();
 
     if let Some(pid) = manual_accessibility_retry_pid(target.as_ref(), own_pid) {
@@ -716,15 +737,12 @@ pub(crate) fn resolve_paste_target_info(
             for _ in 0..MANUAL_ACCESSIBILITY_POLL_ATTEMPTS {
                 std::thread::sleep(MANUAL_ACCESSIBILITY_POLL_INTERVAL);
                 let target = current_paste_target_info();
-                if target
-                    .as_ref()
-                    .is_some_and(|target| is_verified_paste_candidate(target, own_pid, allow_own))
-                {
+                if target.as_ref().is_some_and(is_verified_paste_candidate) {
                     return target;
                 }
                 if target
                     .as_ref()
-                    .is_some_and(|target| is_fallback_paste_candidate(target, own_pid, allow_own))
+                    .is_some_and(|target| is_fallback_paste_candidate(target, own_pid))
                 {
                     return target;
                 }
@@ -733,25 +751,27 @@ pub(crate) fn resolve_paste_target_info(
     }
 
     fallback.or_else(|| {
-        let preferred = preferred_target
-            .filter(|target| is_attemptable_paste_target(target, own_pid, allow_own))?;
+        // 保険: カーソル位置を貼り付け先として解決できなかった場合のみ、
+        // 録音開始時に狙っていた要素へ戻す。
+        let preferred =
+            preferred_target.filter(|target| is_attemptable_paste_target(target, own_pid))?;
 
-        if current_is_own && !allow_own {
+        // フォーカスが Enja のオーバーレイ等(編集不能な自プロセス要素)に
+        // 落ちている場合、Cmd+V が Enja に向かわないよう開始時のアプリを
+        // 前面へ戻してから貼り付ける。
+        if current_is_own && preferred.pid != Some(own_pid) {
             let pid = preferred.pid?;
             if !activate_application_pid(pid) {
                 return None;
             }
             std::thread::sleep(Duration::from_millis(PASTE_ACTIVATE_SETTLE_MS));
             let target = current_paste_target_info();
-            if target
-                .as_ref()
-                .is_some_and(|target| is_verified_paste_candidate(target, own_pid, allow_own))
-            {
+            if target.as_ref().is_some_and(is_verified_paste_candidate) {
                 return target;
             }
             if target
                 .as_ref()
-                .is_some_and(|target| is_fallback_paste_candidate(target, own_pid, allow_own))
+                .is_some_and(|target| is_fallback_paste_candidate(target, own_pid))
             {
                 return target;
             }
@@ -759,10 +779,6 @@ pub(crate) fn resolve_paste_target_info(
         }
 
         if current_missing {
-            Some(preferred.clone())
-        } else if allow_own && current_is_own {
-            // 自プロセス宛の貼り付けで、現在のフォーカス要素を編集可能と確認
-            // できなかった場合も、開始時に狙った要素を信じて試行する。
             Some(preferred.clone())
         } else {
             None
@@ -953,44 +969,22 @@ pub(crate) fn is_pasteable_target(target: &PasteTargetInfo) -> bool {
         || target.attributes.contains("AXEditableAncestor")
 }
 
-pub(crate) fn is_verified_paste_candidate(
-    target: &PasteTargetInfo,
-    own_pid: i32,
-    allow_own: bool,
-) -> bool {
-    (allow_own || target.pid != Some(own_pid)) && is_pasteable_target(target)
+// 貼り付け先は「確定時にカーソル(フォーカス)がある編集可能要素」を常に優先する。
+// Enja 自身のメモ等も他アプリと同格に扱う(音声オーバーレイは
+// read_paste_target_info でロール無しに落ちるため、ここには到達しない)。
+pub(crate) fn is_verified_paste_candidate(target: &PasteTargetInfo) -> bool {
+    is_pasteable_target(target)
 }
 
-pub(crate) fn is_attemptable_paste_target(
-    target: &PasteTargetInfo,
-    own_pid: i32,
-    allow_own: bool,
-) -> bool {
-    if !allow_own && target.pid == Some(own_pid) {
-        return false;
-    }
-
-    is_pasteable_target(target) || is_fallback_paste_candidate(target, own_pid, allow_own)
+pub(crate) fn is_attemptable_paste_target(target: &PasteTargetInfo, own_pid: i32) -> bool {
+    is_pasteable_target(target) || is_fallback_paste_candidate(target, own_pid)
 }
 
-pub(crate) fn is_fallback_paste_candidate(
-    target: &PasteTargetInfo,
-    own_pid: i32,
-    allow_own: bool,
-) -> bool {
-    is_web_content_paste_candidate(target, own_pid, allow_own)
-        || is_ambiguous_external_paste_candidate(target, own_pid)
+pub(crate) fn is_fallback_paste_candidate(target: &PasteTargetInfo, own_pid: i32) -> bool {
+    is_web_content_paste_candidate(target) || is_ambiguous_external_paste_candidate(target, own_pid)
 }
 
-pub(crate) fn is_web_content_paste_candidate(
-    target: &PasteTargetInfo,
-    own_pid: i32,
-    allow_own: bool,
-) -> bool {
-    if !allow_own && target.pid == Some(own_pid) {
-        return false;
-    }
-
+pub(crate) fn is_web_content_paste_candidate(target: &PasteTargetInfo) -> bool {
     is_web_content_role(&target.role) || is_web_content_role(&target.subrole)
 }
 
@@ -1051,7 +1045,8 @@ mod tests {
     }
 
     #[test]
-    fn paste_target_attempt_skips_own_text_input_unless_allowed() {
+    fn paste_target_accepts_own_text_input() {
+        // Enja 自身のメモ等、自プロセスの編集可能要素も貼り付け先になる。
         let target = PasteTargetInfo {
             pid: Some(100),
             role: "AXTextArea".to_string(),
@@ -1060,12 +1055,8 @@ mod tests {
         };
 
         assert!(is_pasteable_target(&target));
-        // 外部アプリを狙ったセッションでは自プロセスを除外する。
-        assert!(!is_verified_paste_candidate(&target, 100, false));
-        assert!(!is_attemptable_paste_target(&target, 100, false));
-        // 開始時に Enja 自身(メモ等)を狙った場合は許可する。
-        assert!(is_verified_paste_candidate(&target, 100, true));
-        assert!(is_attemptable_paste_target(&target, 100, true));
+        assert!(is_verified_paste_candidate(&target));
+        assert!(is_attemptable_paste_target(&target, 100));
     }
 
     #[test]
@@ -1109,20 +1100,21 @@ mod tests {
 
     #[test]
     fn paste_target_treats_web_area_as_fallback_candidate() {
-        assert!(is_web_content_paste_candidate(
-            &paste_target("AXWebArea", "", &["AXRole"]),
-            100,
-            false
-        ));
-        assert!(is_web_content_paste_candidate(
-            &paste_target("", "AXWebArea", &["AXRole"]),
-            100,
-            false
-        ));
+        assert!(is_web_content_paste_candidate(&paste_target(
+            "AXWebArea",
+            "",
+            &["AXRole"]
+        )));
+        assert!(is_web_content_paste_candidate(&paste_target(
+            "",
+            "AXWebArea",
+            &["AXRole"]
+        )));
     }
 
     #[test]
-    fn paste_target_fallback_skips_own_web_area_unless_allowed() {
+    fn paste_target_accepts_own_web_area() {
+        // Enja のメモ(WKWebView)もフォールバック候補として扱う。
         let target = PasteTargetInfo {
             pid: Some(100),
             role: "AXWebArea".to_string(),
@@ -1130,8 +1122,8 @@ mod tests {
             attributes: HashSet::new(),
         };
 
-        assert!(!is_web_content_paste_candidate(&target, 100, false));
-        assert!(is_web_content_paste_candidate(&target, 100, true));
+        assert!(is_web_content_paste_candidate(&target));
+        assert!(is_fallback_paste_candidate(&target, 100));
     }
 
     #[test]
@@ -1144,13 +1136,13 @@ mod tests {
         };
 
         assert!(is_ambiguous_external_paste_candidate(&target, 100));
-        assert!(is_attemptable_paste_target(&target, 100, false));
+        assert!(is_attemptable_paste_target(&target, 100));
     }
 
     #[test]
-    fn paste_target_rejects_ambiguous_own_target_even_when_own_allowed() {
-        // ロールも属性も無い自プロセス要素(音声オーバーレイ等)には
-        // own 許可時でも貼り付けを試みない。
+    fn paste_target_rejects_roleless_own_target() {
+        // ロールも属性も無い自プロセス要素(音声オーバーレイは
+        // read_paste_target_info でこの形に落ちる)には貼り付けを試みない。
         let target = PasteTargetInfo {
             pid: Some(100),
             role: String::new(),
@@ -1159,8 +1151,8 @@ mod tests {
         };
 
         assert!(!is_ambiguous_external_paste_candidate(&target, 100));
-        assert!(!is_fallback_paste_candidate(&target, 100, true));
-        assert!(!is_attemptable_paste_target(&target, 100, true));
+        assert!(!is_fallback_paste_candidate(&target, 100));
+        assert!(!is_attemptable_paste_target(&target, 100));
     }
 
     #[test]
@@ -1172,8 +1164,8 @@ mod tests {
             attributes: HashSet::new(),
         };
 
-        assert!(!is_fallback_paste_candidate(&target, 100, false));
-        assert!(!is_attemptable_paste_target(&target, 100, false));
+        assert!(!is_fallback_paste_candidate(&target, 100));
+        assert!(!is_attemptable_paste_target(&target, 100));
     }
 
     #[test]
