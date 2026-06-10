@@ -720,7 +720,7 @@ function VoiceModeEditorDialog({
                 <span className="flex flex-wrap items-center justify-between gap-2">
                   <span className="font-medium text-ink">User prompt</span>
                   <span className="rounded-full border border-edge bg-surface px-2 py-0.5 text-[11px] text-ink-mid">
-                    必須: {"{{transcript}}"} / 任意: {"{{dictionary_section}}"}
+                    必須: {"{{transcript}}"} / 任意: {"{{dictionary_section}}"}・{"{{screen_context}}"}
                   </span>
                 </span>
                 <textarea
@@ -836,12 +836,16 @@ const CUSTOM_MODE_SYSTEM_PROMPT =
 
 const CUSTOM_MODE_USER_PROMPT = `{{dictionary_section}}
 
+{{screen_context}}
+
 音声認識結果:
 {{transcript}}
 
 要件:
 - 用途に合わせて自然な文章へ整える。
 - 口癖、言い直し、不要な間を整理する。
+- 画面文脈は貼り付け先、前後文、表示中の固有名詞、ファイル名、コード記号、文体のヒントとしてだけ使う。
+- 音声認識結果と矛盾する内容や、画面にあるだけで話していない内容を勝手に追加しない。
 - 音声認識結果または文脈から該当語だと判断できる場合だけ、辞書の優先表記に整える。
 - 該当すると判断できない語を辞書語へ置き換えない。
 - 内容を勝手に増やさない。`;
@@ -857,12 +861,16 @@ const VOICE_MODE_PRESET_DEFAULTS: Record<VoiceModePresetKey, VoiceModeProfile> =
       "あなたは日本語の音声入力編集者です。音声認識結果を、ユーザーがそのまま貼り付けられる自然な日本語文に整形します。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。",
     userPrompt: `{{dictionary_section}}
 
+{{screen_context}}
+
 音声認識結果:
 {{transcript}}
 
 要件:
 - 話し言葉の不要な言い直しを整理する。
 - 録音内に「これをこうまとめて」などの指示が含まれる場合、その意図に従って最終文章を作る。
+- 画面文脈は貼り付け先、前後文、表示中の固有名詞、ファイル名、コード記号、文体のヒントとしてだけ使う。
+- 音声認識結果と矛盾する内容や、画面にあるだけで話していない内容を勝手に追加しない。
 - 音声認識結果または文脈から該当語だと判断できる場合だけ、辞書の優先表記に整える。
 - 該当すると判断できない語を辞書語へ置き換えない。
 - 内容を勝手に増やさない。`,
@@ -880,11 +888,14 @@ const VOICE_MODE_PRESET_DEFAULTS: Record<VoiceModePresetKey, VoiceModeProfile> =
       "あなたは日本語の音声入力編集者です。音声認識結果を必要最小限だけ整えます。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。",
     userPrompt: `{{dictionary_section}}
 
+{{screen_context}}
+
 音声認識結果:
 {{transcript}}
 
 要件:
 - 文字起こし結果を大きく変えず、明らかな誤字や不要な空白だけ整える。
+- 画面文脈は固有名詞、ファイル名、前後文への接続に必要な場合だけ使う。
 - 内容を勝手に増やさない。`,
     deletable: true,
     order: 1,
@@ -900,11 +911,14 @@ const VOICE_MODE_PRESET_DEFAULTS: Record<VoiceModePresetKey, VoiceModeProfile> =
       "あなたはAIプロンプト設計者です。音声認識結果から、AIに渡しやすい明確で実行可能なプロンプトを作成します。出力はプロンプト本文のみ。前置き、説明、引用符、ラベルは出しません。",
     userPrompt: `{{dictionary_section}}
 
+{{screen_context}}
+
 話した内容:
 {{transcript}}
 
 要件:
 - 話した意図を、AIへ渡す明確なプロンプトに再構成する。
+- 画面文脈は対象アプリ、現在の会話/コード/文書、ファイル名、周辺テキストを補助するために使う。
 - 目的、背景、入力、制約、期待する出力形式を必要に応じて整理する。
 - 箇条書きや見出しは、プロンプトとして読みやすい場合だけ使う。
 - 内容を勝手に増やさず、曖昧な部分は自然な依頼文としてまとめる。`,
@@ -922,12 +936,15 @@ const VOICE_MODE_PRESET_DEFAULTS: Record<VoiceModePresetKey, VoiceModeProfile> =
       "あなたは日本語チャット文の編集者です。音声認識結果を、Slackなどのチャットにそのまま送れる親しみやすい文章へ整えます。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。",
     userPrompt: `{{dictionary_section}}
 
+{{screen_context}}
+
 音声認識結果:
 {{transcript}}
 
 要件:
 - くだけすぎない親しみやすい文体にする。
 - 必要に応じて感嘆符を使い、硬さを和らげる。
+- 画面文脈は相手、チャンネル、直前の会話、文体に合わせるためにだけ使う。
 - 口癖、言い直し、不要な間を整理する。
 - 音声認識結果または文脈から該当語だと判断できる場合だけ、辞書の優先表記に整える。
 - 該当すると判断できない語を辞書語へ置き換えない。
@@ -946,12 +963,15 @@ const VOICE_MODE_PRESET_DEFAULTS: Record<VoiceModePresetKey, VoiceModeProfile> =
       "あなたは日本語ビジネス文の編集者です。音声認識結果を、メール返信などに適したやや丁寧な文章へ整えます。出力は最終本文のみ。前置き、説明、引用符、ラベルは出しません。",
     userPrompt: `{{dictionary_section}}
 
+{{screen_context}}
+
 音声認識結果:
 {{transcript}}
 
 要件:
 - メールや業務チャットで使いやすい、やや丁寧な文体にする。
 - 過度に堅くしすぎず、自然な敬体で整える。
+- 画面文脈は宛先、件名、直前の本文、業務用語に合わせるためにだけ使う。
 - 口癖、言い直し、不要な間を整理する。
 - 音声認識結果または文脈から該当語だと判断できる場合だけ、辞書の優先表記に整える。
 - 該当すると判断できない語を辞書語へ置き換えない。

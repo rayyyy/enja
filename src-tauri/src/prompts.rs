@@ -21,6 +21,8 @@ const ASK_WITHOUT_SELECTION_SYSTEM: &str = "あなたは日本語の音声入力
 
 const ASK_WITHOUT_SELECTION_USER: &str = r#"{{dictionary_section}}
 
+{{screen_context}}
+
 選択中テキストは取得できませんでした。
 
 音声指示の文字起こし:
@@ -28,6 +30,7 @@ const ASK_WITHOUT_SELECTION_USER: &str = r#"{{dictionary_section}}
 
 要件:
 - 音声指示だけに基づいて最終本文を作る。
+- 画面文脈は入力先、周辺表示、固有名詞、文体のヒントとしてだけ使う。
 - 選択されていない文章、過去のクリップボード、過去の会話内容を推測して混ぜない。
 - 音声指示または文脈から該当語だと判断できる場合だけ、辞書の優先表記に整える。
 - 該当すると判断できない語を辞書語へ置き換えない。
@@ -36,6 +39,8 @@ const ASK_WITHOUT_SELECTION_USER: &str = r#"{{dictionary_section}}
 const ASK_WITH_SELECTION_SYSTEM: &str = "あなたは日本語の文章編集者です。選択中テキストを、音声指示に従って書き換えます。出力は置換後の本文のみ。前置き、説明、引用符、ラベルは出しません。";
 
 const ASK_WITH_SELECTION_USER: &str = r#"{{dictionary_section}}
+
+{{screen_context}}
 
 選択中テキスト:
 {{selected_text}}
@@ -46,6 +51,7 @@ const ASK_WITH_SELECTION_USER: &str = r#"{{dictionary_section}}
 要件:
 - 音声指示に従って選択中テキストを書き換える。
 - 指示が曖昧な場合は、選択中テキストの意味を保ったまま自然に整える。
+- 画面文脈は選択中テキストの周辺、相手、文体、固有名詞のヒントとしてだけ使う。
 - 音声指示、選択中テキスト、文脈から該当語だと判断できる場合だけ、辞書の優先表記に整える。
 - 該当すると判断できない語を辞書語へ置き換えない。
 - 出力は置換する本文のみ。"#;
@@ -229,13 +235,20 @@ pub fn gemini_audio_user(overrides: &PromptOverrides, dictionary_context: &str) 
     )
 }
 
-pub fn voice_mode_user(template: &str, dictionary_section: &str, transcript: &str) -> String {
-    render(
+pub fn voice_mode_user_with_context(
+    template: &str,
+    dictionary_section: &str,
+    screen_context_section: &str,
+    transcript: &str,
+) -> String {
+    render_voice_prompt(
         template,
         &[
             ("{{dictionary_section}}", dictionary_section),
+            ("{{screen_context}}", screen_context_section),
             ("{{transcript}}", transcript),
         ],
+        screen_context_section,
     )
 }
 
@@ -249,17 +262,21 @@ pub fn ask_without_selection_system(overrides: &PromptOverrides) -> Cow<'_, str>
 pub fn ask_without_selection_user(
     overrides: &PromptOverrides,
     dictionary_section: &str,
+    screen_context_section: &str,
     transcript: &str,
 ) -> String {
-    render(
-        &template_or_default(
-            overrides.ask_without_selection_user.as_deref(),
-            ASK_WITHOUT_SELECTION_USER,
-        ),
+    let template = template_or_default(
+        overrides.ask_without_selection_user.as_deref(),
+        ASK_WITHOUT_SELECTION_USER,
+    );
+    render_voice_prompt(
+        &template,
         &[
             ("{{dictionary_section}}", dictionary_section),
+            ("{{screen_context}}", screen_context_section),
             ("{{transcript}}", transcript),
         ],
+        screen_context_section,
     )
 }
 
@@ -273,19 +290,23 @@ pub fn ask_with_selection_system(overrides: &PromptOverrides) -> Cow<'_, str> {
 pub fn ask_with_selection_user(
     overrides: &PromptOverrides,
     dictionary_section: &str,
+    screen_context_section: &str,
     selected_text: &str,
     transcript: &str,
 ) -> String {
-    render(
-        &template_or_default(
-            overrides.ask_with_selection_user.as_deref(),
-            ASK_WITH_SELECTION_USER,
-        ),
+    let template = template_or_default(
+        overrides.ask_with_selection_user.as_deref(),
+        ASK_WITH_SELECTION_USER,
+    );
+    render_voice_prompt(
+        &template,
         &[
             ("{{dictionary_section}}", dictionary_section),
+            ("{{screen_context}}", screen_context_section),
             ("{{selected_text}}", selected_text),
             ("{{transcript}}", transcript),
         ],
+        screen_context_section,
     )
 }
 
@@ -305,6 +326,19 @@ fn render(template: &str, replacements: &[(&str, &str)]) -> String {
         out = out.replace(token, value);
     }
     out
+}
+
+fn render_voice_prompt(
+    template: &str,
+    replacements: &[(&str, &str)],
+    screen_context_section: &str,
+) -> String {
+    let rendered = render(template, replacements);
+    if template.contains("{{screen_context}}") || screen_context_section.trim().is_empty() {
+        rendered
+    } else {
+        format!("{screen_context_section}\n\n{rendered}")
+    }
 }
 
 #[cfg(test)]
@@ -340,5 +374,27 @@ mod tests {
         assert!(prompt.contains("Typeless"));
         assert!(prompt.contains("音写"));
         assert!(prompt.contains("該当すると判断できない語"));
+    }
+
+    #[test]
+    fn voice_prompt_renders_screen_context_token() {
+        let prompt = voice_mode_user_with_context(
+            "{{dictionary_section}}\n{{screen_context}}\n{{transcript}}",
+            "辞書",
+            "画面文脈",
+            "本文",
+        );
+
+        assert!(prompt.contains("辞書"));
+        assert!(prompt.contains("画面文脈"));
+        assert!(prompt.contains("本文"));
+    }
+
+    #[test]
+    fn voice_prompt_prepends_screen_context_when_token_is_missing() {
+        let prompt = voice_mode_user_with_context("{{transcript}}", "", "画面文脈", "本文");
+
+        assert!(prompt.starts_with("画面文脈\n\n"));
+        assert!(prompt.ends_with("本文"));
     }
 }

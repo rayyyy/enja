@@ -89,6 +89,8 @@ export type VoiceSettings = {
   speechProfile: SpeechProfile;
   finalizationModel: FinalizationModel;
   interactionSoundsEnabled: boolean;
+  screenContextEnabled: boolean;
+  screenContextOcrEnabled: boolean;
   systemAudioHandling: SystemAudioHandling;
   maxRecordingSeconds: number;
   googleCloudProjectId: string;

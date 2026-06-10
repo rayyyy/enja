@@ -733,6 +733,26 @@ export function SettingsView() {
                   patchVoice({ interactionSoundsEnabled: checked })
                 }
               />
+              <Toggle
+                label="画面文脈を使う"
+                description="入力先のアプリ、ウィンドウ、カーソル前後、表示テキストを音声認識と整形のヒントに使います。"
+                checked={settings.voice.screenContextEnabled}
+                onChange={(checked) =>
+                  patchVoice({ screenContextEnabled: checked })
+                }
+              />
+              <Toggle
+                label="画面OCRを使う"
+                description="アクセシビリティで読めない表示文字を、音声認識や整形に効く経路だけアクティブなディスプレイ全体のOCRで補います。"
+                checked={
+                  settings.voice.screenContextEnabled &&
+                  settings.voice.screenContextOcrEnabled
+                }
+                disabled={!settings.voice.screenContextEnabled}
+                onChange={(checked) =>
+                  patchVoice({ screenContextOcrEnabled: checked })
+                }
+              />
               <fieldset className="sm:col-span-2">
                 <legend className="mb-2 text-sm font-medium text-ink">
                   PC内部音声の扱い
@@ -772,7 +792,7 @@ export function SettingsView() {
                         AECで分離（Typeless相当）
                       </span>
                       <span className="block text-xs leading-relaxed text-ink-mid">
-                        Core Audio Process Tapでシステム音声のみを別経路で取得し、AECでマイクから差し引きます。再生音は止まらず、Netflix等のDRM動画も暗転しません。macOS 14.4以上が必要です。
+                        Core Audio Process Tapでシステム音声のみを別経路で取得し、AECでマイクから差し引きます。再生音は止めずに録音への混入を抑えます。macOS 14.4以上が必要です。
                       </span>
                     </span>
                   </label>
