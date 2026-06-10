@@ -189,6 +189,10 @@ body {
   }
 }
 
+.window-drag-region {
+  -webkit-app-region: drag;
+}
+
 @keyframes enja-pop-in {
   from {
     opacity: 0;

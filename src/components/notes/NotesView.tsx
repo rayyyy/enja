@@ -31,6 +31,7 @@ import {
   noteColorPresets,
 } from "../../lib/stickyNotes";
 import type { StickyNote } from "../../types";
+import { WindowDragRegion } from "../ui";
 import { RichNoteEditor } from "./RichNoteEditor";
 
 type NoteContextMenuState = {
@@ -350,14 +351,26 @@ export function StickyNoteWindow({ noteId }: { noteId: string }) {
   }
 
   return (
-    <NoteEditorPanel
-      note={note}
-      showToolbar={false}
-      onPatch={(patch) => patchNote(note.id, patch)}
-      onDelete={() => void removeNote(note.id)}
-      onShowPinned={() => undefined}
-      onHidePinned={() => void hidePinned(note.id)}
-    />
+    <div
+      className={`relative h-full min-h-0 ${noteColorClass(note.color, true)}`}
+    >
+      <WindowDragRegion
+        className={`absolute inset-x-0 top-0 z-10 h-[28px] ${noteColorClass(
+          note.color,
+          true,
+        )}`}
+      />
+      <div className="h-full min-h-0 pt-[28px]">
+        <NoteEditorPanel
+          note={note}
+          showToolbar={false}
+          onPatch={(patch) => patchNote(note.id, patch)}
+          onDelete={() => void removeNote(note.id)}
+          onShowPinned={() => undefined}
+          onHidePinned={() => void hidePinned(note.id)}
+        />
+      </div>
+    </div>
   );
 }
 

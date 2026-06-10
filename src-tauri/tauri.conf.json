@@ -22,7 +22,11 @@
         "center": true,
         "maximizable": false,
         "hiddenTitle": true,
-        "titleBarStyle": "Transparent",
+        "titleBarStyle": "Overlay",
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 16
+        },
         "decorations": true,
         "transparent": false,
         "backgroundColor": "#f7f7f8",

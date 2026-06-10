@@ -16,6 +16,7 @@ import { RightPanel } from "./components/RightPanel";
 import { SettingsView } from "./components/SettingsView";
 import { DictionaryView } from "./components/DictionaryView";
 import { VoiceOverlay } from "./components/VoiceOverlay";
+import { WindowDragRegion } from "./components/ui";
 
 const NotesView = lazy(() =>
   import("./components/notes/NotesView").then((module) => ({
@@ -132,7 +133,8 @@ function App() {
   }
 
   return (
-    <div className="flex h-full min-h-0 w-full cursor-default overflow-hidden bg-canvas">
+    <div className="relative flex h-full min-h-0 w-full cursor-default overflow-hidden bg-canvas pt-[40px]">
+      <WindowDragRegion className="absolute inset-x-0 top-0 z-20 h-[40px] bg-canvas" />
       <AppNavigation />
       {view === "notes" ? (
         <Suspense fallback={<div className="flex-1 bg-surface" />}>
@@ -165,7 +167,7 @@ function AppNavigation() {
   const setView = useAppStore((s) => s.setView);
 
   return (
-    <aside
+    <WindowDragRegion
       className="flex h-full w-12 shrink-0 flex-col items-center border-r border-edge bg-canvas px-1.5 py-2"
       aria-label="アプリ内ナビゲーション"
     >
@@ -192,7 +194,7 @@ function AppNavigation() {
           );
         })}
       </nav>
-    </aside>
+    </WindowDragRegion>
   );
 }
 

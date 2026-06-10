@@ -57,9 +57,10 @@ function applyTheme() {
   root.classList.toggle("dark", resolved === "dark");
   // select等のネイティブコントロールとスクロールバーをテーマに追従させる。
   root.style.colorScheme = resolved;
-  void getCurrentWindow()
-    .setBackgroundColor(WINDOW_BG[resolved])
-    .catch(() => undefined);
+  const window = getCurrentWindow();
+  // macOSの透明タイトルバー領域はネイティブ側のテーマに追従する。
+  void window.setTheme(resolved).catch(() => undefined);
+  void window.setBackgroundColor(WINDOW_BG[resolved]).catch(() => undefined);
 }
 
 /** 各ウィンドウのエントリポイントで一度だけ呼ぶ。 */
