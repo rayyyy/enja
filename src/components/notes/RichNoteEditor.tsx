@@ -3,6 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Editor } from "@tiptap/react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { NodeSelection } from "@tiptap/pm/state";
+import { DOMSerializer } from "@tiptap/pm/model";
 import { marked } from "marked";
 import StarterKit from "@tiptap/starter-kit";
 import Image from "@tiptap/extension-image";
@@ -36,6 +37,7 @@ export function RichNoteEditor({
   onAutoFocusComplete,
 }: RichNoteEditorProps) {
   const editorRef = useRef<Editor | null>(null);
+  const shiftKeyRef = useRef(false);
   const currentNoteIdRef = useRef(noteId);
   const lastNoteIdRef = useRef(noteId);
   const onChangeRef = useRef(onChange);
@@ -139,11 +141,29 @@ export function RichNoteEditor({
         return true;
       },
       handleDOMEvents: {
-        paste: (_view, event) => {
+        paste: (view, event) => {
           const files = imageFilesFromClipboard(event);
           if (files.length) return false;
 
-          const text = event.clipboardData?.getData("text/plain") ?? "";
+          const clipboard = event.clipboardData;
+          if (!clipboard) return false;
+
+          const text = clipboard.getData("text/plain");
+
+          if (shiftKeyRef.current) {
+            if (!text) return false;
+            event.preventDefault();
+            view.pasteText(text);
+            return true;
+          }
+
+          const html = clipboard.getData("text/html");
+          if (html.trim() && htmlHasRichStructure(html)) {
+            event.preventDefault();
+            view.pasteHTML(sanitizePastedHtml(html));
+            return true;
+          }
+
           if (!looksLikeMarkdown(text)) return false;
 
           event.preventDefault();
@@ -172,6 +192,10 @@ export function RichNoteEditor({
           event.preventDefault();
           if (event.clipboardData) {
             event.clipboardData.setData("text/plain", markdown);
+            const html = selectionToHtml(editor);
+            if (html) {
+              event.clipboardData.setData("text/html", html);
+            }
           } else {
             void navigator.clipboard.writeText(markdown);
           }
@@ -193,6 +217,18 @@ export function RichNoteEditor({
     event.preventDefault();
     editor?.chain().focus("end").run();
   }
+
+  useEffect(() => {
+    const updateShiftKey = (event: KeyboardEvent) => {
+      shiftKeyRef.current = event.shiftKey;
+    };
+    window.addEventListener("keydown", updateShiftKey, true);
+    window.addEventListener("keyup", updateShiftKey, true);
+    return () => {
+      window.removeEventListener("keydown", updateShiftKey, true);
+      window.removeEventListener("keyup", updateShiftKey, true);
+    };
+  }, []);
 
   useEffect(() => {
     editorRef.current = editor;
@@ -264,6 +300,86 @@ function selectionToMarkdown(editor: Editor) {
   return noteToMarkdown({ type: "doc", content });
 }
 
+function selectionToHtml(editor: Editor) {
+  const selection = editor.state.selection;
+  if (selection.empty) return null;
+
+  const serializer = DOMSerializer.fromSchema(editor.schema);
+  const container = document.createElement("div");
+  container.appendChild(serializer.serializeFragment(selection.content().content));
+  flattenTaskListsForExport(container);
+  preserveEmptyParagraphs(container);
+  return container.innerHTML || null;
+}
+
+// TipTapのタスク項目は <li><label><input></label><div><p>…</p></div></li> と
+// 入れ子になっており、NotionなどはlabelとdivをBlock扱いして改行してしまう。
+// GitHub形式の <li><input type="checkbox"> テキスト</li> にフラット化する
+function flattenTaskListsForExport(root: HTMLElement) {
+  for (const list of Array.from(
+    root.querySelectorAll('ul[data-type="taskList"]'),
+  )) {
+    for (const item of directListItems(list)) {
+      const checked = item.getAttribute("data-checked") === "true";
+      item.querySelector(":scope > label")?.remove();
+
+      const wrapper = item.querySelector(":scope > div");
+      if (wrapper) {
+        wrapper.replaceWith(...Array.from(wrapper.childNodes));
+      }
+      const blocks = Array.from(item.children).filter(
+        (child) => !(child instanceof HTMLUListElement || child instanceof HTMLOListElement),
+      );
+      if (blocks.length === 1 && blocks[0] instanceof HTMLParagraphElement) {
+        blocks[0].replaceWith(...Array.from(blocks[0].childNodes));
+      }
+
+      const checkbox = item.ownerDocument.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.disabled = true;
+      if (checked) {
+        checkbox.setAttribute("checked", "checked");
+      }
+      item.prepend(checkbox, " ");
+    }
+  }
+}
+
+// 空段落は <p></p> のままだと受け側エディタで行ごと消えるため、
+// <p><br></p> にして空行として残す（貼り付け時のProseMirrorも同様）
+function preserveEmptyParagraphs(root: ParentNode) {
+  for (const paragraph of Array.from(root.querySelectorAll("p"))) {
+    if (!paragraph.childNodes.length || (
+      !paragraph.children.length && !paragraph.textContent?.trim()
+    )) {
+      paragraph.replaceChildren(paragraph.ownerDocument.createElement("br"));
+    }
+  }
+}
+
+// VSCodeのコードコピーのように div/span だけで構成されたHTMLは
+// 装飾情報を持たないため、text/plain側のMarkdown推定に回す
+function htmlHasRichStructure(html: string) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  return Boolean(
+    template.content.querySelector(
+      "ul,ol,li,h1,h2,h3,h4,h5,h6,table,blockquote,pre,code,strong,b,em,i,s,del,a,img,input[type=checkbox]",
+    ),
+  );
+}
+
+function sanitizePastedHtml(html: string) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+
+  normalizeMarkdownTaskLists(template.content);
+  preserveEmptyParagraphs(template.content);
+  stripUnsafeHtml(template.content);
+
+  return template.innerHTML;
+}
+
 function looksLikeMarkdown(value: string) {
   const text = value.trim();
   if (!text) return false;
@@ -309,14 +425,19 @@ function sanitizeMarkdownHtml(html: string) {
   template.innerHTML = html;
 
   normalizeMarkdownTaskLists(template.content);
+  stripUnsafeHtml(template.content);
 
+  return template.innerHTML;
+}
+
+function stripUnsafeHtml(root: DocumentFragment) {
   for (const element of Array.from(
-    template.content.querySelectorAll("script,style,iframe,object,embed"),
+    root.querySelectorAll("script,style,iframe,object,embed"),
   )) {
     element.remove();
   }
 
-  for (const element of Array.from(template.content.querySelectorAll("*"))) {
+  for (const element of Array.from(root.querySelectorAll("*"))) {
     for (const attribute of Array.from(element.attributes)) {
       const name = attribute.name.toLowerCase();
       const value = attribute.value.trim();
@@ -335,8 +456,6 @@ function sanitizeMarkdownHtml(html: string) {
       normalizeMarkdownImageElement(element);
     }
   }
-
-  return template.innerHTML;
 }
 
 function normalizeMarkdownTaskLists(root: ParentNode) {
