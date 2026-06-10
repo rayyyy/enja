@@ -57,6 +57,20 @@ export function normalizeRichTextNode(value: unknown): RichTextNode {
   return defaultNoteContent;
 }
 
+// normalizeRichTextNode は有効な doc をそのままの参照で返すため、
+// 直列化結果をオブジェクト同一性でキャッシュできる。編集1回あたりの
+// JSON.stringify を実質1回に抑える(patchNote の差分判定とエディタ同期が共有)。
+const serializedRichTextCache = new WeakMap<object, string>();
+
+export function serializeRichTextNode(value: unknown): string {
+  const node = normalizeRichTextNode(value);
+  const cached = serializedRichTextCache.get(node);
+  if (cached !== undefined) return cached;
+  const serialized = JSON.stringify(node);
+  serializedRichTextCache.set(node, serialized);
+  return serialized;
+}
+
 export function extractPlainText(doc: unknown): string {
   const node = normalizeRichTextNode(doc);
   return collectText(node).replace(/\s+/g, " ").trim();

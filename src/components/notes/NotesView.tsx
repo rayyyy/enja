@@ -1,4 +1,6 @@
 import {
+  memo,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -29,6 +31,7 @@ import {
   normalizeRichTextNode,
   noteColorClass,
   noteColorPresets,
+  serializeRichTextNode,
 } from "../../lib/stickyNotes";
 import type { StickyNote } from "../../types";
 import { WindowDragRegion } from "../ui";
@@ -67,12 +70,12 @@ export function NotesView() {
   const [query, setQuery] = useState("");
   const [contextMenu, setContextMenu] = useState<NoteContextMenuState>(null);
 
-  function selectNote(id: string | null) {
+  const selectNote = useCallback((id: string | null) => {
     setSelectedId(id);
     setFocusedNoteId(id);
-  }
+  }, []);
 
-  function createAndSelectNote() {
+  const createAndSelectNote = useCallback(() => {
     setContextMenu(null);
     void createNote()
       .then((note) => {
@@ -82,18 +85,21 @@ export function NotesView() {
       .catch((error) => {
         console.error("[enja] sticky note create failed", error);
       });
-  }
+  }, [createNote, selectNote]);
 
-  function deleteNote(id: string) {
-    setContextMenu(null);
-    const nextSelectedId =
-      selectedId === id
-        ? notes.find((note) => note.id !== id)?.id ?? null
-        : selectedId;
-    setSelectedId(nextSelectedId);
-    setFocusedNoteId(nextSelectedId);
-    void removeNote(id);
-  }
+  const deleteNote = useCallback(
+    (id: string) => {
+      setContextMenu(null);
+      const nextSelectedId =
+        selectedId === id
+          ? notes.find((note) => note.id !== id)?.id ?? null
+          : selectedId;
+      setSelectedId(nextSelectedId);
+      setFocusedNoteId(nextSelectedId);
+      void removeNote(id);
+    },
+    [notes, removeNote, selectedId],
+  );
 
   useEffect(() => {
     if (!loaded) return;
@@ -112,20 +118,32 @@ export function NotesView() {
     setFocusedNoteId(selectedId);
   }, [focusedNoteId, notes, selectedId]);
 
-  const noteRows = useMemo<NoteListRow[]>(
-    () =>
-      notes.map((note) => {
-        const title = deriveNoteTitle(note.content);
-        const plainText = extractPlainText(note.content);
-        return {
-          note,
-          title,
-          preview: plainText || "本文なし",
-          searchText: `${note.title} ${title} ${plainText}`.toLowerCase(),
-        };
-      }),
-    [notes],
-  );
+  // タイトル/プレビューの導出はノート全文の走査になるため、
+  // 変化していないノート(オブジェクト同一)は前回の行を使い回す。
+  const rowCacheRef = useRef(new Map<string, NoteListRow>());
+  const noteRows = useMemo<NoteListRow[]>(() => {
+    const cache = rowCacheRef.current;
+    const nextCache = new Map<string, NoteListRow>();
+    const rows = notes.map((note) => {
+      const cached = cache.get(note.id);
+      if (cached && cached.note === note) {
+        nextCache.set(note.id, cached);
+        return cached;
+      }
+      const title = deriveNoteTitle(note.content);
+      const plainText = extractPlainText(note.content);
+      const row: NoteListRow = {
+        note,
+        title,
+        preview: plainText || "本文なし",
+        searchText: `${note.title} ${title} ${plainText}`.toLowerCase(),
+      };
+      nextCache.set(note.id, row);
+      return row;
+    });
+    rowCacheRef.current = nextCache;
+    return rows;
+  }, [notes]);
 
   const filteredRows = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -207,19 +225,32 @@ export function NotesView() {
 
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [createNote, focusedNoteId, notes, removeNote, selectedId]);
+  }, [createAndSelectNote, deleteNote, focusedNoteId, notes, selectedId]);
 
-  function openNoteContextMenu(
-    note: StickyNote,
-    event: ReactMouseEvent<HTMLDivElement>,
-  ) {
-    event.preventDefault();
-    selectNote(note.id);
-    setContextMenu({
-      noteId: note.id,
-      ...clampContextMenuPosition(event.clientX, event.clientY),
-    });
-  }
+  const openNoteContextMenu = useCallback(
+    (note: StickyNote, event: ReactMouseEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      selectNote(note.id);
+      setContextMenu({
+        noteId: note.id,
+        ...clampContextMenuPosition(event.clientX, event.clientY),
+      });
+    },
+    [selectNote],
+  );
+
+  const focusNote = useCallback((id: string) => setFocusedNoteId(id), []);
+
+  const togglePinnedNote = useCallback(
+    (note: StickyNote) => {
+      if (note.pinned) {
+        void hidePinned(note.id);
+      } else {
+        void showPinned(note.id);
+      }
+    },
+    [hidePinned, showPinned],
+  );
 
   return (
     <div className="flex min-h-0 flex-1 bg-surface">
@@ -261,12 +292,10 @@ export function NotesView() {
               title={title}
               preview={preview}
               selected={note.id === selectedId}
-              onSelect={() => selectNote(note.id)}
-              onFocus={() => setFocusedNoteId(note.id)}
-              onTogglePinned={() =>
-                note.pinned ? void hidePinned(note.id) : void showPinned(note.id)
-              }
-              onOpenContextMenu={(event) => openNoteContextMenu(note, event)}
+              onSelect={selectNote}
+              onFocus={focusNote}
+              onTogglePinned={togglePinnedNote}
+              onOpenContextMenu={openNoteContextMenu}
             />
           ))}
           {filteredRows.length === 0 ? (
@@ -393,7 +422,7 @@ function NoteEditorPanel({
   showToolbar?: boolean;
   autoFocusEditor?: boolean;
 }) {
-  const content = normalizeRichTextNode(note.content);
+  const content = useMemo(() => normalizeRichTextNode(note.content), [note.content]);
 
   return (
     <div
@@ -463,7 +492,7 @@ function NoteEditorPanel({
   );
 }
 
-function NoteListItem({
+const NoteListItem = memo(function NoteListItem({
   note,
   title,
   preview,
@@ -477,26 +506,29 @@ function NoteListItem({
   title: string;
   preview: string;
   selected: boolean;
-  onSelect: () => void;
-  onFocus: () => void;
-  onTogglePinned: () => void;
-  onOpenContextMenu: (event: ReactMouseEvent<HTMLDivElement>) => void;
+  onSelect: (id: string) => void;
+  onFocus: (id: string) => void;
+  onTogglePinned: (note: StickyNote) => void;
+  onOpenContextMenu: (
+    note: StickyNote,
+    event: ReactMouseEvent<HTMLDivElement>,
+  ) => void;
 }) {
   return (
     <div
       role="button"
       tabIndex={0}
-      onClick={onSelect}
-      onFocus={onFocus}
+      onClick={() => onSelect(note.id)}
+      onFocus={() => onFocus(note.id)}
       onDoubleClick={(event) => {
         event.preventDefault();
-        onTogglePinned();
+        onTogglePinned(note);
       }}
-      onContextMenu={onOpenContextMenu}
+      onContextMenu={(event) => onOpenContextMenu(note, event)}
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
-        onSelect();
+        onSelect(note.id);
       }}
       title={note.pinned ? "固定中" : "未固定"}
       className={`mb-0.5 flex w-full cursor-pointer items-start gap-2.5 rounded-lg px-3 py-2 text-left transition-colors duration-100 focus-ring ${
@@ -531,7 +563,7 @@ function NoteListItem({
       ) : null}
     </div>
   );
-}
+});
 
 function useStickyNotes({ createWhenEmpty }: { createWhenEmpty: boolean }) {
   const [notes, setNotes] = useState<StickyNote[]>([]);
@@ -591,7 +623,7 @@ function useStickyNotes({ createWhenEmpty }: { createWhenEmpty: boolean }) {
     };
   }, []);
 
-  function scheduleSave(note: StickyNote) {
+  const scheduleSave = useCallback((note: StickyNote) => {
     const existing = saveTimersRef.current.get(note.id);
     if (existing) window.clearTimeout(existing);
     const timer = window.setTimeout(() => {
@@ -606,46 +638,47 @@ function useStickyNotes({ createWhenEmpty }: { createWhenEmpty: boolean }) {
       });
     }, 450);
     saveTimersRef.current.set(note.id, timer);
-  }
+  }, []);
 
-  function patchNote(
-    id: string,
-    patch: Partial<Pick<StickyNote, "content" | "color">>,
-  ) {
-    setNotes((current) => {
-      const target = current.find((note) => note.id === id);
-      if (!target) return current;
-      const nextContent = patch.content ?? target.content;
-      const nextColor = patch.color ?? target.color;
-      const contentChanged =
-        patch.content !== undefined &&
-        serializeNoteContent(nextContent) !== serializeNoteContent(target.content);
-      const colorChanged = patch.color !== undefined && nextColor !== target.color;
-      if (!contentChanged && !colorChanged) return current;
+  const patchNote = useCallback(
+    (id: string, patch: Partial<Pick<StickyNote, "content" | "color">>) => {
+      setNotes((current) => {
+        const target = current.find((note) => note.id === id);
+        if (!target) return current;
+        const nextContent = patch.content ?? target.content;
+        const nextColor = patch.color ?? target.color;
+        const contentChanged =
+          patch.content !== undefined &&
+          serializeRichTextNode(nextContent) !==
+            serializeRichTextNode(target.content);
+        const colorChanged = patch.color !== undefined && nextColor !== target.color;
+        if (!contentChanged && !colorChanged) return current;
 
-      const next: StickyNote = {
-        ...target,
-        content: nextContent,
-        color: nextColor,
-        title: deriveNoteTitle(nextContent),
-        updatedAt: contentChanged ? Date.now() : target.updatedAt,
-      };
-      scheduleSave(next);
-      const nextNotes = current.map((note) => (note.id === id ? next : note));
-      return contentChanged ? sortNotesByUpdatedAt(nextNotes) : nextNotes;
-    });
-  }
+        const next: StickyNote = {
+          ...target,
+          content: nextContent,
+          color: nextColor,
+          title: deriveNoteTitle(nextContent),
+          updatedAt: contentChanged ? Date.now() : target.updatedAt,
+        };
+        scheduleSave(next);
+        const nextNotes = current.map((note) => (note.id === id ? next : note));
+        return contentChanged ? sortNotesByUpdatedAt(nextNotes) : nextNotes;
+      });
+    },
+    [scheduleSave],
+  );
 
-  async function createNote() {
+  const createNote = useCallback(async () => {
     const note = await createStickyNote();
     setNotes((current) => {
       if (current.some((candidate) => candidate.id === note.id)) return current;
       return [note, ...current];
     });
     return note;
-  }
+  }, []);
 
-  async function removeNote(id: string) {
+  const removeNote = useCallback(async (id: string) => {
     if (deletingIdsRef.current.has(id)) return;
     deletingIdsRef.current.add(id);
     const pendingSave = saveTimersRef.current.get(id);
@@ -662,23 +695,23 @@ function useStickyNotes({ createWhenEmpty }: { createWhenEmpty: boolean }) {
     } finally {
       deletingIdsRef.current.delete(id);
     }
-  }
+  }, []);
 
-  async function showPinned(id: string) {
+  const showPinned = useCallback(async (id: string) => {
     try {
       await showStickyNoteWindow(id);
     } catch (error) {
       console.error("[enja] sticky note show failed", error);
     }
-  }
+  }, []);
 
-  async function hidePinned(id: string) {
+  const hidePinned = useCallback(async (id: string) => {
     try {
       await hideStickyNoteWindow(id);
     } catch (error) {
       console.error("[enja] sticky note hide failed", error);
     }
-  }
+  }, []);
 
   return {
     notes,
@@ -698,10 +731,6 @@ function formatDate(value: number) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
-}
-
-function serializeNoteContent(content: unknown) {
-  return JSON.stringify(normalizeRichTextNode(content));
 }
 
 function sortNotesByUpdatedAt(notes: StickyNote[]) {

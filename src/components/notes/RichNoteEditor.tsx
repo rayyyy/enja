@@ -16,6 +16,7 @@ import { saveStickyNoteImage } from "../../lib/commands";
 import {
   normalizeRichTextNode,
   noteToMarkdown,
+  serializeRichTextNode,
   type RichTextNode,
 } from "../../lib/stickyNotes";
 
@@ -47,7 +48,7 @@ export function RichNoteEditor({
   onChangeRef.current = onChange;
   onAutoFocusCompleteRef.current = onAutoFocusComplete;
   if (lastContentRef.current === null) {
-    lastContentRef.current = JSON.stringify(normalizeRichTextNode(content));
+    lastContentRef.current = serializeRichTextNode(content);
   }
 
   async function insertImageFile(file: File) {
@@ -206,7 +207,9 @@ export function RichNoteEditor({
     onUpdate: ({ editor }) => {
       const next = editor.getJSON() as RichTextNode;
       lastNoteIdRef.current = currentNoteIdRef.current;
-      lastContentRef.current = JSON.stringify(next);
+      // serializeRichTextNode はオブジェクト同一性でキャッシュされるため、
+      // この結果は patchNote 側の差分判定でも再利用される。
+      lastContentRef.current = serializeRichTextNode(next);
       onChangeRef.current(next);
     },
   });
@@ -240,7 +243,7 @@ export function RichNoteEditor({
   useEffect(() => {
     if (!editor) return;
     const normalized = normalizeRichTextNode(content);
-    const serialized = JSON.stringify(normalized);
+    const serialized = serializeRichTextNode(normalized);
     const noteChanged = noteId !== lastNoteIdRef.current;
     if (!noteChanged && serialized === lastContentRef.current) return;
     if (!noteChanged && editor.isFocused) return;
