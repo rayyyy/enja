@@ -27,6 +27,9 @@ pub fn list_audio_input_devices() -> Result<Vec<AudioInputDevice>, String> {
         let name = device
             .name()
             .unwrap_or_else(|_| "名称未取得のマイク".to_string());
+        if name == "Enja Tap" {
+            continue;
+        }
         *name_counts.entry(name.clone()).or_insert(0) += 1;
         entries.push((idx, name));
     }
