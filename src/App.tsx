@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { LucideIcon } from "lucide-react";
@@ -30,11 +30,41 @@ const StickyNoteWindow = lazy(() =>
   })),
 );
 
-const APP_NAV_ITEMS: { view: View; label: string; icon: LucideIcon }[] = [
-  { view: "translation", label: "翻訳", icon: Languages },
-  { view: "notes", label: "メモ", icon: StickyNote },
-  { view: "dictionary", label: "辞書", icon: BookOpenText },
-  { view: "settings", label: "設定", icon: Settings },
+const APP_NAV_ITEMS: {
+  view: View;
+  label: string;
+  icon: LucideIcon;
+  shortcut?: string;
+  commandKey: string;
+}[] = [
+  {
+    view: "translation",
+    label: "翻訳",
+    icon: Languages,
+    shortcut: "⌘1",
+    commandKey: "1",
+  },
+  {
+    view: "notes",
+    label: "メモ",
+    icon: StickyNote,
+    shortcut: "⌘2",
+    commandKey: "2",
+  },
+  {
+    view: "dictionary",
+    label: "辞書",
+    icon: BookOpenText,
+    shortcut: "⌘3",
+    commandKey: "3",
+  },
+  {
+    view: "settings",
+    label: "設定",
+    icon: Settings,
+    shortcut: "⌘4 / ⌘,",
+    commandKey: "4",
+  },
 ];
 
 function App() {
@@ -95,6 +125,15 @@ function App() {
           return;
         }
         void hideWindow();
+        return;
+      }
+
+      if (!stickyNoteId) {
+        const shortcutView = viewShortcutForEvent(e);
+        if (shortcutView) {
+          e.preventDefault();
+          useAppStore.getState().setView(shortcutView);
+        }
       }
     }
     window.addEventListener("keydown", onKey);
@@ -178,6 +217,26 @@ function App() {
 function AppNavigation() {
   const view = useAppStore((s) => s.view);
   const setView = useAppStore((s) => s.setView);
+  const [isCommandPressed, setIsCommandPressed] = useState(false);
+
+  useEffect(() => {
+    function updateCommandState(event: KeyboardEvent) {
+      setIsCommandPressed(event.metaKey);
+    }
+
+    function clearCommandState() {
+      setIsCommandPressed(false);
+    }
+
+    window.addEventListener("keydown", updateCommandState);
+    window.addEventListener("keyup", updateCommandState);
+    window.addEventListener("blur", clearCommandState);
+    return () => {
+      window.removeEventListener("keydown", updateCommandState);
+      window.removeEventListener("keyup", updateCommandState);
+      window.removeEventListener("blur", clearCommandState);
+    };
+  }, []);
 
   return (
     <WindowDragRegion
@@ -192,21 +251,45 @@ function AppNavigation() {
             <button
               key={item.view}
               type="button"
-              title={item.label}
+              title={item.shortcut ? `${item.label}（${item.shortcut}）` : item.label}
               aria-label={item.label}
               aria-current={active ? "page" : undefined}
               onClick={() => setView(item.view)}
-              className={`grid size-8 place-items-center rounded-md transition-colors duration-100 focus-ring ${
+              className={`relative grid size-8 place-items-center rounded-md transition-colors duration-100 focus-ring ${
                 active
                   ? "bg-accent-soft text-accent-ink"
                   : "text-ink-faint hover:bg-hover hover:text-ink"
               }`}
             >
               <Icon size={17} strokeWidth={1.8} />
+              <span
+                aria-hidden="true"
+                className={`absolute -top-0.5 -right-0.5 grid size-4 place-items-center rounded-[5px] border font-sans text-[9px] font-semibold leading-none tracking-normal shadow-sm transition-all duration-100 ${
+                  isCommandPressed
+                    ? "scale-100 opacity-100"
+                    : "pointer-events-none scale-90 opacity-0"
+                } ${
+                    active
+                      ? "border-accent/20 bg-surface text-accent-ink"
+                      : "border-edge bg-raised text-ink-mid"
+                }`}
+              >
+                {item.commandKey}
+              </span>
             </button>
           );
         })}
       </nav>
+      <div
+        title="⌘を押すと画面切替ショートカットを表示"
+        className={`grid size-8 place-items-center rounded-md border font-sans text-[13px] font-medium leading-none tracking-normal transition-colors duration-100 ${
+          isCommandPressed
+            ? "border-accent/25 bg-accent-soft text-accent-ink"
+            : "border-edge bg-sunken text-ink-mid"
+        }`}
+      >
+        ⌘
+      </div>
     </WindowDragRegion>
   );
 }
@@ -237,6 +320,26 @@ function dragTargetIsRichEditor(target: EventTarget | null) {
         ? target.parentElement
         : null;
   return Boolean(element?.closest(".ProseMirror"));
+}
+
+function viewShortcutForEvent(event: KeyboardEvent): View | null {
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
+    return null;
+  }
+
+  switch (event.key) {
+    case "1":
+      return "translation";
+    case "2":
+      return "notes";
+    case "3":
+      return "dictionary";
+    case "4":
+    case ",":
+      return "settings";
+    default:
+      return null;
+  }
 }
 
 export default App;
